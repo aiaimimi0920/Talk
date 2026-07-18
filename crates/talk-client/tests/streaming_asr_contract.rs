@@ -271,12 +271,20 @@ fn runs_external_asr_command_and_collects_json_line_events() {
     let script_path = root.join("emit-asr.ps1");
     std::fs::write(
         &script_path,
-        r#"
+        concat!(
+            "\u{feff}",
+            r#"
 Write-Output '{"type":"partial","segment_id":"seg-1","text":"你好"}'
 Write-Output '{"type":"final","segment_id":"seg-1","text":"你好。"}'
-"#,
+"#
+        ),
     )
     .unwrap();
+    let script_bytes = std::fs::read(&script_path).unwrap();
+    assert!(
+        script_bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "Windows PowerShell 5.1 requires a UTF-8 BOM for non-ASCII scripts"
+    );
     let command = format!(
         "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
         script_path.display()
