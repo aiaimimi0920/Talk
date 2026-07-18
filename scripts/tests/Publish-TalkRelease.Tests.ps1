@@ -52,6 +52,41 @@ Describe 'Publish-TalkRelease helpers' {
         )
     }
 
+    It 'resolves missing release runtime DLLs from the sherpa shared prebuilt cache' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('talk-release-runtime-dlls-' + [guid]::NewGuid().ToString('N'))
+        $releaseDir = Join-Path $tempRoot 'target\release'
+        $prebuiltLibDir = Join-Path $tempRoot 'target\sherpa-onnx-prebuilt\sherpa-onnx-v1.13.4-win-x64-shared-MT-Release-lib\lib'
+        $dllNames = @(
+            'sherpa-onnx-c-api.dll',
+            'sherpa-onnx-cxx-api.dll',
+            'onnxruntime.dll',
+            'onnxruntime_providers_shared.dll'
+        )
+        New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+        New-Item -ItemType Directory -Path $prebuiltLibDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $releaseDir $dllNames[0]) -Value 'release dll' -Encoding ASCII
+        foreach ($dllName in $dllNames) {
+            Set-Content -LiteralPath (Join-Path $prebuiltLibDir $dllName) -Value 'prebuilt dll' -Encoding ASCII
+        }
+
+        try {
+            $sources = @(
+                Resolve-TalkReleaseRuntimeDllSources `
+                    -TalkRepoRoot $tempRoot `
+                    -DllNames $dllNames
+            )
+
+            $sources | Should Be @(
+                (Join-Path $releaseDir $dllNames[0]),
+                (Join-Path $prebuiltLibDir $dllNames[1]),
+                (Join-Path $prebuiltLibDir $dllNames[2]),
+                (Join-Path $prebuiltLibDir $dllNames[3])
+            )
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        }
+    }
+
     It 'renders a packaged api key into the desktop config when one is provided' {
         $configText = New-TalkReleaseDesktopConfigContent -PackagedApiKey 'packed-key'
 

@@ -76,6 +76,51 @@ function Get-DefaultTalkReleaseRoot {
     Join-Path (Get-NeuroRoot) 'release\Talk'
 }
 
+function Resolve-TalkReleaseRuntimeDllSources {
+    param(
+        [string]$TalkRepoRoot = (Get-TalkRepoRoot),
+        [Parameter(Mandatory = $true)][string[]]$DllNames
+    )
+
+    $resolvedTalkRepoRoot = [System.IO.Path]::GetFullPath($TalkRepoRoot)
+    $releaseDir = Join-Path $resolvedTalkRepoRoot 'target\release'
+    $prebuiltRoot = Join-Path $resolvedTalkRepoRoot 'target\sherpa-onnx-prebuilt'
+    $sources = New-Object System.Collections.Generic.List[string]
+
+    foreach ($dllName in $DllNames) {
+        $releasePath = Join-Path $releaseDir $dllName
+        if (Test-Path -LiteralPath $releasePath -PathType Leaf) {
+            $sources.Add($releasePath) | Out-Null
+            continue
+        }
+
+        $prebuiltCandidates = if (Test-Path -LiteralPath $prebuiltRoot -PathType Container) {
+            @(
+                Get-ChildItem -LiteralPath $prebuiltRoot -Recurse -File -Filter $dllName -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.Directory.Name -eq 'lib' -and
+                        $_.FullName -match '(?i)shared'
+                    }
+            )
+        } else {
+            @()
+        }
+        $prebuiltCandidates = @($prebuiltCandidates)
+
+        if ($prebuiltCandidates.Count -eq 0) {
+            throw "Missing Talk release runtime DLL '$dllName'. Searched release path '$releasePath' and shared sherpa prebuilt cache '$prebuiltRoot'."
+        }
+        if ($prebuiltCandidates.Count -gt 1) {
+            $candidatePaths = $prebuiltCandidates.FullName -join ', '
+            throw "Ambiguous Talk release runtime DLL '$dllName' in shared sherpa prebuilt cache: $candidatePaths"
+        }
+
+        $sources.Add($prebuiltCandidates[0].FullName) | Out-Null
+    }
+
+    $sources.ToArray()
+}
+
 function Resolve-TalkReleaseRoot {
     param([string]$ReleaseRoot)
 
@@ -1372,9 +1417,9 @@ function Publish-TalkRelease {
         'onnxruntime_providers_shared.dll'
     )
     $talkLocalAsrSherpaRuntimeDllSources = @(
-        foreach ($dllName in $talkLocalAsrSherpaRuntimeDllNames) {
-            Join-Path $talkRepoRoot (Join-Path 'target\release' $dllName)
-        }
+        Resolve-TalkReleaseRuntimeDllSources `
+            -TalkRepoRoot $talkRepoRoot `
+            -DllNames $talkLocalAsrSherpaRuntimeDllNames
     )
     $desktopLauncherSource = Join-Path $talkRepoRoot 'scripts\Start-TalkDesktop.ps1'
     $desktopLiveHotkeyProbeSource = Join-Path $talkRepoRoot 'scripts\Invoke-TalkDesktopLiveHotkeyProbe.ps1'
@@ -1391,12 +1436,12 @@ function Publish-TalkRelease {
     $asrDefaultModelWorkflowSource = Join-Path $talkRepoRoot 'scripts\Invoke-TalkAsrDefaultModelWorkflow.ps1'
     $asrRealMicDefaultModelWorkflowSource = Join-Path $talkRepoRoot 'scripts\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1'
     $asrRealMicPromptTemplateSource = Join-Path $talkRepoRoot 'examples\asr-real-mic-prompts.json'
-    foreach ($requiredPath in @(
+    $requiredPaths = @(
         $talkExeSource,
         $talkDesktopExeSource,
         $talkLocalAsrSherpaExeSource,
-        $asrBenchExeSource,
-        $talkLocalAsrSherpaRuntimeDllSources,
+        $asrBenchExeSource
+    ) + $talkLocalAsrSherpaRuntimeDllSources + @(
         $desktopLauncherSource,
         $desktopLiveHotkeyProbeSource,
         $desktopLiveOperatorProbeSource,
@@ -1412,7 +1457,8 @@ function Publish-TalkRelease {
         $asrDefaultModelWorkflowSource,
         $asrRealMicDefaultModelWorkflowSource,
         $asrRealMicPromptTemplateSource
-    )) {
+    )
+    foreach ($requiredPath in $requiredPaths) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "Missing Talk release artifact: $requiredPath"
         }
