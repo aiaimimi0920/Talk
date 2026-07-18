@@ -740,18 +740,47 @@ fn spawn_talk_server_with_config(root: &Path, config_path: &Path) -> (Child, ser
     (child, manifest)
 }
 
+fn shared_local_capability_example_path(name: &str) -> PathBuf {
+    let talk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let standalone_path = talk_root
+        .join("contracts")
+        .join("local-capability")
+        .join("examples")
+        .join(name);
+    if standalone_path.is_file() {
+        return standalone_path;
+    }
+
+    talk_root
+        .join("..")
+        .join("contracts")
+        .join("local-capability")
+        .join("examples")
+        .join(name)
+}
+
 fn shared_local_capability_example(name: &str) -> String {
-    fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("contracts")
-            .join("local-capability")
-            .join("examples")
-            .join(name),
-    )
-    .expect("read root local capability fixture")
+    fs::read_to_string(shared_local_capability_example_path(name))
+        .expect("read root local capability fixture")
+}
+
+#[test]
+fn shared_local_capability_example_prefers_standalone_talk_contracts() {
+    let resolved = shared_local_capability_example_path("talk-manifest.json");
+    let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("contracts")
+        .join("local-capability")
+        .join("examples")
+        .join("talk-manifest.json");
+
+    assert_eq!(
+        fs::canonicalize(resolved).expect("canonical resolved Talk contract fixture"),
+        fs::canonicalize(expected).expect("canonical standalone Talk contract fixture")
+    );
 }
 
 fn stop_child(mut child: Child) {

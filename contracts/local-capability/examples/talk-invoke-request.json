@@ -1,0 +1,12 @@
+{
+  "requestId": "talk-request-1",
+  "caller": "hook",
+  "capability": "voice.capture.once",
+  "input": {
+    "mode": "dictation",
+    "mockText": "hello from talk",
+    "context": {
+      "source": "shared-contract"
+    }
+  }
+}
