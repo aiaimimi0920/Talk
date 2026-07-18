@@ -1,0 +1,41 @@
+{
+  "selected_engine": "streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en",
+  "candidates": [
+    {
+      "engine": "streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en",
+      "sources": [
+        ".\\docs\\asr-benchmarks\\paraformer-bilingual-zh-en-huihui-nihaoya.json"
+      ],
+      "sample_count": 1,
+      "sample_ids": [
+        "huihui-nihaoya"
+      ],
+      "score": 239.2977516339869,
+      "cer": 0.0,
+      "first_partial_ms": 185,
+      "final_latency_ms": 322,
+      "rtf": 0.21045751633986928,
+      "peak_rss_mb": 0,
+      "model_size_mb": 1052,
+      "text": "你好呀"
+    },
+    {
+      "engine": "streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8",
+      "sources": [
+        ".\\docs\\asr-benchmarks\\zipformer-zh-en-punct-int8-480ms-huihui-nihaoya.json"
+      ],
+      "sample_count": 1,
+      "sample_ids": [
+        "huihui-nihaoya"
+      ],
+      "score": 333640.9142875817,
+      "cer": 0.3333333333333333,
+      "first_partial_ms": 255,
+      "final_latency_ms": 317,
+      "rtf": 0.20718954248366017,
+      "peak_rss_mb": 0,
+      "model_size_mb": 162,
+      "text": "你好"
+    }
+  ]
+}

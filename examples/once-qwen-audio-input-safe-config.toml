@@ -1,0 +1,33 @@
+# Safe CLI config for validating a real Qwen ASR + Qwen chat provider path.
+# Use with:
+#   talk once --config examples/once-qwen-audio-input-safe-config.toml --audio-file <wav>
+
+voice_mode = "command"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 60
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-qwen-safe/audio"
+
+[provider]
+kind = "openai_compatible"
+transcription_transport = "chat_completions_audio_input"
+audio_transcriptions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+chat_completions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+transcription_model = "qwen3-asr-flash"
+chat_model = "qwen3.7-plus"
+api_key_env = "TALK_PROVIDER_API_KEY"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+clipboard_backend = "fallback"
+
+[logging]
+dir = ".runtime/talk-qwen-safe/logs"

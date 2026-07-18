@@ -1,0 +1,13 @@
+{
+  "engine": "streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en",
+  "audio_duration_ms": 1530,
+  "cold_start_ms": 4,
+  "first_partial_ms": 185,
+  "final_latency_ms": 322,
+  "rtf": 0.21045751633986928,
+  "peak_rss_mb": 0,
+  "text": "你好呀",
+  "cer": 0.0,
+  "model_size_mb": 1052,
+  "sample_id": "huihui-nihaoya"
+}

@@ -1,0 +1,49 @@
+# Desktop config for the local-first speculative dictation path.
+#
+# The external ASR command is intentionally an adapter boundary: replace the
+# sample PowerShell script with a local RNN-T/Conformer/Whisper executable that
+# reads TALK_LOCAL_ASR_AUDIO_FILE or the {audio_path} argument and writes JSONL:
+#   {"type":"partial","segment_id":"seg-1","text":"你好"}
+#   {"type":"final","segment_id":"seg-1","text":"你好。"}
+
+voice_mode = "dictate"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[desktop.shortcuts]
+translate_shortcut = "RightAlt+/"
+ask_shortcut = "RightAlt+Space"
+
+[audio]
+backend = "native_windows"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-external-asr/audio"
+
+[provider]
+kind = "openai_compatible"
+audio_transcriptions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+chat_completions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+transcription_transport = "chat_completions_audio_input"
+transcription_model = "qwen3-asr-flash"
+chat_model = "qwen3.7-plus"
+api_key_env = "TALK_PROVIDER_API_KEY"
+
+[output]
+mode = "clipboard_paste"
+restore_clipboard = true
+clipboard_backend = "native_windows"
+
+[logging]
+dir = ".runtime/talk-external-asr/logs"
+
+[speculative]
+enabled = true
+local_asr = "external_command"
+external_asr_command = "powershell -NoProfile -ExecutionPolicy Bypass -File examples/external-asr-jsonl-smoke.ps1 {audio_path}"
+cloud_correction = "provider_text_processor"
+max_patch_age_ms = 3000
+max_auto_patch_edit_ratio = 0.25

@@ -1,0 +1,27 @@
+# Safe provider-backed desktop config for validating the Talk shell without
+# touching the real microphone or foreground clipboard.
+
+voice_mode = "dictate"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 10
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-http-safe/audio"
+
+[provider]
+kind = "http"
+endpoint = "http://127.0.0.1:18080/provider"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+clipboard_backend = "fallback"
+
+[logging]
+dir = ".runtime/talk-http-safe/logs"

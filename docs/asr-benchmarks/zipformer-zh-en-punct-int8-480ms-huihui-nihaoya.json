@@ -1,0 +1,13 @@
+{
+  "engine": "streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8",
+  "audio_duration_ms": 1530,
+  "cold_start_ms": 3,
+  "first_partial_ms": 255,
+  "final_latency_ms": 317,
+  "rtf": 0.20718954248366014,
+  "peak_rss_mb": 0,
+  "text": "你好",
+  "cer": 0.3333333333333333,
+  "model_size_mb": 162,
+  "sample_id": "huihui-nihaoya"
+}

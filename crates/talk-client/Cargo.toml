@@ -1,0 +1,20 @@
+[package]
+name = "talk-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+talk-audio = { path = "../talk-audio" }
+talk-core = { path = "../talk-core" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

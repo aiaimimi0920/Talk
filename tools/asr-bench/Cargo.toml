@@ -1,0 +1,17 @@
+[package]
+name = "asr-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+hound.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+talk-client = { path = "../../crates/talk-client" }
+talk-core = { path = "../../crates/talk-core" }
+tokio.workspace = true
+tokio-tungstenite.workspace = true

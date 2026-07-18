@@ -1,0 +1,66 @@
+voice_mode = "dictate"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[desktop.shortcuts]
+translate_shortcut = "RightAlt+/"
+ask_shortcut = "RightAlt+Space"
+
+[audio]
+backend = "native_windows"
+max_recording_seconds = 90
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk/audio"
+
+[provider]
+kind = "openai_compatible"
+transcription_transport = "chat_completions_audio_input"
+audio_transcriptions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+chat_completions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+transcription_model = "qwen3-asr-flash"
+chat_model = "qwen3.7-plus"
+api_key_env = "TALK_PROVIDER_API_KEY"
+
+[output]
+mode = "clipboard_paste"
+restore_clipboard = true
+clipboard_backend = "native_windows"
+
+[logging]
+dir = ".runtime/talk/logs"
+
+[speculative]
+enabled = true
+local_asr = "streaming_service"
+cloud_correction = "provider_text_processor"
+max_patch_age_ms = 2000
+max_auto_patch_edit_ratio = 0.25
+
+[speculative.streaming_service]
+endpoint = "ws://127.0.0.1:53171/asr"
+sample_rate_hz = 16000
+channels = 1
+connect_timeout_ms = 1000
+idle_timeout_ms = 3000
+final_timeout_ms = 7000
+
+# Optional: uncomment this block to override the packaged model auto-discovery.
+# If .runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms is installed,
+# Talk auto-starts the packaged daemon in sherpa-online mode; otherwise it keeps
+# the daemon's dry-run fallback for model-less smoke tests.
+#
+# [speculative.streaming_service.local_daemon]
+# mode = "sherpa-online"
+# model_family = "transducer"
+# model = "zipformer-zh-en-punct-int8-480ms"
+# tokens = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/tokens.txt"
+# encoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/encoder.int8.onnx"
+# decoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/decoder.onnx"
+# joiner = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/joiner.int8.onnx"
+# provider = "cpu"
+# num_threads = 2
+# sample_rate_hz = 16000
+# decoding_method = "greedy_search"

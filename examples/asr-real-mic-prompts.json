@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "sampleId": "short-search-001",
+      "referenceText": "你好呀",
+      "captureSeconds": 2
+    },
+    {
+      "sampleId": "mixed-english-001",
+      "referenceText": "打开 Talk 的 local first ASR 测试",
+      "captureSeconds": 5
+    },
+    {
+      "sampleId": "punctuation-001",
+      "referenceText": "今天下午三点开会，请提醒我准备资料。",
+      "captureSeconds": 5
+    },
+    {
+      "sampleId": "natural-noise-001",
+      "referenceText": "这是一段普通语音输入测试，背景里可能会有一点噪音。",
+      "captureSeconds": 6
+    }
+  ]
+}

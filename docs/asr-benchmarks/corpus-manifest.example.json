@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "sampleId": "short-search-001",
+      "audioWav": "short-search-001-16k-mono-s16.wav",
+      "referenceText": "你好呀"
+    },
+    {
+      "sampleId": "mixed-english-001",
+      "audioWav": "mixed-english-001-16k-mono-s16.wav",
+      "referenceText": "打开 Talk 的 local first ASR 测试"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 60
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk/audio"
+
+[provider]
+kind = "mock"
+mock_transcript = "hello from talk"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+clipboard_backend = "fallback"
+
+[logging]
+dir = ".runtime/talk/logs"

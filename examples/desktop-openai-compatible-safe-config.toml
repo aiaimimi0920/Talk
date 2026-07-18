@@ -1,0 +1,31 @@
+# Recommended safe Talk desktop config for validating a real OpenAI-compatible
+# provider path without touching the microphone or foreground clipboard.
+
+voice_mode = "command"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 10
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-openai-safe/audio"
+
+[provider]
+kind = "openai_compatible"
+audio_transcriptions_endpoint = "http://127.0.0.1:4200/v1/audio/transcriptions"
+chat_completions_endpoint = "http://127.0.0.1:4200/v1/chat/completions"
+transcription_model = "gpt-4o-mini-transcribe"
+chat_model = "gpt-4o-mini"
+api_key_env = "TALK_PROVIDER_API_KEY"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+clipboard_backend = "fallback"
+
+[logging]
+dir = ".runtime/talk-openai-safe/logs"

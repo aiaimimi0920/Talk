@@ -1,0 +1,16 @@
+[package]
+name = "talk-local-asr-sherpa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
+tokio.workspace = true
+tokio-tungstenite.workspace = true

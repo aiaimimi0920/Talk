@@ -1,0 +1,45 @@
+# Recommended live desktop config for Typeless-style hotkey conversation through
+# Qwen ASR + Qwen chat on DashScope's OpenAI-compatible endpoint family.
+
+voice_mode = "dictate"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[desktop.shortcuts]
+translate_shortcut = "RightAlt+/"
+ask_shortcut = "RightAlt+Space"
+
+[audio]
+backend = "native_windows"
+# Optional: pin a specific Windows input endpoint instead of the current default device.
+# input_device = "Virtual Mic"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-qwen-live/audio"
+
+[provider]
+kind = "openai_compatible"
+transcription_transport = "chat_completions_audio_input"
+audio_transcriptions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+chat_completions_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+transcription_model = "qwen3-asr-flash"
+chat_model = "qwen3.7-plus"
+api_key_env = "TALK_PROVIDER_API_KEY"
+
+[output]
+mode = "clipboard_paste"
+restore_clipboard = true
+clipboard_backend = "native_windows"
+
+[logging]
+dir = ".runtime/talk-qwen-live/logs"
+
+[speculative]
+enabled = false
+local_asr = "mock"
+cloud_correction = "disabled"
+max_patch_age_ms = 2000
+max_auto_patch_edit_ratio = 0.25

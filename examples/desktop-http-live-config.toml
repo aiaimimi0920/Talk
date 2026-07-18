@@ -1,0 +1,33 @@
+# Live provider-backed desktop config for Typeless/OpenLess-style use on
+# Windows. This path uses the real microphone and real clipboard paste path.
+
+voice_mode = "dictate"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[desktop.shortcuts]
+translate_shortcut = "RightAlt+/"
+ask_shortcut = "RightAlt+Space"
+
+[audio]
+backend = "native_windows"
+# Optional: pin a specific Windows input endpoint instead of the current default device.
+# input_device = "Virtual Mic"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk-http-live/audio"
+
+[provider]
+kind = "http"
+endpoint = "http://127.0.0.1:18080/provider"
+
+[output]
+mode = "clipboard_paste"
+restore_clipboard = true
+clipboard_backend = "native_windows"
+
+[logging]
+dir = ".runtime/talk-http-live/logs"
