@@ -7,6 +7,30 @@ $summaryValidatorScriptPath = Join-Path (Split-Path $here -Parent) 'Test-TalkRel
 . $summaryValidatorScriptPath
 
 Describe 'Publish-TalkRelease helpers' {
+    It 'publishes a product profile as exactly Talk.exe and talk.toml' {
+        $tempRoot = Join-Path $env:TEMP ('talk-release-product-profile-' + [guid]::NewGuid().ToString())
+        $releaseRoot = Join-Path $tempRoot 'release-root'
+        New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
+        try {
+            $result = Publish-TalkRelease `
+                -VersionId 'talk-product-profile-red' `
+                -ReleaseRoot $releaseRoot `
+                -ProductProfile `
+                -SkipVerification `
+                -SkipBuild `
+                -SkipSmoke `
+                -SkipNativePreflight `
+                -SkipNativeReadiness
+
+            $relativeFiles = @(Get-ChildItem -LiteralPath $result.DestinationDir -Recurse -File |
+                ForEach-Object { $_.FullName.Substring($result.DestinationDir.Length).TrimStart('\\') } |
+                Sort-Object)
+            $relativeFiles | Should Be @('Talk.exe', 'talk.toml')
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'resolves a standalone Talk checkout as the release repository root' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('talk-release-standalone-' + [guid]::NewGuid().ToString('N'))
         $standaloneRoot = Join-Path $tempRoot 'Talk'
