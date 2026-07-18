@@ -38,13 +38,16 @@ jobs:
         shell: powershell
         run: |
           $cacheRoot = Join-Path $PWD 'target\sherpa-onnx-prebuilt'
-          $sharedCache = Get-ChildItem -LiteralPath $cacheRoot -Directory -Filter 'sherpa-onnx-v*-win-x64-shared-MT-Release-lib' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -ne $sharedCache) {
-            $nativeLibrary = Join-Path $sharedCache.FullName 'lib\sherpa-onnx-c-api.lib'
-            if (-not (Test-Path -LiteralPath $nativeLibrary -PathType Leaf)) {
+          $nativeLibrary = Get-ChildItem -LiteralPath $cacheRoot -File -Recurse -Filter 'sherpa-onnx-c-api.lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $nativeLibrary) {
+            if (Test-Path -LiteralPath $cacheRoot) {
               Remove-Item -LiteralPath (Join-Path $PWD 'target\sherpa-onnx-prebuilt') -Recurse -Force
-              Write-Host 'Removed incomplete sherpa-onnx-prebuilt cache; Cargo will re-extract it.'
             }
+            cargo clean -p sherpa-onnx-sys
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to invalidate the sherpa-onnx-sys build-script cache: $LASTEXITCODE"
+            }
+            Write-Host 'Invalidated incomplete sherpa native cache; Cargo will download or re-extract it.'
           }
 
       - name: Install Pester
