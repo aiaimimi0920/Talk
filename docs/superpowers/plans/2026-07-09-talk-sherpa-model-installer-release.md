@@ -186,17 +186,32 @@ Expected: manifest validation exits 0 and all three file checks return `True`.
 
 ## Task 5: Next development milestone after this release
 
-- [ ] **Step 1: Install the recommended real model**
+- [x] **Step 1: Install the recommended real model**
 
 Run the installer against `zipformer-zh-en-punct-int8-480ms` from either online download or a pre-downloaded archive.
 
-- [ ] **Step 2: Run a real local ASR daemon probe**
+Completed 2026-07-19. The installed model was validated under
+`.runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms` with
+`Install-TalkSherpaModel.ps1`; the validation result was `Valid=True`.
+
+- [x] **Step 2: Run a real local ASR daemon probe**
 
 Start `.internal\talk-local-asr-sherpa.exe` in `sherpa-online` mode using the generated snippet's model paths.
 
-- [ ] **Step 3: Benchmark real speech**
+Completed 2026-07-19. The real-microphone corpus benchmark started the local
+streaming daemon for both Zipformer and Paraformer and produced per-sample
+reports under `.runtime/asr-bench/real-mic-corpus/reports-real-r2`.
+
+- [x] **Step 3: Benchmark real speech**
 
 Use `Talk/tools/asr-bench` and a short microphone recording set to record latency, RTF, memory, and rough recognition quality for the recommended model.
+
+Completed 2026-07-19. Four real microphone samples were benchmarked with
+Zipformer, Paraformer, and the Qwen cloud baseline. The comparison records
+latency, RTF, CER, and model size. `peak_rss_mb` is currently `0` for the
+external streaming-daemon transport because daemon RSS is not sampled by the
+benchmark process; this limitation is retained explicitly in the evidence
+rather than treated as a measured non-zero memory value.
 
 ## Self-review
 

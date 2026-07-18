@@ -167,7 +167,7 @@ This validates the real local inference path. It is not a final accuracy
 measurement because the source was synthetic TTS and the target phrase was
 `你好呀`.
 
-- [ ] **Step 4: Benchmark real human speech WAVs**
+- [x] **Step 4: Benchmark real human speech WAVs**
 
 Use the packaged/source recorder helper to create real microphone samples:
 
@@ -423,21 +423,42 @@ requires a present `record-only-status.json` to be ready and to match the curren
 the same-corpus benchmark. Missing status files remain non-blocking so older or
 manually assembled corpus manifests can still be benchmarked.
 
-- [ ] **Step 1: Benchmark Zipformer**
+Completed 2026-07-19. The normalized corpus manifest contains four genuine
+microphone recordings: `short-search-001`, `mixed-english-001`,
+`punctuation-001`, and `natural-noise-001`. The recorder validates the emitted
+artifact header as 16 kHz, mono, 16-bit PCM.
+
+- [x] **Step 1: Benchmark Zipformer**
 
 Measure `zipformer-zh-en-punct-int8-480ms` on real short Chinese dictation WAVs.
 
-- [ ] **Step 2: Benchmark Paraformer**
+Completed 2026-07-19. The same-corpus report contains four Zipformer samples
+with aggregated CER, first-partial latency, final latency, RTF, and model size.
+
+- [x] **Step 2: Benchmark Paraformer**
 
 Measure the larger bilingual Paraformer model with the same WAV set and JSON schema.
 
-- [ ] **Step 3: Compare against cloud-only baseline**
+Completed 2026-07-19. The same four sample IDs were benchmarked with the
+Paraformer model and included in `asr-model-comparison.json`.
+
+- [x] **Step 3: Compare against cloud-only baseline**
 
 Use the same utterances to compare local-first latency against the current cloud provider flow.
 
-- [ ] **Step 4: Lock the default**
+Completed 2026-07-19. The Qwen `qwen3-asr-flash` cloud baseline covers the same
+four sample IDs and passes the strict selector's shared-corpus checks.
+
+- [x] **Step 4: Lock the default**
 
 Choose the default model by first partial latency, final latency, RTF, memory footprint, Chinese CER, and packaging size. Keep alternatives configurable rather than hard-coded by process name or host app.
+
+Completed 2026-07-19. Strict evidence selection chose
+`zipformer-zh-en-punct-int8-480ms`; the result was applied to the ignored
+runtime desktop configuration copy at
+`.runtime/asr-bench/real-mic-corpus/talk-desktop-default-locked.toml`.
+The packaged release keeps the same Zipformer model as its local ASR
+auto-discovery default while retaining Paraformer as an installable option.
 
 After installing the candidate models, prefer the end-to-end real microphone
 workflow:
