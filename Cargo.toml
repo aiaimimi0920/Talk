@@ -28,6 +28,7 @@ hound = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "1"
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time", "io-util", "net"] }
@@ -36,3 +37,4 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

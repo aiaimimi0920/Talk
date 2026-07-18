@@ -13,6 +13,7 @@ anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 talk-audio = { path = "../talk-audio" }
 talk-client = { path = "../talk-client" }
 talk-core = { path = "../talk-core" }
@@ -21,6 +22,7 @@ talk-insert = { path = "../talk-insert" }
 talk-runtime = { path = "../talk-runtime" }
 tokio.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 uiautomation = { version = "0.25.0", default-features = false, features = ["input", "pattern"] }

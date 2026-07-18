@@ -1,3 +1,11 @@
+mod product_payload;
+
+pub use product_payload::{
+    build_embedded_runtime_payload, extract_embedded_runtime_payload,
+    parse_embedded_runtime_payload, EmbeddedRuntimePayload, EmbeddedRuntimePayloadFile,
+    EmbeddedRuntimePayloadSource,
+};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
