@@ -342,6 +342,68 @@ function Get-TalkAsrCorpusRecorderProbeSignal {
     $ProbeReport.audio.signal
 }
 
+function Read-TalkAsrCorpusRecorderPcmWavInfo {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $reader = New-Object System.IO.BinaryReader($stream, [System.Text.Encoding]::ASCII)
+        try {
+            if ($stream.Length -lt 12) {
+                throw "Talk ASR corpus recorder WAV is too short: $Path"
+            }
+            $riff = [System.Text.Encoding]::ASCII.GetString($reader.ReadBytes(4))
+            $null = $reader.ReadUInt32()
+            $wave = [System.Text.Encoding]::ASCII.GetString($reader.ReadBytes(4))
+            if ($riff -ne 'RIFF' -or $wave -ne 'WAVE') {
+                throw "Talk ASR corpus recorder artifact is not a RIFF/WAVE file: $Path"
+            }
+
+            $format = $null
+            while (($stream.Position + 8) -le $stream.Length) {
+                $chunkId = [System.Text.Encoding]::ASCII.GetString($reader.ReadBytes(4))
+                $chunkSize = [uint32]$reader.ReadUInt32()
+                $chunkDataStart = [int64]$stream.Position
+                $chunkDataEnd = $chunkDataStart + [int64]$chunkSize
+                if ($chunkDataEnd -gt $stream.Length) {
+                    throw "Talk ASR corpus recorder WAV chunk [$chunkId] exceeds file length: $Path"
+                }
+
+                if ($chunkId -eq 'fmt ') {
+                    if ($chunkSize -lt 16) {
+                        throw "Talk ASR corpus recorder WAV fmt chunk is too short: $Path"
+                    }
+                    $format = [pscustomobject]@{
+                        AudioFormat = [int]$reader.ReadUInt16()
+                        Channels = [int]$reader.ReadUInt16()
+                        SampleRateHz = [int]$reader.ReadUInt32()
+                        ByteRate = [int]$reader.ReadUInt32()
+                        BlockAlign = [int]$reader.ReadUInt16()
+                        BitsPerSample = [int]$reader.ReadUInt16()
+                    }
+                }
+
+                $stream.Position = $chunkDataEnd
+                if (($chunkSize % 2) -eq 1 -and $stream.Position -lt $stream.Length) {
+                    $stream.Position += 1
+                }
+            }
+
+            if ($null -eq $format) {
+                throw "Talk ASR corpus recorder WAV is missing a fmt chunk: $Path"
+            }
+            if ($format.AudioFormat -ne 1) {
+                throw "Talk ASR corpus recorder expected PCM WAV, got audio format $($format.AudioFormat)"
+            }
+            $format
+        } finally {
+            $reader.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 function Copy-TalkAsrCorpusRecorderProbeArtifact {
     param(
         [Parameter(Mandatory = $true)]$ProbeReport,
@@ -354,11 +416,15 @@ function Copy-TalkAsrCorpusRecorderProbeArtifact {
     if ([string]::IsNullOrWhiteSpace($artifactPath) -or -not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
         throw "Talk ASR corpus recorder probe artifact does not exist: $artifactPath"
     }
-    if ([int]$signal.sampleRateHz -ne 16000) {
-        throw "Talk ASR corpus recorder expected 16kHz WAV, got $($signal.sampleRateHz)"
+    $wavInfo = Read-TalkAsrCorpusRecorderPcmWavInfo -Path $artifactPath
+    if ($wavInfo.SampleRateHz -ne 16000) {
+        throw "Talk ASR corpus recorder expected 16kHz WAV, got $($wavInfo.SampleRateHz)"
     }
-    if ([int]$signal.channels -ne 1) {
-        throw "Talk ASR corpus recorder expected mono WAV, got $($signal.channels) channels"
+    if ($wavInfo.Channels -ne 1) {
+        throw "Talk ASR corpus recorder expected mono WAV, got $($wavInfo.Channels) channels"
+    }
+    if ($wavInfo.BitsPerSample -ne 16) {
+        throw "Talk ASR corpus recorder expected 16-bit PCM WAV, got $($wavInfo.BitsPerSample)-bit"
     }
     if ((-not $AllowSilent) -and [bool]$signal.silent) {
         throw "Talk ASR corpus recorder captured silence for sample [$($Sample.SampleId)]"

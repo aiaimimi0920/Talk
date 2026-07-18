@@ -4,10 +4,54 @@ $scriptPath = Join-Path $scriptRoot 'Invoke-TalkAsrCorpusRecorder.ps1'
 
 . $scriptPath
 
+function Write-TestTalkPcmWav {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$SampleRateHz = 16000,
+        [int]$Channels = 1,
+        [int]$DurationSeconds = 1
+    )
+
+    $sampleCount = $SampleRateHz * $DurationSeconds
+    $bitsPerSample = 16
+    $blockAlign = $Channels * ($bitsPerSample / 8)
+    $dataSize = $sampleCount * $blockAlign
+    $riffSize = 36 + $dataSize
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+    try {
+        $writer = New-Object System.IO.BinaryWriter($stream, [System.Text.Encoding]::ASCII)
+        try {
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+            $writer.Write([int]$riffSize)
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVE'))
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('fmt '))
+            $writer.Write([int]16)
+            $writer.Write([int16]1)
+            $writer.Write([int16]$Channels)
+            $writer.Write([int]$SampleRateHz)
+            $writer.Write([int]($SampleRateHz * $blockAlign))
+            $writer.Write([int16]$blockAlign)
+            $writer.Write([int16]$bitsPerSample)
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+            $writer.Write([int]$dataSize)
+            for ($index = 0; $index -lt ($sampleCount * $Channels); $index += 1) {
+                $writer.Write([int16]0)
+            }
+        } finally {
+            $writer.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 Describe 'Invoke-TalkAsrCorpusRecorder helpers' {
     It 'loads recording prompts with per-sample capture seconds' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-prompts-' + [guid]::NewGuid().ToString())
-        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+            New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $promptPath = Join-Path $tempRoot 'prompts.json'
             '{"schemaVersion":1,"samples":[{"sampleId":"short-search-001","referenceText":"你好呀","captureSeconds":2}]}' |
@@ -107,7 +151,7 @@ Describe 'Invoke-TalkAsrCorpusRecorder helpers' {
                 Set-Content -LiteralPath $promptPath -Encoding UTF8
 
             $sourceWav = Join-Path $tempRoot 'captured.wav'
-            Set-Content -LiteralPath $sourceWav -Value 'fake wav bytes' -Encoding ASCII
+            Write-TestTalkPcmWav -Path $sourceWav
             $probeCalls = New-Object System.Collections.Generic.List[object]
             $probeInvoker = {
                 param($Plan, $Sample)
@@ -148,6 +192,50 @@ Describe 'Invoke-TalkAsrCorpusRecorder helpers' {
             $manifest.samples[0].sampleId | Should Be 'short-search-001'
             $manifest.samples[0].audioWav | Should Be 'short-search-001-16k-mono-s16.wav'
             $manifest.samples[0].referenceText | Should Be '你好呀'
+            $result.Recordings[0].Peak | Should Be 0.25
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'validates the normalized artifact instead of native source signal metadata' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-normalized-artifact-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            '{"schemaVersion":1,"samples":[{"sampleId":"native-rate-001","referenceText":"你好呀","captureSeconds":1}]}' |
+                Set-Content -LiteralPath $promptPath -Encoding UTF8
+
+            $sourceWav = Join-Path $tempRoot 'captured.wav'
+            Write-TestTalkPcmWav -Path $sourceWav -SampleRateHz 16000 -Channels 1
+            $probeInvoker = {
+                param($Plan, $Sample)
+                [pscustomobject]@{
+                    audio = [pscustomobject]@{
+                        signal = [pscustomobject]@{
+                            artifactPath = $sourceWav
+                            sampleRateHz = 48000
+                            channels = 2
+                            durationSeconds = 1.0
+                            peak = 0.25
+                            rms = 0.10
+                            silent = $false
+                        }
+                    }
+                }
+            }
+
+            $result = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -CountdownSeconds 0 `
+                -ProbeInvoker $probeInvoker `
+                -PassThru
+
+            Test-Path -LiteralPath (Join-Path $outputRoot 'native-rate-001-16k-mono-s16.wav') | Should Be $true
             $result.Recordings[0].Peak | Should Be 0.25
         }
         finally {
