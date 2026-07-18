@@ -27,6 +27,19 @@ jobs:
         with:
           workspaces: .
 
+      - name: Repair incomplete sherpa native cache
+        shell: powershell
+        run: |
+          $cacheRoot = Join-Path $PWD 'target\sherpa-onnx-prebuilt'
+          $sharedCache = Get-ChildItem -LiteralPath $cacheRoot -Directory -Filter 'sherpa-onnx-v*-win-x64-shared-MT-Release-lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -ne $sharedCache) {
+            $nativeLibrary = Join-Path $sharedCache.FullName 'lib\sherpa-onnx-c-api.lib'
+            if (-not (Test-Path -LiteralPath $nativeLibrary -PathType Leaf)) {
+              Remove-Item -LiteralPath (Join-Path $PWD 'target\sherpa-onnx-prebuilt') -Recurse -Force
+              Write-Host 'Removed incomplete sherpa-onnx-prebuilt cache; Cargo will re-extract it.'
+            }
+          }
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
