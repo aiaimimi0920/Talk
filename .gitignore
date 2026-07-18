@@ -1,6 +1,6 @@
 target/
 .runtime/
-release/
+/release/
 
 *.log
 tmp-*

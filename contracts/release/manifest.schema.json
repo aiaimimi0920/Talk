@@ -1,0 +1,554 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/talk/contracts/release/manifest.schema.json",
+  "title": "Talk Desktop Release Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "app",
+    "sourceProject",
+    "versionId",
+    "builtAt",
+    "profile",
+    "target",
+    "repoRoot",
+    "releaseRoot",
+    "destination",
+    "commands",
+    "exes",
+    "supportFiles",
+    "buildInfo",
+    "buildLogs",
+    "desktopSmoke",
+    "nativePreflight",
+    "nativeReadiness",
+    "artifacts",
+    "checksums"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2
+    },
+    "app": {
+      "type": "string",
+      "const": "Talk"
+    },
+    "sourceProject": {
+      "type": "string",
+      "const": "Talk"
+    },
+    "versionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "builtAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repoRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "destination": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/commandRecord"
+      }
+    },
+    "exes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fileRecord"
+      }
+    },
+    "supportFiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/supportFileRecord"
+      }
+    },
+    "buildInfo": {
+      "$ref": "#/$defs/buildInfoRecord"
+    },
+    "buildLogs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/buildLogRecord"
+      }
+    },
+    "desktopSmoke": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/desktopSmokeRecord"
+      }
+    },
+    "nativePreflight": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nativePreflightRecord"
+      }
+    },
+    "nativeReadiness": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/nativeReadinessRecord"
+        }
+      ]
+    },
+    "artifacts": {
+      "type": "array"
+    },
+    "checksums": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "commandRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "display",
+        "workingDirectory"
+      ],
+      "properties": {
+        "display": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "fileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "buildInfoRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "build-info"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "supportFileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "buildLogRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "build-log"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "desktopSmokeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "binaryPath",
+        "configPath",
+        "primaryConfigPath",
+        "secondaryConfigPath",
+        "logPath",
+        "status",
+        "dialogText",
+        "statusKind",
+        "statusSummary",
+        "statusFields",
+        "statusSnapshot",
+        "beforeReloadDialogText",
+        "beforeReloadStatusKind",
+        "beforeReloadStatusSummary",
+        "beforeReloadStatusFields",
+        "beforeReloadStatusSnapshot",
+        "afterReloadDialogText",
+        "afterReloadStatusKind",
+        "afterReloadStatusSummary",
+        "afterReloadStatusFields",
+        "afterReloadStatusSnapshot"
+      ],
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binaryPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primaryConfigPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secondaryConfigPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "logPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dialogText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusFields": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "statusSnapshot": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "beforeReloadDialogText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "beforeReloadStatusKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "beforeReloadStatusSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "beforeReloadStatusFields": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "beforeReloadStatusSnapshot": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "afterReloadDialogText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "afterReloadStatusKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "afterReloadStatusSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "afterReloadStatusFields": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "afterReloadStatusSnapshot": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        }
+      }
+    },
+    "nativePreflightRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "configPath",
+        "evidencePath",
+        "expectedError",
+        "exitCode",
+        "outputText"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidencePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedError": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "outputText": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nativeReadinessRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "configPath",
+        "evidencePath",
+        "audio",
+        "clipboard",
+        "outputText"
+      ],
+      "properties": {
+        "configPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidencePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audio": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason",
+            "deviceName",
+            "defaultSampleRateHz",
+            "defaultChannels",
+            "sampleFormat"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "deviceName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "defaultSampleRateHz": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "defaultChannels": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "sampleFormat": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "clipboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "outputText": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

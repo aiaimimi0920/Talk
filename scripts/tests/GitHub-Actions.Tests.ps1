@@ -70,4 +70,19 @@ Describe 'Talk GitHub Actions contracts' {
         $workflowText | Should Not Match 'sk-[A-Za-z0-9_-]{12,}'
         $workflowText | Should Not Match 'api_key\s*='
     }
+
+    It 'keeps release contract fixtures trackable while ignoring only the root release directory' {
+        $gitignore = Get-Content -LiteralPath (Join-Path $talkRoot '.gitignore') -Raw -Encoding UTF8
+        $gitignore | Should Match '(?m)^/release/$'
+        $gitignore | Should Not Match '(?m)^release/$'
+
+        foreach ($relativePath in @(
+            'contracts/release/examples/talk-release-manifest.json',
+            'contracts/release/examples/talk-release-summary.json',
+            'contracts/release/manifest.schema.json',
+            'contracts/release/summary.schema.json'
+        )) {
+            Test-Path -LiteralPath (Join-Path $talkRoot $relativePath) | Should Be $true
+        }
+    }
 }

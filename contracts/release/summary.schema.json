@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuro.local/talk/contracts/release/summary.schema.json",
+  "title": "Talk Desktop Release Summary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "app",
+    "sourceProject",
+    "versionId",
+    "builtAt",
+    "manifestSchemaVersion",
+    "manifestPath",
+    "buildInfoPath",
+    "checksumPath",
+    "binaries",
+    "verification",
+    "desktopSmoke",
+    "nativePreflight",
+    "nativeReadiness"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "app": {
+      "type": "string",
+      "const": "Talk"
+    },
+    "sourceProject": {
+      "type": "string",
+      "const": "Talk"
+    },
+    "versionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "builtAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "manifestSchemaVersion": {
+      "type": "integer",
+      "const": 2
+    },
+    "manifestPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "buildInfoPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checksumPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "binaries": {
+      "$ref": "#/$defs/binaries"
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "desktopSmoke": {
+      "$ref": "#/$defs/desktopSmoke"
+    },
+    "nativePreflight": {
+      "$ref": "#/$defs/nativePreflight"
+    },
+    "nativeReadiness": {
+      "$ref": "#/$defs/nativeReadiness"
+    }
+  },
+  "$defs": {
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "statusPhase": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "statusKind",
+        "statusSummary",
+        "snapshot"
+      ],
+      "properties": {
+        "statusKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        }
+      }
+    },
+    "binaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "talkPath",
+        "talkDesktopPath"
+      ],
+      "properties": {
+        "talkPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "talkDesktopPath": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skipped",
+        "commands"
+      ],
+      "properties": {
+        "skipped": {
+          "type": "boolean"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "desktopSmokeScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "status",
+        "statusKind",
+        "statusSummary",
+        "snapshot",
+        "beforeReload",
+        "afterReload"
+      ],
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statusSummary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/stringMap"
+            }
+          ]
+        },
+        "beforeReload": {
+          "$ref": "#/$defs/statusPhase"
+        },
+        "afterReload": {
+          "$ref": "#/$defs/statusPhase"
+        }
+      }
+    },
+    "desktopSmoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skipped",
+        "scenarioCount",
+        "scenarios"
+      ],
+      "properties": {
+        "skipped": {
+          "type": "boolean"
+        },
+        "scenarioCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/desktopSmokeScenario"
+          }
+        }
+      }
+    },
+    "nativePreflightCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "expectedError",
+        "exitCode",
+        "evidencePath"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedError": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "evidencePath": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nativePreflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skipped",
+        "checkCount",
+        "checks"
+      ],
+      "properties": {
+        "skipped": {
+          "type": "boolean"
+        },
+        "checkCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nativePreflightCheck"
+          }
+        }
+      }
+    },
+    "nativeReadiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skipped",
+        "evidencePath",
+        "audioStatus",
+        "audioReason",
+        "clipboardStatus",
+        "clipboardReason"
+      ],
+      "properties": {
+        "skipped": {
+          "type": "boolean"
+        },
+        "evidencePath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audioStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audioReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clipboardStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clipboardReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

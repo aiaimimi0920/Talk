@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 2,
+  "app": "Talk",
+  "sourceProject": "Talk",
+  "versionId": "desktop-shell-contract-v2",
+  "builtAt": "2026-07-05T04:00:00+08:00",
+  "profile": "release",
+  "target": "windows-x64",
+  "repoRoot": "C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro",
+  "releaseRoot": "C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro\\release\\Talk",
+  "destination": "C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro\\release\\Talk\\desktop-shell-contract-v2",
+  "commands": [
+    {
+      "display": "cargo test --manifest-path Talk/Cargo.toml --workspace",
+      "workingDirectory": "C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro"
+    }
+  ],
+  "exes": [
+    {
+      "kind": "exe",
+      "name": "talk-desktop.exe",
+      "path": "talk-desktop.exe",
+      "bytes": 202,
+      "sha256": "sha-talk-desktop"
+    }
+  ],
+  "supportFiles": [
+    {
+      "kind": "release-summary",
+      "path": "release-summary.json"
+    },
+    {
+      "kind": "desktop-config",
+      "path": "talk-desktop.toml"
+    },
+    {
+      "kind": "desktop-launcher",
+      "path": "Start-TalkDesktop.ps1"
+    }
+  ],
+  "buildInfo": {
+    "kind": "build-info",
+    "path": "BUILD_INFO.txt"
+  },
+  "buildLogs": [
+    {
+      "kind": "build-log",
+      "path": "logs\\talk-release-01.log"
+    }
+  ],
+  "desktopSmoke": [
+    {
+      "scenario": "native-unavailable-status",
+      "binaryPath": "C:\\Release\\talk-desktop.exe",
+      "configPath": "C:\\Talk\\.runtime\\native-status\\config.toml",
+      "primaryConfigPath": null,
+      "secondaryConfigPath": null,
+      "logPath": null,
+      "status": null,
+      "failureKind": null,
+      "failureSummary": null,
+      "failureEvidencePath": null,
+      "insertTargetDiagnosticPath": null,
+      "dialogText": "Current: Talk: native unavailable\nAudio backend: native_windows",
+      "statusKind": "native_unavailable",
+      "statusSummary": "current=Talk: native unavailable; audio_backend=native_windows; audio_backend_readiness=unavailable",
+      "statusFields": {
+        "Current": "Talk: native unavailable",
+        "Audio backend": "native_windows",
+        "Audio backend readiness": "unavailable"
+      },
+      "statusSnapshot": {
+        "current": "Talk: native unavailable",
+        "audioBackend": "native_windows",
+        "audioBackendReadiness": "unavailable"
+      },
+      "beforeReloadDialogText": null,
+      "beforeReloadStatusKind": null,
+      "beforeReloadStatusSummary": null,
+      "beforeReloadStatusFields": null,
+      "beforeReloadStatusSnapshot": null,
+      "afterReloadDialogText": null,
+      "afterReloadStatusKind": null,
+      "afterReloadStatusSummary": null,
+      "afterReloadStatusFields": null,
+      "afterReloadStatusSnapshot": null
+    },
+    {
+      "scenario": "broken-config-recovery",
+      "binaryPath": "C:\\Release\\talk-desktop.exe",
+      "configPath": "C:\\Talk\\.runtime\\broken-config\\config.toml",
+      "primaryConfigPath": null,
+      "secondaryConfigPath": null,
+      "logPath": "C:\\Talk\\.runtime\\broken-config\\session.json",
+      "status": "cancelled",
+      "failureKind": null,
+      "failureSummary": null,
+      "failureEvidencePath": null,
+      "insertTargetDiagnosticPath": null,
+      "dialogText": null,
+      "statusKind": null,
+      "statusSummary": null,
+      "statusFields": null,
+      "statusSnapshot": null,
+      "beforeReloadDialogText": "Current: Talk: config unavailable",
+      "beforeReloadStatusKind": "config_unavailable",
+      "beforeReloadStatusSummary": "current=Talk: config unavailable; hotkey=unconfigured",
+      "beforeReloadStatusFields": {
+        "Current": "Talk: config unavailable",
+        "Hotkey": "unconfigured"
+      },
+      "beforeReloadStatusSnapshot": {
+        "current": "Talk: config unavailable",
+        "hotkey": "unconfigured"
+      },
+      "afterReloadDialogText": "Current: Talk: idle",
+      "afterReloadStatusKind": "idle",
+      "afterReloadStatusSummary": "current=Talk: idle; hotkey=Ctrl+Alt+F22",
+      "afterReloadStatusFields": {
+        "Current": "Talk: idle",
+        "Hotkey": "Ctrl+Alt+F22"
+      },
+      "afterReloadStatusSnapshot": {
+        "current": "Talk: idle",
+        "hotkey": "Ctrl+Alt+F22"
+      }
+    }
+  ],
+  "nativePreflight": [
+    {
+      "name": "audio-native-disabled",
+      "configPath": "C:\\Talk\\.runtime\\native-preflight\\audio\\config.toml",
+      "evidencePath": "C:\\Talk\\.runtime\\native-preflight\\audio\\session.json",
+      "expectedError": "native_windows audio backend disabled by TALK_DISABLE_NATIVE_AUDIO",
+      "exitCode": 1,
+      "outputText": "Error: audio error"
+    }
+  ],
+  "nativeReadiness": {
+    "configPath": "C:\\Talk\\.runtime\\native-readiness\\config.toml",
+    "evidencePath": "C:\\Talk\\.runtime\\native-readiness\\readiness.json",
+    "audio": {
+      "status": "ready",
+      "reason": null,
+      "deviceName": "Microphone Array",
+      "defaultSampleRateHz": 48000,
+      "defaultChannels": 2,
+      "sampleFormat": "f32"
+    },
+    "clipboard": {
+      "status": "ready",
+      "reason": null
+    },
+    "outputText": "{\"app\":\"talk\",\"allReady\":true}"
+  },
+  "artifacts": [],
+  "checksums": "checksums.sha256"
+}

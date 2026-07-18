@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "app": "Talk",
+  "sourceProject": "Talk",
+  "versionId": "desktop-shell-contract-v2",
+  "builtAt": "2026-07-05T04:00:00+08:00",
+  "manifestSchemaVersion": 2,
+  "manifestPath": "manifest.json",
+  "buildInfoPath": "BUILD_INFO.txt",
+  "checksumPath": "checksums.sha256",
+  "binaries": {
+    "talkDesktopPath": "talk-desktop.exe"
+  },
+  "verification": {
+    "skipped": false,
+    "commands": [
+      "cargo test --manifest-path Talk/Cargo.toml --workspace"
+    ]
+  },
+  "desktopSmoke": {
+    "skipped": false,
+    "scenarioCount": 2,
+    "scenarios": [
+      {
+        "scenario": "native-unavailable-status",
+        "status": null,
+        "failureKind": null,
+        "failureSummary": null,
+        "failureEvidencePath": null,
+        "insertTargetDiagnosticPath": null,
+        "statusKind": "native_unavailable",
+        "statusSummary": "current=Talk: native unavailable; audio_backend=native_windows; audio_backend_readiness=unavailable",
+        "snapshot": {
+          "current": "Talk: native unavailable",
+          "audioBackend": "native_windows",
+          "audioBackendReadiness": "unavailable"
+        },
+        "beforeReload": null,
+        "afterReload": null
+      },
+      {
+        "scenario": "broken-config-recovery",
+        "status": "cancelled",
+        "failureKind": null,
+        "failureSummary": null,
+        "failureEvidencePath": null,
+        "insertTargetDiagnosticPath": null,
+        "statusKind": null,
+        "statusSummary": null,
+        "snapshot": null,
+        "beforeReload": {
+          "statusKind": "config_unavailable",
+          "statusSummary": "current=Talk: config unavailable; hotkey=unconfigured",
+          "snapshot": {
+            "current": "Talk: config unavailable",
+            "hotkey": "unconfigured"
+          }
+        },
+        "afterReload": {
+          "statusKind": "idle",
+          "statusSummary": "current=Talk: idle; hotkey=Ctrl+Alt+F22",
+          "snapshot": {
+            "current": "Talk: idle",
+            "hotkey": "Ctrl+Alt+F22"
+          }
+        }
+      }
+    ]
+  },
+  "nativePreflight": {
+    "skipped": false,
+    "checkCount": 1,
+    "checks": [
+      {
+        "name": "audio-native-disabled",
+        "expectedError": "native_windows audio backend disabled by TALK_DISABLE_NATIVE_AUDIO",
+        "exitCode": 1,
+        "evidencePath": "C:\\Talk\\.runtime\\native-preflight\\audio\\session.json"
+      }
+    ]
+  },
+  "nativeReadiness": {
+    "skipped": false,
+    "evidencePath": "C:\\Talk\\.runtime\\native-readiness\\readiness.json",
+    "audioStatus": "ready",
+    "audioReason": null,
+    "clipboardStatus": "ready",
+    "clipboardReason": null
+  }
+}
