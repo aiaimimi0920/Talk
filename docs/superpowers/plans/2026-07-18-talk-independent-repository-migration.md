@@ -284,7 +284,7 @@ Build a credential-free package under the permitted Talk release root with GUI/n
 - Create inside Talk: `.git/`
 - Track: repository source selected by `.gitignore`
 
-- [ ] **Step 1: Initialize `main` and inspect the candidate index**
+- [x] **Step 1: Initialize `main` and inspect the candidate index**
 
 ```powershell
 git init -b main
@@ -295,7 +295,7 @@ git diff --cached --stat
 
 Confirm `target`, `.runtime`, generated releases, model binaries, and credential files are absent.
 
-- [ ] **Step 2: Scan the exact staged content**
+- [x] **Step 2: Scan the exact staged content**
 
 Use `git grep --cached` and blob-size checks. Reject the commit if it contains:
 
@@ -305,7 +305,7 @@ Use `git grep --cached` and blob-size checks. Reject the commit if it contains:
 - files larger than GitHub's 100 MiB limit;
 - generated EXE/DLL/model archives.
 
-- [ ] **Step 3: Create the snapshot import commit**
+- [x] **Step 3: Create the snapshot import commit**
 
 ```powershell
 git commit -m "feat: import Talk standalone voice input app"
@@ -322,11 +322,11 @@ git remote add origin https://github.com/aiaimimi0920/Talk.git
 **Files:**
 - GitHub repository: `aiaimimi0920/Talk`
 
-- [ ] **Step 1: Read authenticated Hook settings**
+- [x] **Step 1: Read authenticated Hook settings**
 
 Use the supplied token only in the current PowerShell process to read Hook merge, Actions, and branch-protection settings. Do not print or persist the token.
 
-- [ ] **Step 2: Create the public repository**
+- [x] **Step 2: Create the public repository**
 
 Create through `POST /user/repos` with:
 
@@ -343,11 +343,11 @@ Create through `POST /user/repos` with:
 }
 ```
 
-- [ ] **Step 3: Mirror Hook repository settings**
+- [x] **Step 3: Mirror Hook repository settings**
 
 Apply Hook's merge settings, Actions policy, workflow permissions, default branch behavior, and any branch protection that exists and is supported by the account plan.
 
-- [ ] **Step 4: Push without credential persistence**
+- [x] **Step 4: Push without credential persistence**
 
 Use a process-local HTTP Authorization header for:
 
@@ -364,11 +364,11 @@ Verify `git remote -v` contains only the clean HTTPS URL afterward.
 - Replace parent index entries: `Talk/**` -> `160000 Talk`
 - Move Talk Git metadata under: `.git/modules/Talk`
 
-- [ ] **Step 1: Record the pushed Talk commit**
+- [x] **Step 1: Record the pushed Talk commit**
 
 Confirm local `Talk/main`, `origin/main`, and the GitHub API all resolve to the same SHA.
 
-- [ ] **Step 2: Replace parent tracked files with a gitlink**
+- [x] **Step 2: Replace parent tracked files with a gitlink**
 
 From the Neuro parent:
 
@@ -382,11 +382,11 @@ Add the Talk entry to `.gitmodules`, add a `160000` index entry at the pushed SH
 git submodule absorbgitdirs Talk
 ```
 
-- [ ] **Step 3: Verify Hook was untouched**
+- [x] **Step 3: Verify Hook was untouched**
 
 Compare Hook's worktree status, HEAD, remote, `.git` indirection, and parent gitlink to the pre-migration evidence. No Hook value may change.
 
-- [ ] **Step 4: Commit only the parent integration**
+- [x] **Step 4: Commit only the parent integration**
 
 Create a local parent commit containing only `.gitmodules` and the Talk directory-to-gitlink conversion:
 
@@ -404,7 +404,7 @@ Do not push the parent Neuro branch because it already contains unrelated unpush
 - GitHub Talk repository
 - Backup directory
 
-- [ ] **Step 1: Verify local standalone repository**
+- [x] **Step 1: Verify local standalone repository**
 
 ```powershell
 git -C Talk status --short --branch
@@ -412,7 +412,7 @@ git -C Talk remote -v
 git -C Talk fsck --full
 ```
 
-- [ ] **Step 2: Verify submodule shape**
+- [x] **Step 2: Verify submodule shape**
 
 ```powershell
 git ls-files -s Talk
@@ -422,14 +422,14 @@ git config --get-regexp '^submodule\.Talk\.'
 
 Expected: mode `160000`, matching SHA, clean Talk worktree, and clean HTTPS URL.
 
-- [ ] **Step 3: Verify GitHub and Actions**
+- [x] **Step 3: Verify GitHub and Actions**
 
 Use the public API to confirm repository visibility, default branch, workflow discovery, and the first workflow run conclusion. If the workflow is still running, poll until it completes.
 
-- [ ] **Step 4: Reconfirm recovery snapshot**
+- [x] **Step 4: Reconfirm recovery snapshot**
 
 Confirm the backup remains present with the previously verified file count and byte total. Do not delete or modify it.
 
-- [ ] **Step 5: Security closeout**
+- [x] **Step 5: Security closeout**
 
 Confirm no token appears in Git config, staged content, commit history, workflow files, or release config. Advise rotating the user-supplied GitHub token because it was shared in conversation.
