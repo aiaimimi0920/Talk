@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+mod credentials;
 mod loom_config;
 mod segmenter;
 mod speculative;
