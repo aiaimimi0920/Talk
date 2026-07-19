@@ -1834,6 +1834,40 @@ pub struct DesktopHudMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopHudGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub corner_radius: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopHudGeometryUpdatePlan {
+    pub reposition: bool,
+    pub reshape: bool,
+}
+
+pub fn desktop_hud_geometry_update_plan(
+    current: Option<DesktopHudGeometry>,
+    next: DesktopHudGeometry,
+) -> DesktopHudGeometryUpdatePlan {
+    let Some(current) = current else {
+        return DesktopHudGeometryUpdatePlan {
+            reposition: true,
+            reshape: true,
+        };
+    };
+    let reshape = current.width != next.width
+        || current.height != next.height
+        || current.corner_radius != next.corner_radius;
+    DesktopHudGeometryUpdatePlan {
+        reposition: reshape || current.x != next.x || current.y != next.y,
+        reshape,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopListeningHudAction {
     Cancel,
     Complete,

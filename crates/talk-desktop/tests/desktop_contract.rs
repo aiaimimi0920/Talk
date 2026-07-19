@@ -22,6 +22,7 @@ use talk_desktop::{
     desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
     desktop_hud_activation_policy, desktop_hud_audio_meter_model,
     desktop_hud_audio_meter_model_for_waveform, desktop_hud_metrics_for_view_model,
+    desktop_hud_geometry_update_plan,
     desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
     desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
     desktop_hud_view_model_for_listening_level,
@@ -58,7 +59,8 @@ use talk_desktop::{
     windows_hotkey_binding_registration_plan, ConfigAvailability, DesktopCopyPopupAction,
     DesktopCopyPopupMetrics, DesktopCopyPopupModel, DesktopCopyPopupPaneModel,
     DesktopDocumentRecorrectionDecision, DesktopHudMetrics, DesktopHudPresentation,
-    DesktopHudVisualState, DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
+    DesktopHudGeometry, DesktopHudGeometryUpdatePlan, DesktopHudVisualState,
+    DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
     DesktopListeningHudAction, DesktopLiveStreamingLocalSegmentPlan,
     DesktopLocalAsrDaemonLaunchPlan, DesktopModeDropdownEntry, DesktopModeDropdownModel,
     DesktopModeOutputPolicy, DesktopModeTextPane, DesktopModeTextPaneLayout,
@@ -78,6 +80,49 @@ use talk_desktop::{
     WindowsHotkeyBindingStrategy,
 };
 use talk_runtime::{RuntimePhase, SpeculativeRuntimeEvent};
+
+#[test]
+fn hud_geometry_update_does_nothing_when_geometry_is_unchanged() {
+    let current = DesktopHudGeometry {
+        x: 720,
+        y: 820,
+        width: 320,
+        height: 178,
+        corner_radius: 12,
+    };
+
+    assert_eq!(
+        desktop_hud_geometry_update_plan(Some(current), current),
+        DesktopHudGeometryUpdatePlan {
+            reposition: false,
+            reshape: false,
+        }
+    );
+}
+
+#[test]
+fn hud_geometry_update_reshapes_when_size_or_radius_changes() {
+    let current = DesktopHudGeometry {
+        x: 720,
+        y: 820,
+        width: 320,
+        height: 178,
+        corner_radius: 12,
+    };
+    let resized = DesktopHudGeometry {
+        height: 196,
+        corner_radius: 16,
+        ..current
+    };
+
+    assert_eq!(
+        desktop_hud_geometry_update_plan(Some(current), resized),
+        DesktopHudGeometryUpdatePlan {
+            reposition: true,
+            reshape: true,
+        }
+    );
+}
 
 #[test]
 fn hud_text_maps_runtime_phases_to_short_openless_style_messages() {
