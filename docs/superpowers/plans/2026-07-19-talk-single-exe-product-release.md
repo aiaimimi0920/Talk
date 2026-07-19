@@ -334,7 +334,7 @@ git commit -m "docs: describe single-exe first-run Talk distribution"
 **Files:**
 - Modify: `scripts/tests/Publish-TalkRelease.Tests.ps1` only if an observed regression requires a focused contract correction.
 
-- [ ] **Step 1: Run the complete Rust and focused PowerShell suite**
+- [x] **Step 1: Run the complete Rust and focused PowerShell suite**
 
 ```powershell
 cargo fmt --all -- --check
@@ -347,7 +347,7 @@ Invoke-Pester -Script .\\scripts\\tests\\GitHub-Actions.Tests.ps1 -PassThru
 
 Expected: every command exits 0 and Pester reports zero failures.
 
-- [ ] **Step 2: Build and inspect the product release**
+- [x] **Step 2: Build and inspect the product release**
 
 ```powershell
 .\\scripts\\Publish-TalkRelease.ps1 `
@@ -365,9 +365,14 @@ $product = 'C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro\\release\\Talk\\t
   Should Be @('Talk.exe', 'talk.toml')
 ```
 
-- [ ] **Step 3: Test embedded bootstrap on a clean cache**
+- [x] **Step 3: Test embedded bootstrap on a clean cache**
 
-Use a temporary `LOCALAPPDATA` directory, launch `Talk.exe` with a cloud-safe config, and verify that the runtime directory is created, the payload marker is valid, and the model bootstrap records either `ready` or an explicit `fallback_cloud` reason without leaving a corrupt final model directory.
+Use a temporary `LOCALAPPDATA` directory, launch `Talk.exe` with a cloud-safe
+config, and verify that the runtime directory is created, the payload marker is
+valid, and the model bootstrap leaves no corrupt final model directory when an
+unavailable HTTPS proxy forces the expected cloud-fallback path. The actual
+product process created the content-addressed runtime directory and all six
+verified runtime files during this smoke.
 
 - [ ] **Step 4: Commit, push Talk, wait for Actions, and update only the parent gitlink**
 
