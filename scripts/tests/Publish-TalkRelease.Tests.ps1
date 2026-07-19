@@ -31,6 +31,42 @@ Describe 'Publish-TalkRelease helpers' {
         }
     }
 
+    It 'embeds the five-member runtime payload into the product executable' {
+        $tempRoot = Join-Path $env:TEMP ('talk-release-payload-builder-' + [guid]::NewGuid().ToString())
+        $outputPath = Join-Path $tempRoot 'Talk.exe'
+        $sourceRoot = Join-Path $tempRoot 'sources'
+        New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+        try {
+            $basePath = Join-Path $sourceRoot 'talk-desktop.exe'
+            Set-Content -LiteralPath $basePath -Value 'base executable bytes' -Encoding ASCII
+            $payloadNames = @(
+                'talk-local-asr-sherpa.exe',
+                'sherpa-onnx-c-api.dll',
+                'sherpa-onnx-cxx-api.dll',
+                'onnxruntime.dll',
+                'onnxruntime_providers_shared.dll'
+            )
+            $payloadFiles = foreach ($name in $payloadNames) {
+                $path = Join-Path $sourceRoot $name
+                Set-Content -LiteralPath $path -Value $name -Encoding ASCII
+                [pscustomobject]@{ Name = $name; Path = $path }
+            }
+
+            $result = New-TalkEmbeddedRuntimeExecutable `
+                -BaseExecutablePath $basePath `
+                -PayloadFiles $payloadFiles `
+                -OutputPath $outputPath
+
+            $bytes = [System.IO.File]::ReadAllBytes($outputPath)
+            $magic = [System.Text.Encoding]::ASCII.GetBytes('TLPAY001')
+            $magicOffset = $bytes.Length - 60
+            $bytes[$magicOffset..($magicOffset + 7)] | Should Be $magic
+            $result.ArchiveSha256.Length | Should Be 64
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'resolves a standalone Talk checkout as the release repository root' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('talk-release-standalone-' + [guid]::NewGuid().ToString('N'))
         $standaloneRoot = Join-Path $tempRoot 'Talk'

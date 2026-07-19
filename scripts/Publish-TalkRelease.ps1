@@ -5,6 +5,8 @@ param(
     [string]$SmokeRoot,
     [string]$PackagedApiKey,
     [string]$PackagedApiKeyJsonPath,
+    [switch]$ProductProfile,
+    [switch]$EmitEvidence,
     [switch]$DisablePackagedApiKeyDiscovery,
     [switch]$SkipVerification,
     [switch]$SkipBuild,
@@ -360,10 +362,10 @@ connect_timeout_ms = 1000
 idle_timeout_ms = 3000
 final_timeout_ms = 7000
 
-# Optional: uncomment this block to override the packaged model auto-discovery.
-# If .runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms is installed,
-# Talk auto-starts the packaged daemon in sherpa-online mode; otherwise it keeps
-# the daemon's dry-run fallback for model-less smoke tests.
+# Talk downloads and verifies the evidence-selected Zipformer model on first
+# startup under %LOCALAPPDATA%\\Talk\\models\\sherpa-onnx when it is missing.
+# The local worker payload is embedded in Talk.exe and extracted automatically.
+# Optional: uncomment this block to override the model auto-discovery paths.
 #
 # [speculative.streaming_service.local_daemon]
 # mode = "sherpa-online"
@@ -1358,6 +1360,235 @@ function Invoke-TalkNativeWindowsPreflight {
     $results.ToArray()
 }
 
+function Write-TalkReleaseByteArray {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $Stream.Write($Bytes, 0, $Bytes.Length)
+}
+
+function New-TalkEmbeddedRuntimeExecutable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$BaseExecutablePath,
+        [Parameter(Mandatory = $true)][object[]]$PayloadFiles,
+        [Parameter(Mandatory = $true)][string]$OutputPath
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    $expectedNames = @(
+        'onnxruntime.dll',
+        'onnxruntime_providers_shared.dll',
+        'sherpa-onnx-c-api.dll',
+        'sherpa-onnx-cxx-api.dll',
+        'talk-local-asr-sherpa.exe'
+    )
+    $normalized = @($PayloadFiles | ForEach-Object {
+        $name = [string]$_.Name
+        $path = [System.IO.Path]::GetFullPath([string]$_.Path)
+        if ($name -notin $expectedNames) {
+            throw "Unexpected Talk product runtime payload member: $name"
+        }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Missing Talk product runtime payload file: $path"
+        }
+        [pscustomobject]@{ Name = $name; Path = $path }
+    } | Sort-Object Name)
+    $actualNames = @($normalized | Select-Object -ExpandProperty Name)
+    if (($actualNames -join '|') -ne (($expectedNames | Sort-Object) -join '|')) {
+        throw "Talk product runtime payload must contain exactly: $($expectedNames -join ', ')"
+    }
+
+    $archiveStream = New-Object System.IO.MemoryStream
+    try {
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $archiveStream,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $true
+        )
+        try {
+            foreach ($file in $normalized) {
+                $entry = $archive.CreateEntry($file.Name, [System.IO.Compression.CompressionLevel]::Optimal)
+                $entryStream = $entry.Open()
+                $sourceStream = [System.IO.File]::OpenRead($file.Path)
+                try {
+                    $sourceStream.CopyTo($entryStream)
+                } finally {
+                    $sourceStream.Dispose()
+                    $entryStream.Dispose()
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+        [byte[]]$archiveBytes = $archiveStream.ToArray()
+    } finally {
+        $archiveStream.Dispose()
+    }
+
+    $manifest = [ordered]@{
+        schemaVersion = 1
+        files = @($normalized | ForEach-Object {
+            [ordered]@{
+                path = $_.Name
+                sha256 = (Get-FileHash -LiteralPath $_.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        })
+    }
+    [byte[]]$manifestBytes = [System.Text.Encoding]::UTF8.GetBytes(
+        ($manifest | ConvertTo-Json -Compress -Depth 5)
+    )
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        [byte[]]$archiveHash = $sha256.ComputeHash($archiveBytes)
+    } finally {
+        $sha256.Dispose()
+    }
+
+    $resolvedOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
+    $outputDirectory = Split-Path -Parent $resolvedOutputPath
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+    $outputStream = [System.IO.File]::Create($resolvedOutputPath)
+    try {
+        [byte[]]$baseBytes = [System.IO.File]::ReadAllBytes(
+            [System.IO.Path]::GetFullPath($BaseExecutablePath)
+        )
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes $baseBytes
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes $archiveBytes
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes $manifestBytes
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes ([System.Text.Encoding]::ASCII.GetBytes('TLPAY001'))
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes ([System.BitConverter]::GetBytes([uint32]1))
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes ([System.BitConverter]::GetBytes([uint64]$archiveBytes.Length))
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes ([System.BitConverter]::GetBytes([uint64]$manifestBytes.Length))
+        Write-TalkReleaseByteArray -Stream $outputStream -Bytes $archiveHash
+    } finally {
+        $outputStream.Dispose()
+    }
+
+    [pscustomobject]@{
+        OutputPath = $resolvedOutputPath
+        ArchiveSha256 = ($archiveHash | ForEach-Object { $_.ToString('x2') }) -join ''
+        PayloadFiles = $normalized
+    }
+}
+
+function Publish-TalkProductRelease {
+    [CmdletBinding()]
+    param(
+        [string]$VersionId,
+        [string]$ReleaseRoot,
+        [string]$PackagedApiKey,
+        [string]$PackagedApiKeyJsonPath,
+        [switch]$DisablePackagedApiKeyDiscovery,
+        [switch]$EmitEvidence,
+        [switch]$SkipVerification,
+        [switch]$SkipBuild
+    )
+
+    $talkRepoRoot = Get-TalkRepoRoot
+    $repositoryContext = Resolve-TalkReleaseRepositoryContext -TalkRepoRoot $talkRepoRoot
+    $resolvedReleaseRoot = Resolve-TalkReleaseRoot -ReleaseRoot $ReleaseRoot
+    $resolvedVersionId = Resolve-TalkReleaseVersionId -VersionId $VersionId
+    $destinationDir = Join-Path $resolvedReleaseRoot $resolvedVersionId
+    $verificationSteps = Get-VerificationSteps `
+        -Skipped $SkipVerification.IsPresent `
+        -ManifestPath $repositoryContext.ManifestPath
+    $commandRecords = New-Object System.Collections.Generic.List[object]
+    if (-not $SkipVerification) {
+        foreach ($command in $verificationSteps) {
+            $commandRecords.Add((Invoke-PowerShellCommand `
+                -Command $command `
+                -WorkingDirectory $repositoryContext.WorkingDirectory)) | Out-Null
+        }
+    }
+    if (-not $SkipBuild) {
+        $commandRecords.Add((Invoke-PowerShellCommand `
+            -Command "cargo build --manifest-path $($repositoryContext.ManifestPath) --release -p talk-desktop -p talk-local-asr-sherpa" `
+            -WorkingDirectory $repositoryContext.WorkingDirectory)) | Out-Null
+    }
+
+    if (Test-Path -LiteralPath $destinationDir) {
+        Remove-Item -LiteralPath $destinationDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+
+    $desktopExe = Join-Path $talkRepoRoot 'target\release\talk-desktop.exe'
+    $workerExe = Join-Path $talkRepoRoot 'target\release\talk-local-asr-sherpa.exe'
+    $runtimeDllNames = @(
+        'sherpa-onnx-c-api.dll',
+        'sherpa-onnx-cxx-api.dll',
+        'onnxruntime.dll',
+        'onnxruntime_providers_shared.dll'
+    )
+    $runtimeDllSources = @(Resolve-TalkReleaseRuntimeDllSources `
+        -TalkRepoRoot $talkRepoRoot `
+        -DllNames $runtimeDllNames)
+    foreach ($requiredPath in @($desktopExe, $workerExe) + $runtimeDllSources) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "Missing Talk product release artifact: $requiredPath"
+        }
+    }
+
+    $payloadFiles = @(
+        [pscustomobject]@{ Name = 'talk-local-asr-sherpa.exe'; Path = $workerExe }
+        for ($index = 0; $index -lt $runtimeDllNames.Count; $index++) {
+            [pscustomobject]@{ Name = $runtimeDllNames[$index]; Path = $runtimeDllSources[$index] }
+        }
+    )
+    $embedded = New-TalkEmbeddedRuntimeExecutable `
+        -BaseExecutablePath $desktopExe `
+        -PayloadFiles $payloadFiles `
+        -OutputPath (Join-Path $destinationDir 'Talk.exe')
+
+    $configContent = New-TalkReleaseDesktopConfigContent
+    $resolvedPackagedApiKey = Resolve-TalkReleasePackagedApiKey `
+        -PackagedApiKey $PackagedApiKey `
+        -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath `
+        -ConfigText $configContent `
+        -DisableAutoDiscovery:$DisablePackagedApiKeyDiscovery
+    if (-not [string]::IsNullOrWhiteSpace($resolvedPackagedApiKey)) {
+        $configContent = New-TalkReleaseDesktopConfigContent -PackagedApiKey $resolvedPackagedApiKey
+    }
+    Write-Utf8NoBomText `
+        -Path (Join-Path $destinationDir 'talk.toml') `
+        -Content ($configContent.Trim() + [Environment]::NewLine)
+
+    $evidenceDir = $null
+    if ($EmitEvidence) {
+        $evidenceDir = Join-Path (Join-Path $resolvedReleaseRoot '_ci') $resolvedVersionId
+        if (Test-Path -LiteralPath $evidenceDir) {
+            Remove-Item -LiteralPath $evidenceDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+        $evidence = [ordered]@{
+            schemaVersion = 1
+            profile = 'product'
+            versionId = $resolvedVersionId
+            builtAt = (Get-Date -Format o)
+            productDirectory = $destinationDir
+            productFiles = @('Talk.exe', 'talk.toml')
+            embeddedRuntimeSha256 = $embedded.ArchiveSha256
+            commands = @($commandRecords.ToArray() | ForEach-Object { $_.Display })
+        }
+        Write-Utf8NoBomText `
+            -Path (Join-Path $evidenceDir 'product-evidence.json') `
+            -Content (($evidence | ConvertTo-Json -Depth 5) + [Environment]::NewLine)
+    }
+
+    [pscustomobject]@{
+        VersionId = $resolvedVersionId
+        Profile = 'product'
+        DestinationDir = $destinationDir
+        EvidenceDir = $evidenceDir
+        EmbeddedRuntimeSha256 = $embedded.ArchiveSha256
+        VerificationSkipped = $SkipVerification.IsPresent
+        BuildSkipped = $SkipBuild.IsPresent
+        CommandRecords = $commandRecords.ToArray()
+    }
+}
+
 function Publish-TalkRelease {
     param(
         [string]$VersionId,
@@ -1365,6 +1596,8 @@ function Publish-TalkRelease {
         [string]$SmokeRoot,
         [string]$PackagedApiKey,
         [string]$PackagedApiKeyJsonPath,
+        [switch]$ProductProfile,
+        [switch]$EmitEvidence,
         [switch]$DisablePackagedApiKeyDiscovery,
         [switch]$SkipVerification,
         [switch]$SkipBuild,
@@ -1372,6 +1605,18 @@ function Publish-TalkRelease {
         [switch]$SkipNativePreflight,
         [switch]$SkipNativeReadiness
     )
+
+    if ($ProductProfile) {
+        return Publish-TalkProductRelease `
+            -VersionId $VersionId `
+            -ReleaseRoot $ReleaseRoot `
+            -PackagedApiKey $PackagedApiKey `
+            -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath `
+            -DisablePackagedApiKeyDiscovery:$DisablePackagedApiKeyDiscovery `
+            -EmitEvidence:$EmitEvidence `
+            -SkipVerification:$SkipVerification `
+            -SkipBuild:$SkipBuild
+    }
 
     $talkRepoRoot = Get-TalkRepoRoot
     $repositoryContext = Resolve-TalkReleaseRepositoryContext -TalkRepoRoot $talkRepoRoot
@@ -1697,6 +1942,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -VersionId $VersionId `
         -ReleaseRoot $ReleaseRoot `
         -SmokeRoot $SmokeRoot `
+        -ProductProfile:$ProductProfile `
+        -EmitEvidence:$EmitEvidence `
         -DisablePackagedApiKeyDiscovery:$DisablePackagedApiKeyDiscovery `
         -SkipVerification:$SkipVerification `
         -SkipBuild:$SkipBuild `
