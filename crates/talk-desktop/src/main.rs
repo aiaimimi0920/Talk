@@ -47,9 +47,10 @@ mod windows_app {
         desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
         desktop_copy_popup_position, desktop_document_recorrection_session_decision,
         desktop_effective_streaming_asr_enabled, desktop_hud_activation_policy,
-        desktop_hud_geometry_update_plan, desktop_hud_metrics_for_view_model,
-        desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
-        desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
+        desktop_hud_detail_lifecycle, desktop_hud_geometry_update_plan,
+        desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
+        desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
+        desktop_hud_thinking_text_wave_offsets, desktop_hud_view_model_for_corrected_text,
         desktop_hud_view_model_for_listening_waveform_with_partial,
         desktop_hud_view_model_for_phase, desktop_insert_target_restore_requested,
         desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
@@ -196,6 +197,7 @@ mod windows_app {
     const HOTKEY_PENDING_HOLD_CANCEL_MESSAGE: u32 = WM_APP + 8;
     const CORRECTION_COPY_POPUP_MESSAGE: u32 = WM_APP + 9;
     const MODEL_BOOTSTRAP_MESSAGE: u32 = WM_APP + 10;
+    const CORRECTED_HUD_MESSAGE: u32 = WM_APP + 11;
     const TIMER_HIDE_HUD: usize = 1;
     const TIMER_SHORTCUT_HELP_HOLD: usize = 2;
     const TIMER_RECORDING_LEVEL: usize = 3;
@@ -296,6 +298,7 @@ mod windows_app {
         worker_generation: Option<u64>,
         pending_worker_error: Option<(u64, String)>,
         pending_copy_popup: Option<PendingCopyPopup>,
+        pending_corrected_hud: Option<PendingCorrectedHud>,
         pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
         local_asr_daemon: Option<ManagedLocalAsrDaemon>,
         local_asr_bootstrap_status: LocalAsrBootstrapStatus,
@@ -322,6 +325,11 @@ mod windows_app {
     struct PendingCopyPopup {
         generation: u64,
         model: DesktopCopyPopupModel,
+    }
+
+    struct PendingCorrectedHud {
+        generation: u64,
+        text: String,
     }
 
     struct SpeculativeCloudCorrectionJob {
@@ -598,6 +606,7 @@ mod windows_app {
             worker_generation: None,
             pending_worker_error: None,
             pending_copy_popup: None,
+            pending_corrected_hud: None,
             pending_hotkey_origin_insert_target: None,
             local_asr_daemon: None,
             local_asr_bootstrap_status: LocalAsrBootstrapStatus::NotStarted,
@@ -1674,6 +1683,10 @@ mod windows_app {
                 handle_correction_copy_popup(hwnd, wparam as u64);
                 0
             }
+            CORRECTED_HUD_MESSAGE => {
+                handle_corrected_hud(hwnd, wparam as u64);
+                0
+            }
             WM_DESTROY => {
                 unsafe {
                     KillTimer(hwnd, TIMER_SHORTCUT_HELP_HOLD);
@@ -2080,6 +2093,7 @@ mod windows_app {
                 anyhow::bail!("Talk desktop is already busy");
             }
             shared.pending_copy_popup = None;
+            shared.pending_corrected_hud = None;
             let Some(config) = shared.config.clone() else {
                 anyhow::bail!("Talk config is unavailable; fix and reload the config first");
             };
@@ -3126,6 +3140,7 @@ mod windows_app {
         let captured_insert_target_context_for_report = Arc::clone(&captured_insert_target_context);
         let paste_shortcut_env_restore_for_before_hook = Arc::clone(&paste_shortcut_env_restore);
         let paste_shortcut_env_restore_for_after_hook = Arc::clone(&paste_shortcut_env_restore);
+        let shared_for_before_hook = Arc::clone(&shared);
         runtime_handle.spawn(async move {
             let before_insert = move |insert_context: &talk_runtime::RuntimeInsertContext| {
                 if !insert_final_transcript_at_stop {
@@ -3159,6 +3174,21 @@ mod windows_app {
 
                 if insert_plan.directive == DesktopRuntimeInsertDirective::DryRunOnly {
                     return RuntimeInsertDirective::DryRunOnly;
+                }
+
+                if let Ok(mut shared) = shared_for_before_hook.lock() {
+                    shared.pending_corrected_hud = Some(PendingCorrectedHud {
+                        generation,
+                        text: insert_context.output_text.clone(),
+                    });
+                }
+                unsafe {
+                    let _ = SendMessageW(
+                        hwnd_value as HWND,
+                        CORRECTED_HUD_MESSAGE,
+                        generation as usize,
+                        0,
+                    );
                 }
 
                 if output_mode == OutputMode::ClipboardPaste
@@ -3494,6 +3524,9 @@ mod windows_app {
             if let Ok(mut shared) = shared.lock() {
                 match result {
                     Ok(report) => {
+                        if report.session.status() != talk_core::SessionStatus::Completed {
+                            shared.pending_corrected_hud = None;
+                        }
                         let captured_context = captured_insert_target_context_for_report
                             .lock()
                             .ok()
@@ -3617,6 +3650,7 @@ mod windows_app {
                         set_last_session(&mut shared, summary, detail);
                     }
                     Err(error) => {
+                        shared.pending_corrected_hud = None;
                         shared.pending_worker_error = Some((generation, error.to_string()));
                         set_last_session(&mut shared, "failed", Some(error.to_string()));
                     }
@@ -3671,7 +3705,7 @@ mod windows_app {
     }
 
     fn handle_worker_done(hwnd: HWND, generation: u64) {
-        let (unexpected_error, pending_copy_popup) = {
+        let (unexpected_error, pending_copy_popup, pending_corrected_hud) = {
             let state = match unsafe { get_window_state_mut(hwnd) } {
                 Ok(state) => state,
                 Err(_) => return,
@@ -3691,6 +3725,14 @@ mod windows_app {
                 }
                 None => None,
             };
+            let pending_corrected_hud = match shared.pending_corrected_hud.take() {
+                Some(pending) if pending.generation == generation => Some(pending),
+                Some(other) => {
+                    shared.pending_corrected_hud = Some(other);
+                    None
+                }
+                None => None,
+            };
             let unexpected_error = match shared.pending_worker_error.take() {
                 Some((error_generation, error)) if error_generation == generation => Some(error),
                 Some(other) => {
@@ -3699,7 +3741,7 @@ mod windows_app {
                 }
                 None => None,
             };
-            (unexpected_error, pending_copy_popup)
+            (unexpected_error, pending_copy_popup, pending_corrected_hud)
         };
 
         if unexpected_error.is_some() {
@@ -3708,12 +3750,43 @@ mod windows_app {
                 &compose_hud_message("Talk: failed", unexpected_error.as_deref()),
                 Some(1800),
             );
+        } else if pending_copy_popup.is_none() {
+            if let Some(corrected) = pending_corrected_hud {
+                let _ = show_hud_model(
+                    hwnd,
+                    desktop_hud_view_model_for_corrected_text(&corrected.text),
+                    Some(1800),
+                );
+            }
         }
         if let Some(popup) = pending_copy_popup {
             let _ = hide_hud(hwnd);
             let _ = show_copy_popup(hwnd, popup.model);
         }
         let _ = refresh_idle_tray_status(hwnd);
+    }
+
+    fn handle_corrected_hud(hwnd: HWND, generation: u64) {
+        let corrected_text = {
+            let state = match unsafe { get_window_state_mut(hwnd) } {
+                Ok(state) => state,
+                Err(_) => return,
+            };
+            let shared = state.shared.lock().expect("Talk desktop shared state");
+            shared
+                .pending_corrected_hud
+                .as_ref()
+                .filter(|pending| pending.generation == generation)
+                .map(|pending| pending.text.clone())
+        };
+
+        if let Some(corrected_text) = corrected_text {
+            let _ = show_hud_model(
+                hwnd,
+                desktop_hud_view_model_for_corrected_text(&corrected_text),
+                None,
+            );
+        }
     }
 
     fn handle_correction_copy_popup(hwnd: HWND, generation: u64) {
@@ -6529,7 +6602,7 @@ mod windows_app {
                 ) {
                     let partial_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
                     SelectObject(hdc, partial_font as _);
-                    SetTextColor(hdc, terminal_text_soft_color());
+                    SetTextColor(hdc, rgb(245, 190, 72));
                     let mut partial_rect = RECT {
                         left: partial_layout.text_rect.left,
                         top: partial_layout.text_rect.top,
@@ -6755,6 +6828,34 @@ mod windows_app {
                 },
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE,
             );
+
+            if let Some(detail) = model
+                .detail
+                .as_deref()
+                .filter(|detail| !detail.trim().is_empty())
+            {
+                let detail_font = create_overlay_font(dpi, 10, 400);
+                SelectObject(hdc, detail_font as _);
+                let detail_color = match desktop_hud_detail_lifecycle(&model) {
+                    Some(DesktopTextLifecycleState::PreRecognized) => rgb(245, 190, 72),
+                    Some(DesktopTextLifecycleState::Corrected) => rgb(245, 247, 250),
+                    _ => terminal_text_soft_color(),
+                };
+                SetTextColor(hdc, detail_color);
+                DrawTextW(
+                    hdc,
+                    to_wide(detail).as_ptr(),
+                    -1,
+                    &mut RECT {
+                        left: scale_desktop_overlay_length(14, dpi),
+                        top: scale_desktop_overlay_length(42, dpi),
+                        right: badge_left - scale_desktop_overlay_length(10, dpi),
+                        bottom: height - scale_desktop_overlay_length(10, dpi),
+                    },
+                    DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
+                );
+                DeleteObject(detail_font as _);
+            }
         }
 
         SelectObject(hdc, old_font);

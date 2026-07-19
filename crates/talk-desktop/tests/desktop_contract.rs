@@ -21,10 +21,11 @@ use talk_desktop::{
     desktop_copy_popup_position, desktop_document_recorrection_decision,
     desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
     desktop_hud_activation_policy, desktop_hud_audio_meter_model,
-    desktop_hud_audio_meter_model_for_waveform, desktop_hud_geometry_update_plan,
-    desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
-    desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
-    desktop_hud_thinking_text_wave_offsets, desktop_hud_view_model_for_listening_level,
+    desktop_hud_audio_meter_model_for_waveform, desktop_hud_detail_lifecycle,
+    desktop_hud_geometry_update_plan, desktop_hud_metrics_for_view_model,
+    desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
+    desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
+    desktop_hud_view_model_for_corrected_text, desktop_hud_view_model_for_listening_level,
     desktop_hud_view_model_for_listening_waveform_with_partial, desktop_hud_view_model_for_phase,
     desktop_insert_target_diagnostic_path, desktop_insert_target_restore_requested,
     desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
@@ -120,6 +121,21 @@ fn hud_geometry_update_reshapes_when_size_or_radius_changes() {
             reposition: true,
             reshape: true,
         }
+    );
+}
+
+#[test]
+fn corrected_hud_exposes_white_insertable_text_lifecycle() {
+    let model = desktop_hud_view_model_for_corrected_text("你好！");
+
+    assert_eq!(model.detail.as_deref(), Some("你好！"));
+    assert_eq!(
+        desktop_hud_detail_lifecycle(&model),
+        Some(DesktopTextLifecycleState::Corrected)
+    );
+    assert_eq!(
+        desktop_text_lifecycle_view_model(DesktopTextLifecycleState::Corrected, "你好！").text_rgb,
+        Some([245, 247, 250])
     );
 }
 
@@ -1569,8 +1585,7 @@ fn desktop_output_strategy_keeps_direct_insert_when_focus_looks_editable() {
 }
 
 #[test]
-fn desktop_output_plan_suppresses_insert_when_same_window_focus_moved_to_another_editable_control()
-{
+fn desktop_output_plan_uses_current_editable_focus_in_same_window() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -1613,8 +1628,58 @@ fn desktop_output_plan_suppresses_insert_when_same_window_focus_moved_to_another
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
-            insert_target: None,
+            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
+            insert_target: current_target.target,
+        }
+    );
+}
+
+#[test]
+fn desktop_output_plan_uses_current_editable_focus_after_foreground_window_changes() {
+    let origin_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: Some(0x808),
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0x808),
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let current_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0xA0A,
+            focus_handle: Some(0xB0B),
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0xB0B),
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        desktop_output_plan(
+            OutputMode::ClipboardPaste,
+            Some(&origin_target),
+            Some(&current_target)
+        ),
+        DesktopOutputPlan {
+            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
+            insert_target: current_target.target,
         }
     );
 }
@@ -1840,7 +1905,7 @@ fn desktop_output_plan_keeps_insert_when_browser_same_control_is_confirmed_via_m
 }
 
 #[test]
-fn desktop_output_plan_suppresses_insert_when_browser_same_window_runtime_id_changed() {
+fn desktop_output_plan_uses_current_editable_browser_focus_when_runtime_id_changed() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -1883,8 +1948,8 @@ fn desktop_output_plan_suppresses_insert_when_browser_same_window_runtime_id_cha
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
-            insert_target: None,
+            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
+            insert_target: current_target.target,
         }
     );
 }
@@ -2029,7 +2094,7 @@ fn desktop_insert_target_restore_is_not_requested_when_selected_target_already_m
 }
 
 #[test]
-fn desktop_output_plan_suppresses_insert_when_foreground_switched_to_another_window() {
+fn desktop_output_plan_uses_current_editable_focus_when_foreground_switched() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -2072,8 +2137,8 @@ fn desktop_output_plan_suppresses_insert_when_foreground_switched_to_another_win
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
-            insert_target: None,
+            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
+            insert_target: current_target.target,
         }
     );
 }

@@ -1960,6 +1960,30 @@ pub fn desktop_hud_view_model_for_listening_waveform_with_partial(
     }
 }
 
+pub fn desktop_hud_view_model_for_corrected_text(text: &str) -> DesktopHudViewModel {
+    DesktopHudViewModel {
+        visual_state: DesktopHudVisualState::Informational,
+        title: "Corrected".to_string(),
+        detail: (!text.trim().is_empty()).then(|| text.trim().to_string()),
+        meter: None,
+        progress_percent: None,
+    }
+}
+
+pub fn desktop_hud_detail_lifecycle(
+    model: &DesktopHudViewModel,
+) -> Option<DesktopTextLifecycleState> {
+    if model.detail.as_deref().is_none_or(str::is_empty) {
+        return None;
+    }
+
+    match model.visual_state {
+        DesktopHudVisualState::Listening => Some(DesktopTextLifecycleState::PreRecognized),
+        DesktopHudVisualState::Informational => Some(DesktopTextLifecycleState::Corrected),
+        _ => None,
+    }
+}
+
 pub fn desktop_streaming_hud_transcript(
     committed_segments: &[(&str, &str)],
     current_partial: Option<(&str, &str)>,
@@ -2634,8 +2658,24 @@ pub fn desktop_hud_metrics_for_view_model(model: &DesktopHudViewModel) -> Deskto
         | DesktopHudVisualState::Error
         | DesktopHudVisualState::Cancelled
         | DesktopHudVisualState::Informational => DesktopHudMetrics {
-            width: 228,
-            height: 60,
+            width: if model
+                .detail
+                .as_deref()
+                .is_some_and(|detail| !detail.trim().is_empty())
+            {
+                320
+            } else {
+                228
+            },
+            height: if model
+                .detail
+                .as_deref()
+                .is_some_and(|detail| !detail.trim().is_empty())
+            {
+                88
+            } else {
+                60
+            },
             bottom_margin: 132,
             corner_radius: 0,
         },
@@ -3368,34 +3408,20 @@ pub fn resolve_hotkey_recording_origin_enrichment(
 }
 
 fn desktop_output_insert_target_for_clipboard_paste(
-    origin_target: Option<&DesktopInsertTargetContext>,
+    _origin_target: Option<&DesktopInsertTargetContext>,
     current_target: Option<&DesktopInsertTargetContext>,
 ) -> Option<ForegroundInsertTarget> {
-    let origin_target = origin_target?;
-    let origin_window_handle = origin_target.target?.window_handle;
     let current_target = current_target?;
     let current_foreground_target = current_target.target?;
-    if current_foreground_target.window_handle != origin_window_handle
-        || desktop_insert_target_is_explicitly_noneditable(Some(current_target))
-    {
+    if desktop_insert_target_is_explicitly_noneditable(Some(current_target)) {
         return None;
     }
 
-    if desktop_insert_target_looks_editable(Some(current_target))
-        && desktop_same_insert_control(origin_target, current_target)
-    {
+    if desktop_insert_target_looks_editable(Some(current_target)) {
         return Some(current_foreground_target);
     }
 
     None
-}
-
-fn desktop_same_insert_control(
-    origin_target: &DesktopInsertTargetContext,
-    current_target: &DesktopInsertTargetContext,
-) -> bool {
-    desktop_same_insert_control_via_handles(origin_target, current_target)
-        || desktop_same_insert_control_via_runtime_id(origin_target, current_target)
 }
 
 fn desktop_same_insert_control_via_handles(
