@@ -47,9 +47,9 @@ mod windows_app {
         desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
         desktop_copy_popup_position, desktop_document_recorrection_session_decision,
         desktop_effective_streaming_asr_enabled, desktop_hud_activation_policy,
-        desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
-        desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
-        desktop_hud_thinking_text_wave_offsets,
+        desktop_hud_geometry_update_plan, desktop_hud_metrics_for_view_model,
+        desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
+        desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
         desktop_hud_view_model_for_listening_waveform_with_partial,
         desktop_hud_view_model_for_phase, desktop_insert_target_restore_requested,
         desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
@@ -81,10 +81,10 @@ mod windows_app {
         windows_hotkey_binding_registration_plan, write_desktop_insert_target_diagnostic,
         ConfigAvailability, DesktopActionBinding, DesktopActionRoute, DesktopCopyPopupAction,
         DesktopCopyPopupMetrics, DesktopCopyPopupModel, DesktopCopyPopupPaneModel,
-        DesktopDocumentRecorrectionDecision, DesktopHudMetrics, DesktopHudPresentation,
-        DesktopHudViewModel, DesktopHudVisualState, DesktopInsertTargetContext,
-        DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
-        DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
+        DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudMetrics,
+        DesktopHudPresentation, DesktopHudViewModel, DesktopHudVisualState,
+        DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
+        DesktopListeningHudAction, DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
         DesktopOverlayActivationPolicy, DesktopRecordingStopWatcherPolicy,
         DesktopRuntimeInsertDirective, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
         DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
@@ -456,6 +456,7 @@ mod windows_app {
     #[derive(Debug, Default)]
     struct OverlayUiState {
         hud_model: Option<DesktopHudViewModel>,
+        hud_geometry: Option<DesktopHudGeometry>,
         hud_meter_bins: [f32; 9],
         hud_streaming_partial_text: Option<String>,
         hud_thinking_pulse_tick: u32,
@@ -4137,9 +4138,17 @@ mod windows_app {
         let (screen_width, screen_height) = current_screen_size();
         let x = ((screen_width - metrics.width).max(0)) / 2;
         let y = (screen_height - metrics.height - metrics.bottom_margin).max(0);
+        let next_geometry = DesktopHudGeometry {
+            x,
+            y,
+            width: metrics.width,
+            height: metrics.height,
+            corner_radius: metrics.corner_radius,
+        };
+        let visual_state = model.visual_state;
         unsafe {
             KillTimer(hwnd, TIMER_HIDE_HUD);
-            if matches!(model.visual_state, DesktopHudVisualState::Listening) {
+            if matches!(visual_state, DesktopHudVisualState::Listening) {
                 SetTimer(
                     hwnd,
                     TIMER_RECORDING_LEVEL,
@@ -4147,7 +4156,7 @@ mod windows_app {
                     None,
                 );
                 KillTimer(hwnd, TIMER_THINKING_PROGRESS);
-            } else if matches!(model.visual_state, DesktopHudVisualState::Thinking) {
+            } else if matches!(visual_state, DesktopHudVisualState::Thinking) {
                 KillTimer(hwnd, TIMER_RECORDING_LEVEL);
                 SetTimer(
                     hwnd,
@@ -4159,40 +4168,53 @@ mod windows_app {
                 KillTimer(hwnd, TIMER_RECORDING_LEVEL);
                 KillTimer(hwnd, TIMER_THINKING_PROGRESS);
             }
-            if let Ok(mut overlay) = overlay_ui_state().lock() {
-                let was_listening = matches!(
-                    overlay.hud_model.as_ref().map(|hud| hud.visual_state),
-                    Some(DesktopHudVisualState::Listening)
-                );
-                let was_thinking = matches!(
-                    overlay.hud_model.as_ref().map(|hud| hud.visual_state),
-                    Some(DesktopHudVisualState::Thinking)
-                );
-                if model.visual_state != DesktopHudVisualState::Listening || !was_listening {
-                    overlay.hud_meter_bins = [0.0; 9];
-                    overlay.hud_streaming_partial_text = None;
-                }
-                if model.visual_state != DesktopHudVisualState::Thinking || !was_thinking {
-                    overlay.hud_thinking_pulse_tick = 0;
-                }
-                overlay.hud_model = Some(model);
+        }
+
+        let geometry_plan = if let Ok(mut overlay) = overlay_ui_state().lock() {
+            let plan = desktop_hud_geometry_update_plan(overlay.hud_geometry, next_geometry);
+            let was_listening = matches!(
+                overlay.hud_model.as_ref().map(|hud| hud.visual_state),
+                Some(DesktopHudVisualState::Listening)
+            );
+            let was_thinking = matches!(
+                overlay.hud_model.as_ref().map(|hud| hud.visual_state),
+                Some(DesktopHudVisualState::Thinking)
+            );
+            if visual_state != DesktopHudVisualState::Listening || !was_listening {
+                overlay.hud_meter_bins = [0.0; 9];
+                overlay.hud_streaming_partial_text = None;
             }
-            SetWindowPos(
-                state.hud_hwnd,
-                (-1isize) as HWND,
-                x,
-                y,
-                metrics.width,
-                metrics.height,
-                SWP_NOACTIVATE,
-            );
-            apply_rounded_window_region(
-                state.hud_hwnd,
-                metrics.width,
-                metrics.height,
-                metrics.corner_radius,
-            );
-            InvalidateRect(state.hud_hwnd, ptr::null(), 1);
+            if visual_state != DesktopHudVisualState::Thinking || !was_thinking {
+                overlay.hud_thinking_pulse_tick = 0;
+            }
+            overlay.hud_geometry = Some(next_geometry);
+            overlay.hud_model = Some(model);
+            plan
+        } else {
+            desktop_hud_geometry_update_plan(None, next_geometry)
+        };
+
+        unsafe {
+            if geometry_plan.reposition {
+                SetWindowPos(
+                    state.hud_hwnd,
+                    (-1isize) as HWND,
+                    x,
+                    y,
+                    metrics.width,
+                    metrics.height,
+                    SWP_NOACTIVATE,
+                );
+            }
+            if geometry_plan.reshape {
+                apply_rounded_window_region(
+                    state.hud_hwnd,
+                    metrics.width,
+                    metrics.height,
+                    metrics.corner_radius,
+                );
+            }
+            InvalidateRect(state.hud_hwnd, ptr::null(), 0);
             ShowWindow(state.hud_hwnd, SW_SHOWNOACTIVATE);
             if let Some(timeout) = auto_hide_ms {
                 SetTimer(hwnd, TIMER_HIDE_HUD, timeout, None);
@@ -4407,7 +4429,7 @@ mod windows_app {
             }
         }
 
-        let updated_hud_model = if let Ok(mut overlay) = overlay_ui_state().lock() {
+        let updated_hud_state = if let Ok(mut overlay) = overlay_ui_state().lock() {
             let mut next_bins = overlay.hud_meter_bins;
             for (index, raw_bin) in raw_waveform.iter().take(next_bins.len()).enumerate() {
                 let raw_bin = raw_bin.clamp(0.0, 1.0);
@@ -4425,11 +4447,12 @@ mod windows_app {
             let partial_text = overlay.hud_streaming_partial_text.clone();
             if let Some(hud_model) = overlay.hud_model.as_mut() {
                 if hud_model.visual_state == DesktopHudVisualState::Listening {
+                    let previous_detail = hud_model.detail.clone();
                     *hud_model = desktop_hud_view_model_for_listening_waveform_with_partial(
                         next_bins,
                         partial_text.as_deref(),
                     );
-                    Some(hud_model.clone())
+                    Some((hud_model.clone(), hud_model.detail != previous_detail))
                 } else {
                     None
                 }
@@ -4440,7 +4463,7 @@ mod windows_app {
             None
         };
 
-        if let Some(updated_hud_model) = updated_hud_model {
+        if let Some((updated_hud_model, text_changed)) = updated_hud_state {
             if state.hud_hwnd.is_null() {
                 return Ok(());
             }
@@ -4452,23 +4475,52 @@ mod windows_app {
             let (screen_width, screen_height) = current_screen_size();
             let x = ((screen_width - metrics.width).max(0)) / 2;
             let y = (screen_height - metrics.height - metrics.bottom_margin).max(0);
+            let next_geometry = DesktopHudGeometry {
+                x,
+                y,
+                width: metrics.width,
+                height: metrics.height,
+                corner_radius: metrics.corner_radius,
+            };
+            let geometry_plan = if let Ok(mut overlay) = overlay_ui_state().lock() {
+                let plan = desktop_hud_geometry_update_plan(overlay.hud_geometry, next_geometry);
+                overlay.hud_geometry = Some(next_geometry);
+                plan
+            } else {
+                desktop_hud_geometry_update_plan(None, next_geometry)
+            };
+            let waveform = desktop_listening_hud_waveform_rect(metrics.width, metrics.height, dpi);
+            let waveform_rect = RECT {
+                left: waveform.left,
+                top: waveform.top,
+                right: waveform.right,
+                bottom: waveform.bottom,
+            };
             unsafe {
-                SetWindowPos(
-                    state.hud_hwnd,
-                    (-1isize) as HWND,
-                    x,
-                    y,
-                    metrics.width,
-                    metrics.height,
-                    SWP_NOACTIVATE,
-                );
-                apply_rounded_window_region(
-                    state.hud_hwnd,
-                    metrics.width,
-                    metrics.height,
-                    metrics.corner_radius,
-                );
-                InvalidateRect(state.hud_hwnd, ptr::null(), 1);
+                if geometry_plan.reposition {
+                    SetWindowPos(
+                        state.hud_hwnd,
+                        (-1isize) as HWND,
+                        x,
+                        y,
+                        metrics.width,
+                        metrics.height,
+                        SWP_NOACTIVATE,
+                    );
+                }
+                if geometry_plan.reshape {
+                    apply_rounded_window_region(
+                        state.hud_hwnd,
+                        metrics.width,
+                        metrics.height,
+                        metrics.corner_radius,
+                    );
+                }
+                if text_changed || geometry_plan.reposition {
+                    InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+                } else {
+                    InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
+                }
             }
         }
         Ok(())
@@ -5160,6 +5212,7 @@ mod windows_app {
                 KillTimer(hwnd, TIMER_THINKING_PROGRESS);
                 if let Ok(mut overlay) = overlay_ui_state().lock() {
                     overlay.hud_model = None;
+                    overlay.hud_geometry = None;
                     overlay.hud_meter_bins = [0.0; 9];
                     overlay.hud_thinking_pulse_tick = 0;
                 }
