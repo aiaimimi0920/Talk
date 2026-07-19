@@ -374,7 +374,7 @@ unavailable HTTPS proxy forces the expected cloud-fallback path. The actual
 product process created the content-addressed runtime directory and all six
 verified runtime files during this smoke.
 
-- [ ] **Step 4: Commit, push Talk, wait for Actions, and update only the parent gitlink**
+- [x] **Step 4: Commit, push Talk, wait for Actions, and update only the parent gitlink**
 
 ```powershell
 git status --porcelain=v1
