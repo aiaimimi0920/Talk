@@ -288,7 +288,7 @@ function New-TalkReleaseDesktopConfigContent {
     param([string]$PackagedApiKey)
 
     $packagedApiKeyComment = if ([string]::IsNullOrWhiteSpace($PackagedApiKey)) {
-        '# Set TALK_PROVIDER_API_KEY before launching Talk.exe.'
+        '# Talk uses TALK_PROVIDER_API_KEY or the standard per-user DashScope credential file when available.'
     } else {
         '# Qwen provider api key is packaged into this release for direct desktop launch.'
     }

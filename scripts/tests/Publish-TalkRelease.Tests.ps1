@@ -1153,6 +1153,7 @@ Describe 'Publish-TalkRelease helpers' {
             $desktopConfigText | Should Match 'ask_shortcut = "RightAlt\+Space"'
             $desktopConfigText | Should Match 'backend = "native_windows"'
             $desktopConfigText | Should Match 'transcription_transport = "chat_completions_audio_input"'
+            $desktopConfigText | Should Match 'standard per-user DashScope credential file'
             $desktopConfigText | Should Match 'api_key_env = "TALK_PROVIDER_API_KEY"'
             $desktopConfigText | Should Match 'mode = "clipboard_paste"'
             $desktopConfigText | Should Match 'clipboard_backend = "native_windows"'

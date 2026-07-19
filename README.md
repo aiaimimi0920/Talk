@@ -61,9 +61,18 @@ installer, benchmark binary, or probe script next to `Talk.exe`. If the local
 runtime or model cannot be prepared, Talk records the reason and uses the
 configured cloud transcription route for that session when one is available.
 
-`talk.toml` is the only user-editable file in the package. Keep provider
-credentials outside the file and provide them through `TALK_PROVIDER_API_KEY`
-or another supported local credential source.
+`talk.toml` is the only user-editable file in the package. For the packaged
+DashScope configuration, Talk first checks `TALK_PROVIDER_API_KEY` and then
+automatically reuses the standard per-user credential file, when present:
+
+```text
+%USERPROFILE%\.neuro\qwen-platform\qwen-dashscope-openai\api-key\manual-live.json
+```
+
+That file may contain `apiKey`, `api_key`, or `key`. A custom or non-DashScope
+OpenAI-compatible endpoint must provide its credential through
+`TALK_PROVIDER_API_KEY` or an explicit local configuration value. A missing
+credential does not disable local ASR; it only skips cloud text processing.
 
 The Cargo target `talk-desktop.exe`, `.internal` worker files, model installer
 scripts, benchmark tools, and smoke probes remain available in the source tree
