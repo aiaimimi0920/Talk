@@ -1558,6 +1558,7 @@ pub struct DesktopHudViewModel {
     pub visual_state: DesktopHudVisualState,
     pub title: String,
     pub detail: Option<String>,
+    pub detail_lifecycle: Option<DesktopTextLifecycleState>,
     pub meter: Option<DesktopHudAudioMeterModel>,
     pub progress_percent: Option<u8>,
 }
@@ -1663,7 +1664,29 @@ pub struct DesktopSpeculativePipelineConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopSpeculativeCorrectionOutputTarget {
     PatchInsertedText(SpeculativeInsertAnchor),
+    InsertCorrectedText,
     CopyPopupOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLiveCorrectionEligibility {
+    Process,
+    DropStale,
+    DropDuplicate,
+}
+
+pub fn desktop_live_correction_eligibility(
+    active_generation: Option<u64>,
+    job_generation: u64,
+    already_inserted: bool,
+) -> DesktopLiveCorrectionEligibility {
+    if active_generation != Some(job_generation) {
+        DesktopLiveCorrectionEligibility::DropStale
+    } else if already_inserted {
+        DesktopLiveCorrectionEligibility::DropDuplicate
+    } else {
+        DesktopLiveCorrectionEligibility::Process
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1930,6 +1953,7 @@ pub fn desktop_hud_view_model_for_listening_level(level: f32) -> DesktopHudViewM
         visual_state: DesktopHudVisualState::Listening,
         title: "Listening".to_string(),
         detail: Some(DESKTOP_LISTENING_LOCAL_DETECTION_PLACEHOLDER.to_string()),
+        detail_lifecycle: Some(DesktopTextLifecycleState::PreRecognized),
         meter: Some(desktop_hud_audio_meter_model(level)),
         progress_percent: None,
     }
@@ -1945,6 +1969,18 @@ pub fn desktop_hud_view_model_for_listening_waveform_with_partial(
     waveform_bins: [f32; 9],
     partial_text: Option<&str>,
 ) -> DesktopHudViewModel {
+    desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+        waveform_bins,
+        partial_text,
+        DesktopTextLifecycleState::PreRecognized,
+    )
+}
+
+pub fn desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+    waveform_bins: [f32; 9],
+    partial_text: Option<&str>,
+    detail_lifecycle: DesktopTextLifecycleState,
+) -> DesktopHudViewModel {
     let detail = partial_text
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -1955,6 +1991,7 @@ pub fn desktop_hud_view_model_for_listening_waveform_with_partial(
         visual_state: DesktopHudVisualState::Listening,
         title: "Listening".to_string(),
         detail,
+        detail_lifecycle: Some(detail_lifecycle),
         meter: Some(desktop_hud_audio_meter_model_for_waveform(waveform_bins)),
         progress_percent: None,
     }
@@ -1965,6 +2002,7 @@ pub fn desktop_hud_view_model_for_corrected_text(text: &str) -> DesktopHudViewMo
         visual_state: DesktopHudVisualState::Informational,
         title: "Corrected".to_string(),
         detail: (!text.trim().is_empty()).then(|| text.trim().to_string()),
+        detail_lifecycle: Some(DesktopTextLifecycleState::Corrected),
         meter: None,
         progress_percent: None,
     }
@@ -1975,6 +2013,10 @@ pub fn desktop_hud_detail_lifecycle(
 ) -> Option<DesktopTextLifecycleState> {
     if model.detail.as_deref().is_none_or(str::is_empty) {
         return None;
+    }
+
+    if model.detail_lifecycle.is_some() {
+        return model.detail_lifecycle;
     }
 
     match model.visual_state {
@@ -2398,7 +2440,7 @@ pub fn desktop_speculative_correction_job_model(
             )
             .ok()?,
         ),
-        None => DesktopSpeculativeCorrectionOutputTarget::CopyPopupOnly,
+        None => DesktopSpeculativeCorrectionOutputTarget::InsertCorrectedText,
     };
 
     Some(DesktopSpeculativeCorrectionJobModel {
@@ -2526,6 +2568,7 @@ pub fn desktop_hud_view_model_for_phase(phase: RuntimePhase) -> DesktopHudViewMo
                 visual_state: DesktopHudVisualState::Thinking,
                 title: "Thinking".to_string(),
                 detail: None,
+                detail_lifecycle: None,
                 meter: None,
                 progress_percent: Some(match phase {
                     RuntimePhase::Transcribing => 28,
@@ -2539,6 +2582,7 @@ pub fn desktop_hud_view_model_for_phase(phase: RuntimePhase) -> DesktopHudViewMo
             visual_state: DesktopHudVisualState::Success,
             title: "Done".to_string(),
             detail: None,
+            detail_lifecycle: None,
             meter: None,
             progress_percent: None,
         },
@@ -2546,6 +2590,7 @@ pub fn desktop_hud_view_model_for_phase(phase: RuntimePhase) -> DesktopHudViewMo
             visual_state: DesktopHudVisualState::Error,
             title: "Failed".to_string(),
             detail: None,
+            detail_lifecycle: None,
             meter: None,
             progress_percent: None,
         },
@@ -2553,6 +2598,7 @@ pub fn desktop_hud_view_model_for_phase(phase: RuntimePhase) -> DesktopHudViewMo
             visual_state: DesktopHudVisualState::Cancelled,
             title: "Cancelled".to_string(),
             detail: None,
+            detail_lifecycle: None,
             meter: None,
             progress_percent: None,
         },

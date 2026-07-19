@@ -26,12 +26,14 @@ use talk_desktop::{
     desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
     desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
     desktop_hud_view_model_for_corrected_text, desktop_hud_view_model_for_listening_level,
-    desktop_hud_view_model_for_listening_waveform_with_partial, desktop_hud_view_model_for_phase,
-    desktop_insert_target_diagnostic_path, desktop_insert_target_restore_requested,
-    desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
-    desktop_listening_hud_complete_button_rect, desktop_listening_hud_partial_text_layout,
-    desktop_listening_hud_visible_partial_text, desktop_mode_dropdown_model,
-    desktop_mode_output_policy, desktop_mode_text_pane_layout, desktop_mode_text_result_model,
+    desktop_hud_view_model_for_listening_waveform_with_partial,
+    desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle,
+    desktop_hud_view_model_for_phase, desktop_insert_target_diagnostic_path,
+    desktop_insert_target_restore_requested, desktop_listening_hud_action_for_point,
+    desktop_listening_hud_cancel_button_rect, desktop_listening_hud_complete_button_rect,
+    desktop_listening_hud_partial_text_layout, desktop_listening_hud_visible_partial_text,
+    desktop_live_correction_eligibility, desktop_mode_dropdown_model, desktop_mode_output_policy,
+    desktop_mode_text_pane_layout, desktop_mode_text_result_model,
     desktop_mode_text_result_popup_text, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
     desktop_packaged_local_asr_daemon_launch_plan,
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
@@ -61,19 +63,19 @@ use talk_desktop::{
     DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudGeometryUpdatePlan,
     DesktopHudMetrics, DesktopHudPresentation, DesktopHudVisualState, DesktopInsertTargetContext,
     DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
-    DesktopLiveStreamingLocalSegmentPlan, DesktopLocalAsrDaemonLaunchPlan,
-    DesktopModeDropdownEntry, DesktopModeDropdownModel, DesktopModeOutputPolicy,
-    DesktopModeTextPane, DesktopModeTextPaneLayout, DesktopModeTextResultModel, DesktopOutputPlan,
-    DesktopOutputStrategy, DesktopOverlayActivationPolicy, DesktopOverlayPosition,
-    DesktopOverlayRect, DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective,
-    DesktopRuntimeInsertPlan, DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics,
-    DesktopShortcutHelpModel, DesktopSpeculativeCorrectionJobModel,
-    DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
-    DesktopSpeculativePipelineConfig, DesktopSpeculativeTranscriptState,
-    DesktopStreamingStopPolicy, DesktopTextLifecycleState, DesktopTextLifecycleViewModel,
-    ForegroundFocusCaptureSource, ForegroundInsertTarget, ForegroundTargetReleaseReason,
-    ForegroundTargetStabilityProgress, HotkeyBindingState, LastSessionStatus,
-    LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
+    DesktopLiveCorrectionEligibility, DesktopLiveStreamingLocalSegmentPlan,
+    DesktopLocalAsrDaemonLaunchPlan, DesktopModeDropdownEntry, DesktopModeDropdownModel,
+    DesktopModeOutputPolicy, DesktopModeTextPane, DesktopModeTextPaneLayout,
+    DesktopModeTextResultModel, DesktopOutputPlan, DesktopOutputStrategy,
+    DesktopOverlayActivationPolicy, DesktopOverlayPosition, DesktopOverlayRect,
+    DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective, DesktopRuntimeInsertPlan,
+    DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
+    DesktopSpeculativeCorrectionJobModel, DesktopSpeculativeCorrectionOutputTarget,
+    DesktopSpeculativeLocalAsrRoute, DesktopSpeculativePipelineConfig,
+    DesktopSpeculativeTranscriptState, DesktopStreamingStopPolicy, DesktopTextLifecycleState,
+    DesktopTextLifecycleViewModel, ForegroundFocusCaptureSource, ForegroundInsertTarget,
+    ForegroundTargetReleaseReason, ForegroundTargetStabilityProgress, HotkeyBindingState,
+    LastSessionStatus, LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
     NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor, SpeculativePatchApplication,
     SpeculativePatchCandidate, StatusSnapshot, ToggleDesktopHotkeyRouter,
     ToggleDesktopHotkeyRouterPendingHold, WindowsHotkeyBindingRegistrationPlan,
@@ -693,9 +695,45 @@ fn desktop_correction_job_model_can_route_ready_segment_to_popup_only_without_in
 
     assert_eq!(
         model.output_target,
-        DesktopSpeculativeCorrectionOutputTarget::CopyPopupOnly
+        DesktopSpeculativeCorrectionOutputTarget::InsertCorrectedText
     );
     assert_eq!(model.local_text, "没有激活输入框。");
+}
+
+#[test]
+fn recording_hud_can_show_corrected_detail_without_leaving_listening_state() {
+    let model = desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+        [0.1; 9],
+        Some("云端已经校正"),
+        DesktopTextLifecycleState::Corrected,
+    );
+
+    assert_eq!(model.visual_state, DesktopHudVisualState::Listening);
+    assert_eq!(
+        desktop_hud_detail_lifecycle(&model),
+        Some(DesktopTextLifecycleState::Corrected)
+    );
+    assert_eq!(model.detail.as_deref(), Some("云端已经校正"));
+}
+
+#[test]
+fn live_correction_drops_stale_and_duplicate_results_before_insertion() {
+    assert_eq!(
+        desktop_live_correction_eligibility(None, 7, false),
+        DesktopLiveCorrectionEligibility::DropStale
+    );
+    assert_eq!(
+        desktop_live_correction_eligibility(Some(8), 7, false),
+        DesktopLiveCorrectionEligibility::DropStale
+    );
+    assert_eq!(
+        desktop_live_correction_eligibility(Some(7), 7, true),
+        DesktopLiveCorrectionEligibility::DropDuplicate
+    );
+    assert_eq!(
+        desktop_live_correction_eligibility(Some(7), 7, false),
+        DesktopLiveCorrectionEligibility::Process
+    );
 }
 
 #[test]

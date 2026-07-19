@@ -51,13 +51,14 @@ mod windows_app {
         desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
         desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
         desktop_hud_thinking_text_wave_offsets, desktop_hud_view_model_for_corrected_text,
-        desktop_hud_view_model_for_listening_waveform_with_partial,
+        desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle,
         desktop_hud_view_model_for_phase, desktop_insert_target_restore_requested,
         desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
         desktop_listening_hud_complete_button_rect, desktop_listening_hud_partial_text_layout,
         desktop_listening_hud_visible_partial_text, desktop_listening_hud_waveform_rect,
-        desktop_local_asr_daemon_bind_from_endpoint, desktop_mode_dropdown_model,
-        desktop_mode_text_result_model, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
+        desktop_live_correction_eligibility, desktop_local_asr_daemon_bind_from_endpoint,
+        desktop_mode_dropdown_model, desktop_mode_text_result_model, desktop_output_plan,
+        desktop_overlay_scale_factor_for_dpi,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
         desktop_preferred_paste_shortcut_for_target,
         desktop_product_local_asr_daemon_launch_plan_with_config,
@@ -71,7 +72,7 @@ mod windows_app {
         download_and_install_model, extract_embedded_runtime_payload,
         foreground_target_refresh_requested, foreground_target_stability_satisfied,
         hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
-        idle_status_detail, live_streaming_local_segment_plan, native_status_message,
+        idle_status_detail, live_streaming_segment_plan_for_lifecycle, native_status_message,
         observe_foreground_target_stability, parse_desktop_window_handle,
         recording_stop_watcher_policy, resolve_default_desktop_config_path,
         resolve_desktop_audio_file_override, resolve_foreground_focus_capture,
@@ -85,7 +86,8 @@ mod windows_app {
         DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudMetrics,
         DesktopHudPresentation, DesktopHudViewModel, DesktopHudVisualState,
         DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
-        DesktopListeningHudAction, DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
+        DesktopListeningHudAction, DesktopLiveCorrectionEligibility,
+        DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
         DesktopOverlayActivationPolicy, DesktopRecordingStopWatcherPolicy,
         DesktopRuntimeInsertDirective, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
         DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
@@ -127,15 +129,15 @@ mod windows_app {
         CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
     };
     use windows_sys::Win32::Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreatePen, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush,
-        DeleteObject, DrawTextW, Ellipse, EndPaint, GetDC, GetStockObject, GetTextExtentPoint32W,
-        GradientFill, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect, SelectObject,
-        SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, TextOutW, CLEARTYPE_QUALITY,
-        CLIP_DEFAULT_PRECIS, COLOR_WINDOW, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH,
-        DT_CALCRECT, DT_CENTER, DT_EDITCONTROL, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-        DT_WORDBREAK, FF_DONTCARE, FW_BOLD, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V,
-        GRADIENT_RECT, HOLLOW_BRUSH, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, TRANSPARENT,
-        TRIVERTEX,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
+        CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW,
+        Ellipse, EndPaint, FillRect, GetDC, GetStockObject, GetTextExtentPoint32W, GradientFill,
+        InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect, SelectObject, SetBkColor,
+        SetBkMode, SetTextColor, SetWindowRgn, TextOutW, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+        COLOR_WINDOW, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER,
+        DT_EDITCONTROL, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE,
+        FW_BOLD, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HOLLOW_BRUSH,
+        OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT, TRIVERTEX,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::{
@@ -198,6 +200,7 @@ mod windows_app {
     const CORRECTION_COPY_POPUP_MESSAGE: u32 = WM_APP + 9;
     const MODEL_BOOTSTRAP_MESSAGE: u32 = WM_APP + 10;
     const CORRECTED_HUD_MESSAGE: u32 = WM_APP + 11;
+    const STREAMING_CORRECTED_HUD_MESSAGE: u32 = WM_APP + 12;
     const TIMER_HIDE_HUD: usize = 1;
     const TIMER_SHORTCUT_HELP_HOLD: usize = 2;
     const TIMER_RECORDING_LEVEL: usize = 3;
@@ -279,6 +282,8 @@ mod windows_app {
         live_streaming_inserted_anchors: HashMap<String, SpeculativeInsertAnchor>,
         live_streaming_inserted_segment_ids: Vec<String>,
         hud_streaming_segments: Vec<(String, String)>,
+        live_streaming_correction_sender:
+            tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>,
         last_streaming_asr_event: Option<StreamingAsrEvent>,
         last_streaming_asr_event_at: Option<Instant>,
     }
@@ -334,16 +339,24 @@ mod windows_app {
 
     struct SpeculativeCloudCorrectionJob {
         config: TalkConfig,
+        segment_id: String,
         transcript: String,
         context_before: Option<String>,
         mode_override: Option<VoiceMode>,
-        anchor: SpeculativeInsertAnchor,
+        anchor: Option<SpeculativeInsertAnchor>,
         full_document_inserted_segments: Vec<String>,
         latest_live_segment_guard: Option<LatestLiveSegmentGuard>,
         generation: u64,
         started_at: Instant,
         hwnd_value: usize,
         hud_hwnd_value: usize,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum LiveStreamingCorrectionInsertOutcome {
+        Inserted,
+        NoEditableTarget,
+        StaleOrDuplicate,
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -354,11 +367,11 @@ mod windows_app {
     struct PendingLiveStreamingDispatch {
         config: TalkConfig,
         pipeline_config: DesktopSpeculativePipelineConfig,
-        runtime_handle: tokio::runtime::Handle,
         mode_override: Option<VoiceMode>,
         generation: u64,
         origin_insert_target: Option<DesktopInsertTargetContext>,
         existing_anchors: HashMap<String, SpeculativeInsertAnchor>,
+        live_correction_sender: tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>,
         events: Vec<SpeculativeRuntimeEvent>,
         hwnd_value: usize,
         hud_hwnd_value: usize,
@@ -467,6 +480,7 @@ mod windows_app {
         hud_geometry: Option<DesktopHudGeometry>,
         hud_meter_bins: [f32; 9],
         hud_streaming_partial_text: Option<String>,
+        hud_streaming_corrected_text: Option<String>,
         hud_thinking_pulse_tick: u32,
         copy_popup: Option<CopyPopupRenderState>,
         shortcut_help: Option<DesktopShortcutHelpModel>,
@@ -1687,6 +1701,10 @@ mod windows_app {
                 handle_corrected_hud(hwnd, wparam as u64);
                 0
             }
+            STREAMING_CORRECTED_HUD_MESSAGE => {
+                handle_streaming_corrected_hud(hwnd, wparam as u64);
+                0
+            }
             WM_DESTROY => {
                 unsafe {
                     KillTimer(hwnd, TIMER_SHORTCUT_HELP_HOLD);
@@ -2307,6 +2325,15 @@ mod windows_app {
             }
         };
 
+        let (live_correction_sender, mut live_correction_receiver) =
+            tokio::sync::mpsc::unbounded_channel::<SpeculativeCloudCorrectionJob>();
+        let live_correction_shared = Arc::clone(&state.shared);
+        runtime_handle.spawn(async move {
+            while let Some(job) = live_correction_receiver.recv().await {
+                run_speculative_cloud_correction(Arc::clone(&live_correction_shared), job).await;
+            }
+        });
+
         {
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
             shared.shell_state = shell_state
@@ -2330,6 +2357,7 @@ mod windows_app {
                 live_streaming_inserted_anchors: HashMap::new(),
                 live_streaming_inserted_segment_ids: Vec::new(),
                 hud_streaming_segments: Vec::new(),
+                live_streaming_correction_sender: live_correction_sender,
                 last_streaming_asr_event: None,
                 last_streaming_asr_event_at: None,
             });
@@ -2550,49 +2578,60 @@ mod windows_app {
         Ok(true)
     }
 
-    fn spawn_speculative_cloud_correction(
-        runtime_handle: tokio::runtime::Handle,
+    async fn run_speculative_cloud_correction(
         shared: Arc<Mutex<SharedState>>,
         job: SpeculativeCloudCorrectionJob,
     ) {
-        runtime_handle.spawn(async move {
-            let mut front_context = FrontContext::default();
-            if let Some(context_before) = job
-                .context_before
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                front_context.extra.insert(
-                    "contextBefore".to_string(),
-                    Value::String(context_before.to_string()),
-                );
-            }
-            let corrected_text = match process_voice_transcript_text(
-                &job.config,
-                job.transcript.clone(),
-                job.mode_override,
-                front_context,
+        if job.anchor.is_none()
+            && !live_streaming_unanchored_correction_is_current(
+                &shared,
+                job.generation,
+                job.segment_id.as_str(),
             )
-            .await
-            {
-                Ok(text) => text,
-                Err(error) => {
-                    eprintln!("Talk speculative cloud correction failed: {error:#}");
-                    return;
-                }
-            };
+        {
+            return;
+        }
 
-            if corrected_text.trim().is_empty() || corrected_text == job.transcript {
+        let mut front_context = FrontContext::default();
+        if let Some(context_before) = job
+            .context_before
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            front_context.extra.insert(
+                "contextBefore".to_string(),
+                Value::String(context_before.to_string()),
+            );
+        }
+        let corrected_text = match process_voice_transcript_text(
+            &job.config,
+            job.transcript.clone(),
+            job.mode_override,
+            front_context,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("Talk speculative cloud correction failed: {error:#}");
                 return;
             }
+        };
 
-            let received_at_ms = job.started_at.elapsed().as_millis() as u64;
-            let patched = if !job.full_document_inserted_segments.is_empty() {
+        if corrected_text.trim().is_empty()
+            || (job.anchor.is_some() && corrected_text == job.transcript)
+        {
+            return;
+        }
+
+        let received_at_ms = job.started_at.elapsed().as_millis() as u64;
+        let patched = if let Some(anchor) = job.anchor.as_ref() {
+            if !job.full_document_inserted_segments.is_empty() {
                 match apply_document_recorrection_patch_if_safe(
                     job.hwnd_value as HWND,
                     job.hud_hwnd_value as HWND,
-                    &job.anchor,
+                    anchor,
                     &job.full_document_inserted_segments,
                     &corrected_text,
                     job.config.output.restore_clipboard,
@@ -2607,14 +2646,14 @@ mod windows_app {
                 live_streaming_correction_anchor_still_latest(
                     &shared,
                     guard,
-                    job.anchor.segment_id.as_str(),
+                    anchor.segment_id.as_str(),
                 )
             }) {
                 match apply_speculative_correction_patch_if_safe(
                     job.hwnd_value as HWND,
                     job.hud_hwnd_value as HWND,
-                    &job.anchor,
-                    job.anchor.segment_id.as_str(),
+                    anchor,
+                    anchor.segment_id.as_str(),
                     &corrected_text,
                     received_at_ms,
                     job.config.speculative.max_patch_age_ms,
@@ -2627,7 +2666,7 @@ mod windows_app {
                                 update_live_streaming_inserted_anchor_text(
                                     &shared,
                                     guard.generation,
-                                    job.anchor.segment_id.as_str(),
+                                    anchor.segment_id.as_str(),
                                     &corrected_text,
                                 );
                             }
@@ -2641,27 +2680,62 @@ mod windows_app {
                 }
             } else {
                 false
-            };
+            }
+        } else if job.latest_live_segment_guard.is_some() {
+            match insert_live_streaming_corrected_segment_if_current(&shared, &job, &corrected_text)
+            {
+                Ok(LiveStreamingCorrectionInsertOutcome::Inserted) => {
+                    queue_live_streaming_corrected_hud(
+                        job.hwnd_value as HWND,
+                        job.generation,
+                        &corrected_text,
+                    );
+                    true
+                }
+                Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget) => false,
+                Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate) => return,
+                Err(error) => {
+                    eprintln!("Talk corrected streaming insert failed: {error:#}");
+                    false
+                }
+            }
+        } else {
+            false
+        };
 
-            if patched {
-                return;
-            }
+        if patched {
+            return;
+        }
 
-            if let Ok(mut shared) = shared.lock() {
-                shared.pending_copy_popup = Some(PendingCopyPopup {
-                    generation: job.generation,
-                    model: desktop_copy_popup_model(&corrected_text),
-                });
-            }
-            unsafe {
-                let _ = PostMessageW(
-                    job.hwnd_value as HWND,
-                    CORRECTION_COPY_POPUP_MESSAGE,
-                    job.generation as usize,
-                    0,
-                );
-            }
-        });
+        if job
+            .latest_live_segment_guard
+            .is_some_and(|guard| !live_streaming_correction_generation_is_active(&shared, guard))
+        {
+            return;
+        }
+
+        if let Ok(mut shared) = shared.lock() {
+            shared.pending_copy_popup = Some(PendingCopyPopup {
+                generation: job.generation,
+                model: desktop_copy_popup_model(&corrected_text),
+            });
+        }
+        unsafe {
+            let _ = PostMessageW(
+                job.hwnd_value as HWND,
+                CORRECTION_COPY_POPUP_MESSAGE,
+                job.generation as usize,
+                0,
+            );
+        }
+    }
+
+    fn spawn_speculative_cloud_correction(
+        runtime_handle: tokio::runtime::Handle,
+        shared: Arc<Mutex<SharedState>>,
+        job: SpeculativeCloudCorrectionJob,
+    ) {
+        runtime_handle.spawn(run_speculative_cloud_correction(shared, job));
     }
 
     fn live_streaming_correction_anchor_still_latest(
@@ -2702,13 +2776,139 @@ mod windows_app {
         }
     }
 
-    fn insert_live_streaming_local_segment_if_safe(
+    fn live_streaming_correction_generation_is_active(
+        shared: &Arc<Mutex<SharedState>>,
+        guard: LatestLiveSegmentGuard,
+    ) -> bool {
+        let Ok(shared) = shared.lock() else {
+            return false;
+        };
+        shared
+            .active_recording
+            .as_ref()
+            .is_some_and(|active| active.generation == guard.generation)
+    }
+
+    fn live_streaming_unanchored_correction_is_current(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        segment_id: &str,
+    ) -> bool {
+        let Ok(shared) = shared.lock() else {
+            return false;
+        };
+        let active_generation = shared
+            .active_recording
+            .as_ref()
+            .map(|active| active.generation);
+        let already_inserted = shared.active_recording.as_ref().is_some_and(|active| {
+            active
+                .live_streaming_inserted_anchors
+                .contains_key(segment_id)
+        });
+        desktop_live_correction_eligibility(active_generation, generation, already_inserted)
+            == DesktopLiveCorrectionEligibility::Process
+    }
+
+    fn insert_live_streaming_corrected_segment_if_current(
+        shared: &Arc<Mutex<SharedState>>,
+        job: &SpeculativeCloudCorrectionJob,
+        corrected_text: &str,
+    ) -> Result<LiveStreamingCorrectionInsertOutcome> {
+        let Some(guard) = job.latest_live_segment_guard else {
+            return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
+        };
+        let mut shared = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?;
+        let active_generation = shared
+            .active_recording
+            .as_ref()
+            .map(|active| active.generation);
+        let already_inserted = shared.active_recording.as_ref().is_some_and(|active| {
+            active
+                .live_streaming_inserted_anchors
+                .contains_key(job.segment_id.as_str())
+        });
+        if desktop_live_correction_eligibility(
+            active_generation,
+            guard.generation,
+            already_inserted,
+        ) != DesktopLiveCorrectionEligibility::Process
+        {
+            return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
+        }
+
+        let anchor = insert_live_streaming_segment_if_safe(
+            &job.config,
+            job.hwnd_value as HWND,
+            job.hud_hwnd_value as HWND,
+            None,
+            job.segment_id.as_str(),
+            corrected_text,
+            DesktopTextLifecycleState::Corrected,
+        )?;
+        let Some(anchor) = anchor else {
+            return Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget);
+        };
+
+        let active = shared
+            .active_recording
+            .as_mut()
+            .expect("live correction eligibility requires an active recording");
+        if !active
+            .live_streaming_inserted_segment_ids
+            .iter()
+            .any(|segment_id| segment_id == &anchor.segment_id)
+        {
+            active
+                .live_streaming_inserted_segment_ids
+                .push(anchor.segment_id.clone());
+        }
+        active
+            .hud_streaming_segments
+            .retain(|(segment_id, _)| segment_id != &anchor.segment_id);
+        active
+            .live_streaming_inserted_anchors
+            .insert(anchor.segment_id.clone(), anchor);
+        Ok(LiveStreamingCorrectionInsertOutcome::Inserted)
+    }
+
+    fn queue_live_streaming_corrected_hud(hwnd: HWND, generation: u64, corrected_text: &str) {
+        if let Ok(mut overlay) = overlay_ui_state().lock() {
+            let meter_bins = overlay.hud_meter_bins;
+            overlay.hud_streaming_corrected_text = Some(corrected_text.to_string());
+            if let Some(hud_model) = overlay
+                .hud_model
+                .as_mut()
+                .filter(|model| model.visual_state == DesktopHudVisualState::Listening)
+            {
+                *hud_model =
+                    desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+                        meter_bins,
+                        Some(corrected_text),
+                        DesktopTextLifecycleState::Corrected,
+                    );
+            }
+        }
+        unsafe {
+            let _ = PostMessageW(
+                hwnd,
+                STREAMING_CORRECTED_HUD_MESSAGE,
+                generation as usize,
+                0,
+            );
+        }
+    }
+
+    fn insert_live_streaming_segment_if_safe(
         config: &TalkConfig,
         hwnd: HWND,
         hud_hwnd: HWND,
         origin_insert_target: Option<&DesktopInsertTargetContext>,
         segment_id: &str,
         text: &str,
+        lifecycle_state: DesktopTextLifecycleState,
     ) -> Result<Option<SpeculativeInsertAnchor>> {
         if config.output.mode != OutputMode::ClipboardPaste {
             return Ok(None);
@@ -2722,11 +2922,12 @@ mod windows_app {
             segment_id: segment_id.to_string(),
             text: text.to_string(),
         };
-        let plan = live_streaming_local_segment_plan(
+        let plan = live_streaming_segment_plan_for_lifecycle(
             config.output.mode,
             &event,
             origin_insert_target,
             current_context.as_ref(),
+            lifecycle_state,
         );
         let DesktopLiveStreamingLocalSegmentPlan::Insert {
             insert_target,
@@ -2783,36 +2984,37 @@ mod windows_app {
         Ok(Some(anchor))
     }
 
-    fn speculative_correction_job_for_live_inserted_segment(
+    fn speculative_correction_job_for_live_segment(
         config: &TalkConfig,
         pipeline_config: &DesktopSpeculativePipelineConfig,
         event: &SpeculativeRuntimeEvent,
-        anchor: &SpeculativeInsertAnchor,
+        anchor: Option<&SpeculativeInsertAnchor>,
         mode_override: Option<VoiceMode>,
         generation: u64,
         hwnd_value: usize,
         hud_hwnd_value: usize,
     ) -> Option<SpeculativeCloudCorrectionJob> {
-        let insert_target = ForegroundInsertTarget {
+        let insert_target = anchor.map(|anchor| ForegroundInsertTarget {
             window_handle: anchor.window_handle,
             focus_handle: anchor.focus_handle,
             primary_focus_handle: None,
             fallback_focus_handle: None,
             focus_capture_source: None,
-        };
+        });
         let model = desktop_speculative_correction_job_model(
             pipeline_config,
             event,
-            Some(insert_target),
-            anchor.inserted_at_ms,
+            insert_target,
+            anchor.map(|anchor| anchor.inserted_at_ms).unwrap_or(0),
         )?;
-        let DesktopSpeculativeCorrectionOutputTarget::PatchInsertedText(anchor) =
-            model.output_target
-        else {
-            return None;
+        let anchor = match model.output_target {
+            DesktopSpeculativeCorrectionOutputTarget::PatchInsertedText(anchor) => Some(anchor),
+            DesktopSpeculativeCorrectionOutputTarget::InsertCorrectedText => None,
+            DesktopSpeculativeCorrectionOutputTarget::CopyPopupOnly => return None,
         };
         Some(SpeculativeCloudCorrectionJob {
             config: config.clone(),
+            segment_id: model.segment_id,
             transcript: model.local_text,
             context_before: Some(model.context_before),
             mode_override,
@@ -3385,13 +3587,14 @@ mod windows_app {
                                     }
 
                                     if let Some(tail_text) = tail_text {
-                                        match insert_live_streaming_local_segment_if_safe(
+                                        match insert_live_streaming_segment_if_safe(
                                             &config,
                                             hwnd_value as HWND,
                                             hud_hwnd_value as HWND,
                                             origin_insert_target_for_tail_insert.as_ref(),
                                             selected_event.segment_id(),
                                             &tail_text,
+                                            DesktopTextLifecycleState::Corrected,
                                         ) {
                                             Ok(Some(_)) => {}
                                             Ok(None) => {
@@ -3609,10 +3812,11 @@ mod windows_app {
                                     Ok(anchor) => {
                                         correction_job = Some(SpeculativeCloudCorrectionJob {
                                             config: config.clone(),
+                                            segment_id: local_asr_correction_segment_id.to_string(),
                                             transcript: local_text.clone(),
                                             context_before: None,
                                             mode_override,
-                                            anchor,
+                                            anchor: Some(anchor),
                                             full_document_inserted_segments: vec![local_text.clone()],
                                             latest_live_segment_guard: None,
                                             generation,
@@ -3786,6 +3990,29 @@ mod windows_app {
                 desktop_hud_view_model_for_corrected_text(&corrected_text),
                 None,
             );
+        }
+    }
+
+    fn handle_streaming_corrected_hud(hwnd: HWND, generation: u64) {
+        let state = match unsafe { get_window_state_mut(hwnd) } {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let should_refresh = state
+            .shared
+            .lock()
+            .ok()
+            .and_then(|shared| {
+                shared
+                    .active_recording
+                    .as_ref()
+                    .map(|active| active.generation == generation)
+            })
+            .unwrap_or(false);
+        if should_refresh && !state.hud_hwnd.is_null() {
+            unsafe {
+                InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+            }
         }
     }
 
@@ -4256,6 +4483,7 @@ mod windows_app {
             if visual_state != DesktopHudVisualState::Listening || !was_listening {
                 overlay.hud_meter_bins = [0.0; 9];
                 overlay.hud_streaming_partial_text = None;
+                overlay.hud_streaming_corrected_text = None;
             }
             if visual_state != DesktopHudVisualState::Thinking || !was_thinking {
                 overlay.hud_thinking_pulse_tick = 0;
@@ -4400,23 +4628,32 @@ mod windows_app {
                 }
             }
 
+            let hud_transcript_changed = runtime_events.iter().any(|event| {
+                matches!(
+                    event,
+                    SpeculativeRuntimeEvent::DraftUpdated { .. }
+                        | SpeculativeRuntimeEvent::LocalSegmentCommitted { .. }
+                )
+            });
+
             let live_dispatch = config.filter(|_| !runtime_events.is_empty()).map(|config| {
                 PendingLiveStreamingDispatch {
                     pipeline_config: desktop_speculative_pipeline_config(&config),
                     config,
-                    runtime_handle: runtime_handle.clone(),
                     mode_override: active.mode_override,
                     generation: active.generation,
                     origin_insert_target: active.origin_insert_target.clone(),
                     existing_anchors: active.live_streaming_inserted_anchors.clone(),
+                    live_correction_sender: active.live_streaming_correction_sender.clone(),
                     events: runtime_events,
                     hwnd_value: hwnd as usize,
                     hud_hwnd_value: state.hud_hwnd as usize,
                 }
             });
 
-            let latest_hud_transcript =
-                hud_streaming_transcript_from_segments(&active.hud_streaming_segments);
+            let latest_hud_transcript = hud_transcript_changed
+                .then(|| hud_streaming_transcript_from_segments(&active.hud_streaming_segments))
+                .flatten();
 
             (raw_waveform, latest_hud_transcript, live_dispatch)
         };
@@ -4432,13 +4669,14 @@ mod windows_app {
                         if known_anchors.contains_key(segment_id) {
                             continue;
                         }
-                        match insert_live_streaming_local_segment_if_safe(
+                        match insert_live_streaming_segment_if_safe(
                             &dispatch.config,
                             dispatch.hwnd_value as HWND,
                             dispatch.hud_hwnd_value as HWND,
                             dispatch.origin_insert_target.as_ref(),
                             segment_id,
                             text,
+                            DesktopTextLifecycleState::PreRecognized,
                         ) {
                             Ok(Some(anchor)) => {
                                 known_anchors.insert(segment_id.clone(), anchor.clone());
@@ -4451,19 +4689,17 @@ mod windows_app {
                         }
                     }
                     SpeculativeRuntimeEvent::CorrectionRequested { segment_id, .. } => {
-                        if let Some(anchor) = known_anchors.get(segment_id) {
-                            if let Some(job) = speculative_correction_job_for_live_inserted_segment(
-                                &dispatch.config,
-                                &dispatch.pipeline_config,
-                                event,
-                                anchor,
-                                dispatch.mode_override,
-                                dispatch.generation,
-                                dispatch.hwnd_value,
-                                dispatch.hud_hwnd_value,
-                            ) {
-                                correction_jobs.push(job);
-                            }
+                        if let Some(job) = speculative_correction_job_for_live_segment(
+                            &dispatch.config,
+                            &dispatch.pipeline_config,
+                            event,
+                            known_anchors.get(segment_id),
+                            dispatch.mode_override,
+                            dispatch.generation,
+                            dispatch.hwnd_value,
+                            dispatch.hud_hwnd_value,
+                        ) {
+                            correction_jobs.push(job);
                         }
                     }
                     SpeculativeRuntimeEvent::DraftUpdated { .. } => {}
@@ -4494,11 +4730,9 @@ mod windows_app {
             }
 
             for job in correction_jobs {
-                spawn_speculative_cloud_correction(
-                    dispatch.runtime_handle.clone(),
-                    Arc::clone(&state.shared),
-                    job,
-                );
+                if dispatch.live_correction_sender.send(job).is_err() {
+                    eprintln!("Talk live correction queue is no longer available");
+                }
             }
         }
 
@@ -4516,16 +4750,32 @@ mod windows_app {
             overlay.hud_meter_bins = next_bins;
             if let Some(partial_text) = latest_hud_transcript {
                 overlay.hud_streaming_partial_text = Some(partial_text);
+                overlay.hud_streaming_corrected_text = None;
             }
-            let partial_text = overlay.hud_streaming_partial_text.clone();
+            let (display_text, lifecycle) =
+                if let Some(corrected_text) = overlay.hud_streaming_corrected_text.clone() {
+                    (Some(corrected_text), DesktopTextLifecycleState::Corrected)
+                } else {
+                    (
+                        overlay.hud_streaming_partial_text.clone(),
+                        DesktopTextLifecycleState::PreRecognized,
+                    )
+                };
             if let Some(hud_model) = overlay.hud_model.as_mut() {
                 if hud_model.visual_state == DesktopHudVisualState::Listening {
                     let previous_detail = hud_model.detail.clone();
-                    *hud_model = desktop_hud_view_model_for_listening_waveform_with_partial(
-                        next_bins,
-                        partial_text.as_deref(),
-                    );
-                    Some((hud_model.clone(), hud_model.detail != previous_detail))
+                    let previous_lifecycle = hud_model.detail_lifecycle;
+                    *hud_model =
+                        desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+                            next_bins,
+                            display_text.as_deref(),
+                            lifecycle,
+                        );
+                    Some((
+                        hud_model.clone(),
+                        hud_model.detail != previous_detail
+                            || hud_model.detail_lifecycle != previous_lifecycle,
+                    ))
                 } else {
                     None
                 }
@@ -6216,6 +6466,7 @@ mod windows_app {
             visual_state,
             title,
             detail,
+            detail_lifecycle: None,
             meter: None,
             progress_percent: None,
         }
@@ -6486,8 +6737,8 @@ mod windows_app {
 
     unsafe fn paint_hud_window(hwnd: HWND) {
         let mut paint = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut paint);
-        if hdc.is_null() {
+        let window_hdc = BeginPaint(hwnd, &mut paint);
+        if window_hdc.is_null() {
             return;
         }
 
@@ -6509,6 +6760,43 @@ mod windows_app {
         let dpi = overlay_dpi_for_window(hwnd);
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
+        let buffer = if width > 0 && height > 0 {
+            let memory_dc = CreateCompatibleDC(window_hdc);
+            if memory_dc.is_null() {
+                None
+            } else {
+                let memory_bitmap = CreateCompatibleBitmap(window_hdc, width, height);
+                if memory_bitmap.is_null() {
+                    DeleteDC(memory_dc);
+                    None
+                } else {
+                    let old_bitmap = SelectObject(memory_dc, memory_bitmap as _);
+                    if old_bitmap.is_null() {
+                        DeleteObject(memory_bitmap as _);
+                        DeleteDC(memory_dc);
+                        None
+                    } else {
+                        Some((memory_dc, memory_bitmap, old_bitmap))
+                    }
+                }
+            }
+        } else {
+            None
+        };
+        let hdc = buffer
+            .as_ref()
+            .map(|(memory_dc, _, _)| *memory_dc)
+            .unwrap_or(window_hdc);
+        if buffer.is_some() {
+            let background_color = if model.visual_state == DesktopHudVisualState::Listening {
+                listening_shell_color()
+            } else {
+                terminal_panel_fill_color()
+            };
+            let background_brush = CreateSolidBrush(background_color);
+            FillRect(hdc, &rect, background_brush);
+            DeleteObject(background_brush as _);
+        }
         let title_font = create_overlay_font(dpi, 15, FW_BOLD as i32);
         let badge_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
         let icon_font = create_overlay_font(dpi, 13, FW_BOLD as i32);
@@ -6601,8 +6889,12 @@ mod windows_app {
                     Some(partial_text),
                 ) {
                     let partial_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
-                    SelectObject(hdc, partial_font as _);
-                    SetTextColor(hdc, rgb(245, 190, 72));
+                    let old_partial_font = SelectObject(hdc, partial_font as _);
+                    let partial_text_color = match desktop_hud_detail_lifecycle(&model) {
+                        Some(DesktopTextLifecycleState::Corrected) => rgb(245, 247, 250),
+                        _ => rgb(245, 190, 72),
+                    };
+                    SetTextColor(hdc, partial_text_color);
                     let mut partial_rect = RECT {
                         left: partial_layout.text_rect.left,
                         top: partial_layout.text_rect.top,
@@ -6657,6 +6949,7 @@ mod windows_app {
                         DeleteObject(thumb_brush as _);
                     }
                     waveform_rect = partial_layout.waveform_rect;
+                    let _ = SelectObject(hdc, old_partial_font);
                     DeleteObject(partial_font as _);
                 }
             }
@@ -6835,7 +7128,7 @@ mod windows_app {
                 .filter(|detail| !detail.trim().is_empty())
             {
                 let detail_font = create_overlay_font(dpi, 10, 400);
-                SelectObject(hdc, detail_font as _);
+                let old_detail_font = SelectObject(hdc, detail_font as _);
                 let detail_color = match desktop_hud_detail_lifecycle(&model) {
                     Some(DesktopTextLifecycleState::PreRecognized) => rgb(245, 190, 72),
                     Some(DesktopTextLifecycleState::Corrected) => rgb(245, 247, 250),
@@ -6854,6 +7147,7 @@ mod windows_app {
                     },
                     DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
                 );
+                let _ = SelectObject(hdc, old_detail_font);
                 DeleteObject(detail_font as _);
             }
         }
@@ -6862,6 +7156,12 @@ mod windows_app {
         DeleteObject(title_font as _);
         DeleteObject(badge_font as _);
         DeleteObject(icon_font as _);
+        if let Some((memory_dc, memory_bitmap, old_bitmap)) = buffer {
+            BitBlt(window_hdc, 0, 0, width, height, memory_dc, 0, 0, SRCCOPY);
+            let _ = SelectObject(memory_dc, old_bitmap);
+            DeleteObject(memory_bitmap as _);
+            DeleteDC(memory_dc);
+        }
         EndPaint(hwnd, &paint);
     }
 
