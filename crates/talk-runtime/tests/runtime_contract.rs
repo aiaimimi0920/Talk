@@ -9,8 +9,10 @@ use talk_core::{
 use talk_insert::{InsertMethod, InsertOutcome};
 use talk_runtime::{
     complete_failed_session, infer_smart_voice_mode, process_voice_transcript_text,
-    run_voice_session, run_voice_session_from_audio_artifact_with_insert_hook,
-    run_voice_session_from_audio_artifact_with_insert_hooks, runtime_voice_text_result,
+    provider_text_processing_credentials_available, run_voice_session,
+    run_voice_session_from_audio_artifact_with_insert_hook,
+    run_voice_session_from_audio_artifact_with_insert_hooks,
+    run_voice_session_from_local_transcript_with_insert_hooks, runtime_voice_text_result,
     RuntimeInsertContext, RuntimeInsertDirective, RuntimePhase, RuntimeVoiceTextResult,
 };
 
@@ -55,6 +57,46 @@ dir = "{log_dir}"
         log_dir = log_dir
     ))
     .expect("runtime test config should parse")
+}
+
+#[test]
+fn provider_text_processing_credentials_are_checked_without_exposing_secrets() {
+    let mut config = config_with_mock_provider("provider-credentials");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.api_key = Some("configured-test-key".to_string());
+    assert!(provider_text_processing_credentials_available(&config));
+
+    config.provider.api_key = None;
+    config.provider.api_key_env = None;
+    assert!(!provider_text_processing_credentials_available(&config));
+}
+
+#[test]
+fn local_transcript_completes_without_openai_credentials() {
+    let mut config = config_with_mock_provider("local-transcript-without-provider-key");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.mock_transcript = None;
+    config.provider.api_key = None;
+    config.provider.api_key_env = Some("TALK_TEST_MISSING_PROVIDER_KEY".to_string());
+
+    let mut session = VoiceSession::new("local-transcript-without-provider-key");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_local_transcript_with_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        "本地识别已经成功。".to_string(),
+        Some(VoiceMode::Smart),
+        |_| RuntimeInsertDirective::UseConfiguredOutput,
+        || {},
+        |_| {},
+    )
+    .expect("local transcript should not require provider credentials");
+
+    assert_eq!(report.session.status(), SessionStatus::Completed);
+    assert_eq!(report.session.output_text(), Some("本地识别已经成功。"));
 }
 
 #[tokio::test]

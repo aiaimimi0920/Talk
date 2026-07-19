@@ -105,8 +105,9 @@ mod windows_app {
     };
     use talk_runtime::{
         complete_cancelled_session, complete_failed_session, load_effective_config,
-        process_voice_transcript_text, run_local_streaming_asr_service_from_recording,
-        run_mock_speculative_session, run_voice_session_from_audio_artifact_with_insert_hooks,
+        process_voice_transcript_text, provider_text_processing_credentials_available,
+        run_local_streaming_asr_service_from_recording, run_mock_speculative_session,
+        run_voice_session_from_audio_artifact_with_insert_hooks,
         run_voice_session_from_external_asr_command_with_insert_hooks,
         run_voice_session_from_local_transcript_with_insert_hooks,
         run_voice_session_from_transcript_with_insert_hooks, runtime_voice_text_result,
@@ -3079,7 +3080,8 @@ mod windows_app {
         };
         let cloud_correction_after_local_insert = (use_external_speculative_asr
             || use_streaming_speculative_asr)
-            && desktop_speculative_cloud_correction_enabled(&speculative_pipeline_config);
+            && desktop_speculative_cloud_correction_enabled(&speculative_pipeline_config)
+            && provider_text_processing_credentials_available(&config);
         let local_asr_correction_segment_id = if use_streaming_speculative_asr {
             "streaming-service-final"
         } else {
@@ -3308,7 +3310,9 @@ mod windows_app {
                             if let Some(selected_event) = selected_event {
                                 let transcript = final_transcript_from_streaming_asr_events(&events)
                                     .unwrap_or_else(|_| selected_event.text().to_string());
-                                if streaming_stop_policy.insert_final_transcript {
+                                if streaming_stop_policy.insert_final_transcript
+                                    && provider_text_processing_credentials_available(&config)
+                                {
                                     run_voice_session_from_transcript_with_insert_hooks(
                                         &config,
                                         session,
@@ -3321,6 +3325,17 @@ mod windows_app {
                                         phase_callback,
                                     )
                                     .await
+                                } else if streaming_stop_policy.insert_final_transcript {
+                                    run_voice_session_from_local_transcript_with_insert_hooks(
+                                        &config,
+                                        session,
+                                        trigger_events,
+                                        transcript,
+                                        mode_override,
+                                        before_insert,
+                                        after_insert,
+                                        phase_callback,
+                                    )
                                 } else {
                                     let tail_text = desktop_streaming_stop_tail_text(
                                         selected_event.segment_id(),

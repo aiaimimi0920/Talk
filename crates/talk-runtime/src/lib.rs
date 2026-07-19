@@ -1187,6 +1187,28 @@ async fn process_output(
     }
 }
 
+pub fn provider_text_processing_credentials_available(config: &TalkConfig) -> bool {
+    match config.provider.kind {
+        ProviderKind::Mock | ProviderKind::Http => true,
+        ProviderKind::OpenAiCompatible => {
+            if config
+                .provider
+                .api_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return true;
+            }
+            config
+                .provider
+                .api_key_env
+                .as_deref()
+                .and_then(|name| std::env::var(name).ok())
+                .is_some_and(|value| !value.trim().is_empty() && value.trim() == value)
+        }
+    }
+}
+
 fn resolve_provider_api_key(config: &TalkConfig) -> Result<Option<String>> {
     if let Some(api_key) = config.provider.api_key.as_ref() {
         return Ok(Some(api_key.clone()));
