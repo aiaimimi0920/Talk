@@ -1174,7 +1174,7 @@ Describe 'Publish-TalkRelease helpers' {
         }
     }
 
-    It 'packages an auto-discovered local qwen dashscope key into the desktop config for direct exe launch' {
+    It 'keeps the default release credential-free when local qwen credentials exist' {
         $tempRoot = Join-Path $env:TEMP ('talk-release-publish-autokey-' + [guid]::NewGuid().ToString())
         $releaseRoot = Join-Path $tempRoot 'release-root'
         New-Item -ItemType Directory -Path $releaseRoot | Out-Null
@@ -1211,8 +1211,8 @@ Describe 'Publish-TalkRelease helpers' {
             Test-Path -LiteralPath $desktopConfigPath | Should Be $true
 
             $desktopConfigText = Get-Content -LiteralPath $desktopConfigPath -Raw
-            $desktopConfigText | Should Match 'api_key = "auto-json-key"'
-            $desktopConfigText | Should Not Match 'api_key_env = "TALK_PROVIDER_API_KEY"'
+            $desktopConfigText | Should Not Match '(?m)^api_key\s*='
+            $desktopConfigText | Should Match 'api_key_env = "TALK_PROVIDER_API_KEY"'
         }
         finally {
             if ($null -eq $originalTalkProviderApiKey) {

@@ -1,5 +1,9 @@
+use std::io::Write;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use talk_client::FrontContext;
 use talk_core::{
@@ -59,6 +63,36 @@ dir = "{log_dir}"
     .expect("runtime test config should parse")
 }
 
+fn spawn_provider_request_detector() -> (String, thread::JoinHandle<bool>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider request detector");
+    listener
+        .set_nonblocking(true)
+        .expect("set provider request detector nonblocking");
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().expect("provider detector address")
+    );
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    return true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("provider request detector failed: {error}"),
+            }
+        }
+        false
+    });
+    (endpoint, handle)
+}
+
 #[test]
 fn provider_text_processing_credentials_are_checked_without_exposing_secrets() {
     let mut config = config_with_mock_provider("provider-credentials");
@@ -84,6 +118,40 @@ fn ambient_dashscope_file_does_not_enable_non_dashscope_provider() {
     config.provider.api_key_env = None;
 
     assert!(!provider_text_processing_credentials_available(&config));
+}
+
+#[tokio::test]
+async fn missing_openai_credentials_do_not_send_provider_request() {
+    let (endpoint, detector) = spawn_provider_request_detector();
+    let mut config = config_with_mock_provider("missing-credentials-no-request");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.mock_transcript = None;
+    config.provider.audio_transcriptions_endpoint = Some(endpoint.clone());
+    config.provider.chat_completions_endpoint = Some(endpoint);
+    config.provider.transcription_model = Some("test-transcription-model".to_string());
+    config.provider.chat_model = Some("test-chat-model".to_string());
+    config.provider.api_key = None;
+    config.provider.api_key_env = Some("TALK_TEST_MISSING_PROVIDER_KEY".to_string());
+
+    let error = process_voice_transcript_text(
+        &config,
+        "local transcript".to_string(),
+        Some(VoiceMode::Transcribe),
+        FrontContext::default(),
+    )
+    .await
+    .expect_err("missing credentials should fail before provider I/O");
+
+    let provider_request_observed = detector.join().expect("provider request detector should join");
+    assert!(
+        !provider_request_observed,
+        "missing credentials must not create an outbound provider connection"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("TALK_TEST_MISSING_PROVIDER_KEY")
+    );
 }
 
 #[test]
