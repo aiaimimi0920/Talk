@@ -1,5 +1,10 @@
+mod model_bootstrap;
 mod product_payload;
 
+pub use model_bootstrap::{
+    default_zipformer_model_spec, download_and_install_model, install_model_from_reader,
+    resolve_talk_data_root, validate_installed_model, ModelSpec,
+};
 pub use product_payload::{
     build_embedded_runtime_payload, extract_embedded_runtime_payload,
     parse_embedded_runtime_payload, EmbeddedRuntimePayload, EmbeddedRuntimePayloadFile,

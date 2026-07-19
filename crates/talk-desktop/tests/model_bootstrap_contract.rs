@@ -39,6 +39,40 @@ fn archive_with_files(files: &[(&str, &[u8])]) -> Vec<u8> {
     compressed
 }
 
+fn traversal_archive() -> Vec<u8> {
+    let mut tar_bytes = {
+        let mut bytes = Vec::new();
+        {
+            let mut tar = Builder::new(&mut bytes);
+            let mut header = Header::new_gnu();
+            header.set_size(6);
+            header.set_mode(0o600);
+            header.set_cksum();
+            tar.append_data(
+                &mut header,
+                "fixture/tokens.txt",
+                &b"tokens"[..],
+            )
+            .expect("append traversal model fixture");
+            tar.finish().expect("finish traversal tar");
+        }
+        bytes
+    };
+    let header = &mut tar_bytes[..512];
+    header[..100].fill(0);
+    header[..15].copy_from_slice(b"../escape.txt\0\0");
+    header[148..156].fill(b' ');
+    let checksum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
+    let checksum_field = format!("{checksum:06o}\0 ");
+    header[148..156].copy_from_slice(checksum_field.as_bytes());
+
+    let mut compressed = Vec::new();
+    let mut encoder = BzEncoder::new(&mut compressed, Compression::best());
+    encoder.write_all(&tar_bytes).expect("compress traversal tar");
+    encoder.finish().expect("finish traversal bzip2");
+    compressed
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes)
@@ -116,13 +150,7 @@ fn rejects_an_archive_with_the_wrong_sha256() {
 
 #[test]
 fn rejects_an_archive_with_path_traversal() {
-    let archive = archive_with_files(&[
-        ("../escape.txt", b"escape"),
-        ("fixture/tokens.txt", b"tokens"),
-        ("fixture/encoder.onnx", b"encoder"),
-        ("fixture/decoder.onnx", b"decoder"),
-        ("fixture/joiner.onnx", b"joiner"),
-    ]);
+    let archive = traversal_archive();
     let spec = fixture_spec(&archive);
     let root = unique_temp_dir("talk-model-bootstrap-traversal");
 

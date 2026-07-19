@@ -202,11 +202,11 @@ Implement:
 
 ```rust
 pub struct ModelSpec {
-    pub id: &'static str,
-    pub url: &'static str,
-    pub archive_name: &'static str,
-    pub sha256: &'static str,
-    pub required_files: &'static [&'static str],
+    pub id: String,
+    pub url: String,
+    pub archive_name: String,
+    pub sha256: String,
+    pub required_files: Vec<String>,
 }
 
 pub fn default_zipformer_model_spec() -> ModelSpec;
