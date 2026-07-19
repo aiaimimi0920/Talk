@@ -12,6 +12,7 @@ mod windows_app {
     use std::cell::Cell;
     use std::collections::HashMap;
     use std::ffi::OsString;
+    use std::fs;
     use std::mem;
     use std::net::{SocketAddr, TcpStream};
     use std::os::windows::process::CommandExt;
@@ -33,6 +34,7 @@ mod windows_app {
         TriggerMode, VoiceEvent, VoiceMode, VoiceSession,
     };
     use talk_desktop::{
+        default_zipformer_model_spec, download_and_install_model,
         build_desktop_insert_target_diagnostic_with_trace,
         build_desktop_insert_target_trace_diagnostic, build_status_report, compose_hud_message,
         config_status_message, decide_speculative_patch_application, desktop_action_binding_label,
@@ -55,7 +57,9 @@ mod windows_app {
         desktop_listening_hud_visible_partial_text, desktop_listening_hud_waveform_rect,
         desktop_local_asr_daemon_bind_from_endpoint, desktop_mode_dropdown_model,
         desktop_mode_text_result_model, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
+        desktop_effective_streaming_asr_enabled,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
+        desktop_product_local_asr_daemon_launch_plan_with_config,
         desktop_preferred_paste_shortcut_for_target, desktop_runtime_insert_directive_for_mode,
         desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
         desktop_shortcut_help_model, desktop_shortcut_help_position,
@@ -67,7 +71,8 @@ mod windows_app {
         hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
         idle_status_detail, live_streaming_local_segment_plan, native_status_message,
         observe_foreground_target_stability, parse_desktop_window_handle,
-        recording_stop_watcher_policy, resolve_default_desktop_config_path,
+        extract_embedded_runtime_payload, recording_stop_watcher_policy,
+        resolve_default_desktop_config_path, resolve_talk_data_root, validate_installed_model,
         resolve_desktop_audio_file_override, resolve_foreground_focus_capture,
         resolve_hotkey_origin_insert_target, resolve_hotkey_recording_origin_enrichment,
         resolve_pending_hotkey_origin_capture, scale_desktop_overlay_length,
@@ -89,6 +94,7 @@ mod windows_app {
         SpeculativePatchApplication, SpeculativePatchCandidate, StatusSnapshot,
         ToggleDesktopHotkeyRouter, ToggleDesktopHotkeyRouterPendingHold,
         WindowsHotkeyBindingRegistrationPlan, WindowsHotkeyBindingStrategy,
+        TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME,
         TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV, TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV,
         TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV,
     };
@@ -188,6 +194,7 @@ mod windows_app {
     const HOTKEY_PENDING_HOLD_START_MESSAGE: u32 = WM_APP + 7;
     const HOTKEY_PENDING_HOLD_CANCEL_MESSAGE: u32 = WM_APP + 8;
     const CORRECTION_COPY_POPUP_MESSAGE: u32 = WM_APP + 9;
+    const MODEL_BOOTSTRAP_MESSAGE: u32 = WM_APP + 10;
     const TIMER_HIDE_HUD: usize = 1;
     const TIMER_SHORTCUT_HELP_HOLD: usize = 2;
     const TIMER_RECORDING_LEVEL: usize = 3;
@@ -263,6 +270,7 @@ mod windows_app {
         pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
         release_time_origin_insert_target: Option<DesktopInsertTargetContext>,
         source: ActiveRecordingSource,
+        use_streaming_speculative_asr: bool,
         speculative_runtime_state: SpeculativeRuntimeState,
         speculative_segmenter_config: SegmenterConfig,
         live_streaming_inserted_anchors: HashMap<String, SpeculativeInsertAnchor>,
@@ -289,6 +297,9 @@ mod windows_app {
         pending_copy_popup: Option<PendingCopyPopup>,
         pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
         local_asr_daemon: Option<ManagedLocalAsrDaemon>,
+        local_asr_bootstrap_status: LocalAsrBootstrapStatus,
+        product_runtime_worker: Option<PathBuf>,
+        product_model_root: Option<PathBuf>,
         runtime_handle: tokio::runtime::Handle,
         next_generation: u64,
     }
@@ -296,6 +307,15 @@ mod windows_app {
     struct ManagedLocalAsrDaemon {
         endpoint: String,
         child: std::process::Child,
+    }
+
+    #[derive(Debug, Clone)]
+    enum LocalAsrBootstrapStatus {
+        NotStarted,
+        EngineeringFallback,
+        Downloading,
+        Ready,
+        FallbackCloud(String),
     }
 
     struct PendingCopyPopup {
@@ -578,6 +598,9 @@ mod windows_app {
             pending_copy_popup: None,
             pending_hotkey_origin_insert_target: None,
             local_asr_daemon: None,
+            local_asr_bootstrap_status: LocalAsrBootstrapStatus::NotStarted,
+            product_runtime_worker: None,
+            product_model_root: None,
             runtime_handle: runtime.handle().clone(),
             next_generation: 1,
         }));
@@ -630,6 +653,7 @@ mod windows_app {
             }
             return Err(error);
         }
+        start_product_bootstrap(hwnd, Arc::clone(&shared));
 
         let mut message = MSG::default();
         while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
@@ -910,6 +934,140 @@ mod windows_app {
             );
         }
         Ok(())
+    }
+
+    fn start_product_bootstrap(hwnd: HWND, shared: Arc<Mutex<SharedState>>) {
+        let configured_for_streaming = {
+            let shared_state = shared.lock().expect("Talk desktop shared state");
+            shared_state
+                .config
+                .as_ref()
+                .map(|config| {
+                    desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(config))
+                        == DesktopSpeculativeLocalAsrRoute::StreamingService
+                })
+                .unwrap_or(false)
+        };
+        if !configured_for_streaming {
+            return;
+        }
+
+        let data_root = match resolve_talk_data_root() {
+            Ok(root) => root,
+            Err(error) => {
+                set_local_asr_bootstrap_status(
+                    &shared,
+                    LocalAsrBootstrapStatus::FallbackCloud(error),
+                );
+                return;
+            }
+        };
+        let model_root = data_root.join("models").join("sherpa-onnx");
+        let executable_path = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                set_local_asr_bootstrap_status(
+                    &shared,
+                    LocalAsrBootstrapStatus::FallbackCloud(format!(
+                        "resolve Talk executable for local ASR payload: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        let executable_bytes = match fs::read(&executable_path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                set_local_asr_bootstrap_status(
+                    &shared,
+                    LocalAsrBootstrapStatus::FallbackCloud(format!(
+                        "read Talk executable for local ASR payload: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        let has_embedded_payload = executable_bytes
+            .windows(b"TLPAY001".len())
+            .any(|window| window == b"TLPAY001");
+        if !has_embedded_payload {
+            set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::EngineeringFallback);
+            return;
+        }
+        let runtime_root = data_root.join("runtime");
+        let worker_path = match extract_embedded_runtime_payload(&executable_bytes, &runtime_root) {
+            Ok(runtime_dir) => runtime_dir.join(TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME),
+            Err(error) => {
+                set_local_asr_bootstrap_status(
+                    &shared,
+                    LocalAsrBootstrapStatus::FallbackCloud(format!(
+                        "verify embedded Talk local ASR runtime: {error}"
+                    )),
+                );
+                return;
+            }
+        };
+        {
+            let mut shared_state = shared.lock().expect("Talk desktop shared state");
+            shared_state.product_runtime_worker = Some(worker_path);
+            shared_state.product_model_root = Some(model_root.clone());
+        }
+
+        let spec = default_zipformer_model_spec();
+        let model_dir = model_root.join(&spec.id);
+        if validate_installed_model(&spec, &model_dir).is_ok() {
+            set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::Ready);
+            return;
+        }
+
+        set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::Downloading);
+        let runtime_handle = {
+            let shared_state = shared.lock().expect("Talk desktop shared state");
+            shared_state.runtime_handle.clone()
+        };
+        let shared_for_task = Arc::clone(&shared);
+        let hwnd_value = hwnd as usize;
+        runtime_handle.spawn(async move {
+            let status = match download_and_install_model(&spec, &model_root).await {
+                Ok(_) => LocalAsrBootstrapStatus::Ready,
+                Err(error) => LocalAsrBootstrapStatus::FallbackCloud(format!(
+                    "download local ASR model: {error}"
+                )),
+            };
+            set_local_asr_bootstrap_status(&shared_for_task, status);
+            unsafe {
+                let _ = PostMessageW(hwnd_value as HWND, MODEL_BOOTSTRAP_MESSAGE, 0, 0);
+            }
+        });
+        let _ = update_tray_icon(hwnd, "Talk: downloading local ASR model");
+    }
+
+    fn set_local_asr_bootstrap_status(
+        shared: &Arc<Mutex<SharedState>>,
+        status: LocalAsrBootstrapStatus,
+    ) {
+        let mut shared_state = shared.lock().expect("Talk desktop shared state");
+        shared_state.local_asr_bootstrap_status = status;
+    }
+
+    fn handle_model_bootstrap_status(hwnd: HWND) {
+        let status = unsafe { get_window_state_mut(hwnd) }
+            .ok()
+            .and_then(|state| state.shared.lock().ok().map(|shared| shared.local_asr_bootstrap_status.clone()));
+        match status {
+            Some(LocalAsrBootstrapStatus::Ready) => {
+                let _ = update_tray_icon(hwnd, "Talk: local ASR ready");
+                let _ = show_hud_text(hwnd, "Talk: local ASR ready", Some(1200));
+            }
+            Some(LocalAsrBootstrapStatus::FallbackCloud(reason)) => {
+                let _ = update_tray_icon(hwnd, "Talk: cloud ASR fallback");
+                let _ = show_hud_text(hwnd, &format!("Talk: cloud ASR fallback\n{reason}"), Some(2400));
+            }
+            Some(LocalAsrBootstrapStatus::Downloading) => {
+                let _ = update_tray_icon(hwnd, "Talk: downloading local ASR model");
+            }
+            _ => {}
+        }
     }
 
     fn unregister_global_hotkey(hwnd: HWND) {
@@ -1495,6 +1653,10 @@ mod windows_app {
                 handle_worker_done(hwnd, wparam as u64);
                 0
             }
+            MODEL_BOOTSTRAP_MESSAGE => {
+                handle_model_bootstrap_status(hwnd);
+                0
+            }
             CORRECTION_COPY_POPUP_MESSAGE => {
                 handle_correction_copy_popup(hwnd, wparam as u64);
                 0
@@ -1743,34 +1905,55 @@ mod windows_app {
     fn ensure_packaged_local_asr_daemon(
         shared: &mut SharedState,
         config: &TalkConfig,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(service) = config.speculative.streaming_service.as_ref() else {
-            return Ok(());
+            return Ok(false);
         };
         let endpoint = service.endpoint.clone();
+
+        match &shared.local_asr_bootstrap_status {
+            LocalAsrBootstrapStatus::Downloading
+            | LocalAsrBootstrapStatus::NotStarted
+            | LocalAsrBootstrapStatus::FallbackCloud(_) => return Ok(false),
+            LocalAsrBootstrapStatus::EngineeringFallback
+            | LocalAsrBootstrapStatus::Ready => {}
+        }
 
         if let Some(mut daemon) = shared.local_asr_daemon.take() {
             if daemon.endpoint == endpoint && managed_local_asr_daemon_is_running(&mut daemon) {
                 shared.local_asr_daemon = Some(daemon);
-                return Ok(());
+                return Ok(true);
             }
             stop_managed_local_asr_daemon(daemon);
         }
 
         if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(80)) {
-            return Ok(());
+            return Ok(true);
         }
 
-        let executable_path =
-            std::env::current_exe().context("resolve Talk desktop executable path")?;
-        let Some(plan) = desktop_packaged_local_asr_daemon_launch_plan_with_config(
-            &executable_path,
-            &endpoint,
-            service.local_daemon.as_ref(),
-        )
-        .map_err(anyhow::Error::msg)?
-        else {
-            return Ok(());
+        let plan = if let (Some(worker_path), Some(model_root)) = (
+            shared.product_runtime_worker.as_ref(),
+            shared.product_model_root.as_ref(),
+        ) {
+            desktop_product_local_asr_daemon_launch_plan_with_config(
+                worker_path,
+                model_root,
+                &endpoint,
+                service.local_daemon.as_ref(),
+            )
+            .map_err(anyhow::Error::msg)?
+        } else {
+            let executable_path =
+                std::env::current_exe().context("resolve Talk desktop executable path")?;
+            desktop_packaged_local_asr_daemon_launch_plan_with_config(
+                &executable_path,
+                &endpoint,
+                service.local_daemon.as_ref(),
+            )
+            .map_err(anyhow::Error::msg)?
+        };
+        let Some(plan) = plan else {
+            return Ok(false);
         };
 
         let mut child = std::process::Command::new(&plan.executable_path)
@@ -1791,7 +1974,7 @@ mod windows_app {
         loop {
             if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
                 shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
-                return Ok(());
+                return Ok(true);
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -1804,7 +1987,7 @@ mod windows_app {
             }
             if Instant::now() >= deadline {
                 shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
-                return Ok(());
+                return Ok(true);
             }
             thread::sleep(Duration::from_millis(40));
         }
@@ -1953,26 +2136,49 @@ mod windows_app {
             };
         let speculative_local_asr_route =
             desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(&config));
-        let use_streaming_speculative_asr =
+        let configured_streaming_speculative_asr =
             speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::StreamingService;
-        if use_streaming_speculative_asr {
+        let local_asr_ready = if configured_streaming_speculative_asr {
             let ensure_result = {
                 let mut shared = state.shared.lock().expect("Talk desktop shared state");
                 ensure_packaged_local_asr_daemon(&mut shared, &config)
             };
-            if let Err(error) = ensure_result {
-                let _ =
-                    complete_failed_session(&config, session, trigger_events, error, false, |_| {});
-                let _ = refresh_idle_tray_status(hwnd);
+            match ensure_result {
+                Ok(ready) => ready,
+                Err(error) => {
+                    {
+                        let mut shared = state.shared.lock().expect("Talk desktop shared state");
+                        shared.local_asr_bootstrap_status =
+                            LocalAsrBootstrapStatus::FallbackCloud(error.to_string());
+                    }
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let use_streaming_speculative_asr = desktop_effective_streaming_asr_enabled(
+            speculative_local_asr_route,
+            local_asr_ready,
+        );
+        if configured_streaming_speculative_asr && !use_streaming_speculative_asr {
+            let _ = update_tray_icon(hwnd, "Talk: cloud ASR fallback");
+            if !matches!(
+                state
+                    .shared
+                    .lock()
+                    .expect("Talk desktop shared state")
+                    .local_asr_bootstrap_status,
+                LocalAsrBootstrapStatus::Downloading
+            ) {
                 let _ = show_hud_text(
                     hwnd,
                     &compose_hud_message(
-                        "Talk: failed",
-                        Some("local streaming ASR daemon unavailable"),
+                        "Talk: cloud ASR fallback",
+                        Some("local streaming ASR is unavailable"),
                     ),
                     Some(1800),
                 );
-                return Ok(());
             }
         }
         let audio_override_raw = std::env::var(TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV).ok();
@@ -2089,6 +2295,7 @@ mod windows_app {
                 pending_hotkey_origin_insert_target,
                 release_time_origin_insert_target: release_time_origin_target,
                 source: recording_source,
+                use_streaming_speculative_asr,
                 speculative_runtime_state: SpeculativeRuntimeState::default(),
                 speculative_segmenter_config: SegmenterConfig::default(),
                 live_streaming_inserted_anchors: HashMap::new(),
@@ -2712,8 +2919,7 @@ mod windows_app {
             desktop_speculative_local_asr_route(&speculative_pipeline_config);
         let use_external_speculative_asr =
             speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::ExternalCommand;
-        let use_streaming_speculative_asr =
-            speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::StreamingService;
+        let use_streaming_speculative_asr = active.use_streaming_speculative_asr;
         let live_inserted_anchors_for_stop = active
             .live_streaming_inserted_segment_ids
             .iter()
