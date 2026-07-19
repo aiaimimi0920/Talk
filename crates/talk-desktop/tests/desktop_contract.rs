@@ -36,8 +36,9 @@ use talk_desktop::{
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
     desktop_preferred_paste_shortcut_for_process_name, desktop_preferred_paste_shortcut_for_target,
     desktop_product_local_asr_daemon_launch_plan_with_config,
-    desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
-    desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
+    desktop_product_local_asr_startup_timeout_ms, desktop_runtime_insert_directive_for_mode,
+    desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
+    desktop_shortcut_help_model, desktop_shortcut_help_position,
     desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
     desktop_speculative_local_asr_route, desktop_speculative_pipeline_enabled,
     desktop_speculative_replacement_selection_count, desktop_speculative_transcript_view_model,
@@ -3840,6 +3841,12 @@ fn packaged_local_asr_daemon_launch_plan_returns_none_when_daemon_is_missing() {
             .expect("missing daemon should not be an endpoint error");
 
     assert_eq!(plan, None);
+}
+
+#[test]
+fn product_local_asr_startup_timeout_keeps_slow_model_bootstrap_alive() {
+    assert_eq!(desktop_product_local_asr_startup_timeout_ms(1_000), 15_000);
+    assert_eq!(desktop_product_local_asr_startup_timeout_ms(30_000), 30_000);
 }
 
 #[test]

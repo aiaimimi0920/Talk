@@ -60,8 +60,9 @@ mod windows_app {
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
         desktop_preferred_paste_shortcut_for_target,
         desktop_product_local_asr_daemon_launch_plan_with_config,
-        desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
-        desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
+        desktop_product_local_asr_startup_timeout_ms, desktop_runtime_insert_directive_for_mode,
+        desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
+        desktop_shortcut_help_model, desktop_shortcut_help_position,
         desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
         desktop_speculative_local_asr_route, desktop_speculative_replacement_selection_count,
         desktop_streaming_hud_transcript, desktop_streaming_latest_segment_allows_auto_patch,
@@ -1979,7 +1980,9 @@ mod windows_app {
                 )
             })?;
 
-        let deadline = Instant::now() + Duration::from_millis(800);
+        let startup_timeout_ms =
+            desktop_product_local_asr_startup_timeout_ms(service.connect_timeout_ms);
+        let deadline = Instant::now() + Duration::from_millis(startup_timeout_ms);
         loop {
             if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
                 shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
@@ -1995,8 +1998,11 @@ mod windows_app {
                 }
             }
             if Instant::now() >= deadline {
-                shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
-                return Ok(true);
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!(
+                    "packaged local ASR daemon did not become ready within {startup_timeout_ms} ms"
+                );
             }
             thread::sleep(Duration::from_millis(40));
         }

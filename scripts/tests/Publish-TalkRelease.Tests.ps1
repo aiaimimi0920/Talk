@@ -152,6 +152,7 @@ Describe 'Publish-TalkRelease helpers' {
 
         $configText | Should Match 'api_key = "packed-key"'
         $configText | Should Not Match 'api_key_env = "TALK_PROVIDER_API_KEY"'
+        $configText | Should Match 'connect_timeout_ms = 15000'
     }
 
     It 'can disable environment and local-file api key auto-discovery for public releases' {

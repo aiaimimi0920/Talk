@@ -3982,6 +3982,13 @@ pub fn desktop_product_local_asr_daemon_launch_plan_with_config(
     }))
 }
 
+/// Product-managed Sherpa workers may bind their socket before the recognizer
+/// has finished loading the model. Give the first WebSocket handshake enough
+/// time to cross that startup boundary while preserving longer user settings.
+pub fn desktop_product_local_asr_startup_timeout_ms(configured_connect_timeout_ms: u64) -> u64 {
+    configured_connect_timeout_ms.max(15_000)
+}
+
 fn desktop_auto_local_asr_daemon_config(
     model_root: &Path,
 ) -> Option<SpeculativeLocalAsrDaemonConfig> {

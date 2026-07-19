@@ -358,7 +358,7 @@ max_auto_patch_edit_ratio = 0.25
 endpoint = "ws://127.0.0.1:53171/asr"
 sample_rate_hz = 16000
 channels = 1
-connect_timeout_ms = 1000
+connect_timeout_ms = 15000
 idle_timeout_ms = 3000
 final_timeout_ms = 7000
 
