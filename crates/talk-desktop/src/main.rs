@@ -34,12 +34,11 @@ mod windows_app {
         TriggerMode, VoiceEvent, VoiceMode, VoiceSession,
     };
     use talk_desktop::{
-        default_zipformer_model_spec, download_and_install_model,
         build_desktop_insert_target_diagnostic_with_trace,
         build_desktop_insert_target_trace_diagnostic, build_status_report, compose_hud_message,
-        config_status_message, decide_speculative_patch_application, desktop_action_binding_label,
-        desktop_action_bindings, desktop_copy_popup_action_for_virtual_key,
-        desktop_copy_popup_activation_policy,
+        config_status_message, decide_speculative_patch_application, default_zipformer_model_spec,
+        desktop_action_binding_label, desktop_action_bindings,
+        desktop_copy_popup_action_for_virtual_key, desktop_copy_popup_activation_policy,
         desktop_copy_popup_close_button_rect as popup_close_button_layout_rect,
         desktop_copy_popup_copy_button_rect as popup_copy_button_layout_rect,
         desktop_copy_popup_copy_shows_follow_up_hud, desktop_copy_popup_editor_content_rect,
@@ -47,9 +46,10 @@ mod windows_app {
         desktop_copy_popup_metrics, desktop_copy_popup_model,
         desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
         desktop_copy_popup_position, desktop_document_recorrection_session_decision,
-        desktop_hud_activation_policy, desktop_hud_metrics_for_view_model,
-        desktop_hud_presentation_for_phase, desktop_hud_thinking_palette,
-        desktop_hud_thinking_progress_model, desktop_hud_thinking_text_wave_offsets,
+        desktop_effective_streaming_asr_enabled, desktop_hud_activation_policy,
+        desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
+        desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
+        desktop_hud_thinking_text_wave_offsets,
         desktop_hud_view_model_for_listening_waveform_with_partial,
         desktop_hud_view_model_for_phase, desktop_insert_target_restore_requested,
         desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
@@ -57,26 +57,26 @@ mod windows_app {
         desktop_listening_hud_visible_partial_text, desktop_listening_hud_waveform_rect,
         desktop_local_asr_daemon_bind_from_endpoint, desktop_mode_dropdown_model,
         desktop_mode_text_result_model, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
-        desktop_effective_streaming_asr_enabled,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
+        desktop_preferred_paste_shortcut_for_target,
         desktop_product_local_asr_daemon_launch_plan_with_config,
-        desktop_preferred_paste_shortcut_for_target, desktop_runtime_insert_directive_for_mode,
-        desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
-        desktop_shortcut_help_model, desktop_shortcut_help_position,
+        desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
+        desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
         desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
         desktop_speculative_local_asr_route, desktop_speculative_replacement_selection_count,
         desktop_streaming_hud_transcript, desktop_streaming_latest_segment_allows_auto_patch,
         desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
+        download_and_install_model, extract_embedded_runtime_payload,
         foreground_target_refresh_requested, foreground_target_stability_satisfied,
         hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
         idle_status_detail, live_streaming_local_segment_plan, native_status_message,
         observe_foreground_target_stability, parse_desktop_window_handle,
-        extract_embedded_runtime_payload, recording_stop_watcher_policy,
-        resolve_default_desktop_config_path, resolve_talk_data_root, validate_installed_model,
+        recording_stop_watcher_policy, resolve_default_desktop_config_path,
         resolve_desktop_audio_file_override, resolve_foreground_focus_capture,
         resolve_hotkey_origin_insert_target, resolve_hotkey_recording_origin_enrichment,
-        resolve_pending_hotkey_origin_capture, scale_desktop_overlay_length,
-        select_foreground_insert_target, select_windows_hotkey_binding_strategy, tray_menu_model,
+        resolve_pending_hotkey_origin_capture, resolve_talk_data_root,
+        scale_desktop_overlay_length, select_foreground_insert_target,
+        select_windows_hotkey_binding_strategy, tray_menu_model, validate_installed_model,
         windows_hotkey_binding_registration_plan, write_desktop_insert_target_diagnostic,
         ConfigAvailability, DesktopActionBinding, DesktopActionRoute, DesktopCopyPopupAction,
         DesktopCopyPopupMetrics, DesktopCopyPopupModel, DesktopCopyPopupPaneModel,
@@ -94,9 +94,8 @@ mod windows_app {
         SpeculativePatchApplication, SpeculativePatchCandidate, StatusSnapshot,
         ToggleDesktopHotkeyRouter, ToggleDesktopHotkeyRouterPendingHold,
         WindowsHotkeyBindingRegistrationPlan, WindowsHotkeyBindingStrategy,
-        TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME,
         TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV, TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV,
-        TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV,
+        TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV, TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME,
     };
     use talk_insert::{
         probe_native_windows_clipboard_readiness, ClipboardBackend, ClipboardPasteInserter,
@@ -943,8 +942,9 @@ mod windows_app {
                 .config
                 .as_ref()
                 .map(|config| {
-                    desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(config))
-                        == DesktopSpeculativeLocalAsrRoute::StreamingService
+                    desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
+                        config,
+                    )) == DesktopSpeculativeLocalAsrRoute::StreamingService
                 })
                 .unwrap_or(false)
         };
@@ -1053,7 +1053,13 @@ mod windows_app {
     fn handle_model_bootstrap_status(hwnd: HWND) {
         let status = unsafe { get_window_state_mut(hwnd) }
             .ok()
-            .and_then(|state| state.shared.lock().ok().map(|shared| shared.local_asr_bootstrap_status.clone()));
+            .and_then(|state| {
+                state
+                    .shared
+                    .lock()
+                    .ok()
+                    .map(|shared| shared.local_asr_bootstrap_status.clone())
+            });
         match status {
             Some(LocalAsrBootstrapStatus::Ready) => {
                 let _ = update_tray_icon(hwnd, "Talk: local ASR ready");
@@ -1061,7 +1067,11 @@ mod windows_app {
             }
             Some(LocalAsrBootstrapStatus::FallbackCloud(reason)) => {
                 let _ = update_tray_icon(hwnd, "Talk: cloud ASR fallback");
-                let _ = show_hud_text(hwnd, &format!("Talk: cloud ASR fallback\n{reason}"), Some(2400));
+                let _ = show_hud_text(
+                    hwnd,
+                    &format!("Talk: cloud ASR fallback\n{reason}"),
+                    Some(2400),
+                );
             }
             Some(LocalAsrBootstrapStatus::Downloading) => {
                 let _ = update_tray_icon(hwnd, "Talk: downloading local ASR model");
@@ -1915,8 +1925,7 @@ mod windows_app {
             LocalAsrBootstrapStatus::Downloading
             | LocalAsrBootstrapStatus::NotStarted
             | LocalAsrBootstrapStatus::FallbackCloud(_) => return Ok(false),
-            LocalAsrBootstrapStatus::EngineeringFallback
-            | LocalAsrBootstrapStatus::Ready => {}
+            LocalAsrBootstrapStatus::EngineeringFallback | LocalAsrBootstrapStatus::Ready => {}
         }
 
         if let Some(mut daemon) = shared.local_asr_daemon.take() {
@@ -2157,10 +2166,8 @@ mod windows_app {
         } else {
             false
         };
-        let use_streaming_speculative_asr = desktop_effective_streaming_asr_enabled(
-            speculative_local_asr_route,
-            local_asr_ready,
-        );
+        let use_streaming_speculative_asr =
+            desktop_effective_streaming_asr_enabled(speculative_local_asr_route, local_asr_ready);
         if configured_streaming_speculative_asr && !use_streaming_speculative_asr {
             let _ = update_tray_icon(hwnd, "Talk: cloud ASR fallback");
             if !matches!(

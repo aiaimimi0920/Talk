@@ -2,10 +2,10 @@ use bzip2::write::BzEncoder;
 use bzip2::Compression;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use tar::{Builder, Header};
 use talk_desktop::{
     default_zipformer_model_spec, install_model_from_reader, validate_installed_model, ModelSpec,
 };
+use tar::{Builder, Header};
 
 fn unique_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -48,12 +48,8 @@ fn traversal_archive() -> Vec<u8> {
             header.set_size(6);
             header.set_mode(0o600);
             header.set_cksum();
-            tar.append_data(
-                &mut header,
-                "fixture/tokens.txt",
-                &b"tokens"[..],
-            )
-            .expect("append traversal model fixture");
+            tar.append_data(&mut header, "fixture/tokens.txt", &b"tokens"[..])
+                .expect("append traversal model fixture");
             tar.finish().expect("finish traversal tar");
         }
         bytes
@@ -68,7 +64,9 @@ fn traversal_archive() -> Vec<u8> {
 
     let mut compressed = Vec::new();
     let mut encoder = BzEncoder::new(&mut compressed, Compression::best());
-    encoder.write_all(&tar_bytes).expect("compress traversal tar");
+    encoder
+        .write_all(&tar_bytes)
+        .expect("compress traversal tar");
     encoder.finish().expect("finish traversal bzip2");
     compressed
 }

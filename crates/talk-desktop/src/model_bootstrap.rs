@@ -82,12 +82,13 @@ pub fn validate_installed_model(spec: &ModelSpec, model_dir: &Path) -> Result<()
             marker_path.display()
         )
     })?;
-    let marker: InstalledModelManifest = serde_json::from_slice(&marker_bytes).map_err(|error| {
-        format!(
-            "parse Talk model manifest {}: {error}",
-            marker_path.display()
-        )
-    })?;
+    let marker: InstalledModelManifest =
+        serde_json::from_slice(&marker_bytes).map_err(|error| {
+            format!(
+                "parse Talk model manifest {}: {error}",
+                marker_path.display()
+            )
+        })?;
     if marker.schema_version != 1
         || marker.model_id != spec.id
         || marker.archive_sha256 != spec.sha256.to_ascii_lowercase()
@@ -128,12 +129,8 @@ pub async fn download_and_install_model(
     if validate_installed_model(spec, &destination).is_ok() {
         return Ok(destination);
     }
-    fs::create_dir_all(model_root).map_err(|error| {
-        format!(
-            "create Talk model root {}: {error}",
-            model_root.display()
-        )
-    })?;
+    fs::create_dir_all(model_root)
+        .map_err(|error| format!("create Talk model root {}: {error}", model_root.display()))?;
     let downloads = model_root.join("_downloads");
     fs::create_dir_all(&downloads).map_err(|error| {
         format!(
@@ -149,12 +146,14 @@ pub async fn download_and_install_model(
         .map_err(|error| format!("download Talk model {}: {error}", spec.id))?
         .error_for_status()
         .map_err(|error| format!("download Talk model {}: {error}", spec.id))?;
-    let mut output = tokio::fs::File::create(&partial_path).await.map_err(|error| {
-        format!(
-            "write Talk model partial archive {}: {error}",
-            partial_path.display()
-        )
-    })?;
+    let mut output = tokio::fs::File::create(&partial_path)
+        .await
+        .map_err(|error| {
+            format!(
+                "write Talk model partial archive {}: {error}",
+                partial_path.display()
+            )
+        })?;
     let mut stream = response.bytes_stream();
     let mut hasher = Sha256::new();
     while let Some(chunk_result) = stream.next().await {
@@ -203,12 +202,14 @@ pub async fn download_and_install_model(
     .await
     .map_err(|error| format!("join Talk model installation worker: {error}"))?;
     if result.is_ok() {
-        tokio::fs::remove_file(&partial_path).await.map_err(|error| {
-            format!(
-                "remove Talk model partial archive {}: {error}",
-                partial_path.display()
-            )
-        })?;
+        tokio::fs::remove_file(&partial_path)
+            .await
+            .map_err(|error| {
+                format!(
+                    "remove Talk model partial archive {}: {error}",
+                    partial_path.display()
+                )
+            })?;
     }
     result
 }
@@ -218,12 +219,8 @@ fn install_verified_model_archive(
     archive_bytes: &[u8],
     model_root: &Path,
 ) -> Result<PathBuf, String> {
-    fs::create_dir_all(model_root).map_err(|error| {
-        format!(
-            "create Talk model root {}: {error}",
-            model_root.display()
-        )
-    })?;
+    fs::create_dir_all(model_root)
+        .map_err(|error| format!("create Talk model root {}: {error}", model_root.display()))?;
     let temp_dir = model_root.join(format!(
         ".{}.tmp-{}-{}",
         spec.id,
@@ -301,8 +298,8 @@ fn extract_model_archive(archive_bytes: &[u8], destination: &Path) -> Result<Pat
         .map_err(|error| format!("open Talk model tar.bz2 archive: {error}"))?;
     let mut top_level_names = BTreeSet::new();
     for entry_result in entries {
-        let mut entry = entry_result
-            .map_err(|error| format!("read Talk model archive entry: {error}"))?;
+        let mut entry =
+            entry_result.map_err(|error| format!("read Talk model archive entry: {error}"))?;
         let entry_type = entry.header().entry_type();
         if !entry_type.is_file() && !entry_type.is_dir() {
             return Err("Talk model archive contains an unsupported link or special entry".into());
@@ -376,9 +373,7 @@ fn validate_model_spec(spec: &ModelSpec) -> Result<(), String> {
     for required in &spec.required_files {
         let path = Path::new(required);
         let mut components = path.components();
-        if !matches!(components.next(), Some(Component::Normal(_)))
-            || components.next().is_some()
-        {
+        if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
             return Err(format!(
                 "Talk model required file must be a file name: {required}"
             ));
@@ -409,10 +404,7 @@ fn find_file_by_name(root: &Path, required_name: &str) -> Result<Option<PathBuf>
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         let entries = fs::read_dir(&directory).map_err(|error| {
-            format!(
-                "read Talk model directory {}: {error}",
-                directory.display()
-            )
+            format!("read Talk model directory {}: {error}", directory.display())
         })?;
         for entry_result in entries {
             let entry = entry_result.map_err(|error| {
@@ -427,9 +419,7 @@ fn find_file_by_name(root: &Path, required_name: &str) -> Result<Option<PathBuf>
             })?;
             if file_type.is_dir() {
                 pending.push(path);
-            } else if file_type.is_file()
-                && entry.file_name().to_string_lossy() == required_name
-            {
+            } else if file_type.is_file() && entry.file_name().to_string_lossy() == required_name {
                 return Ok(Some(path));
             }
         }

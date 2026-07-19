@@ -185,8 +185,12 @@ pub fn extract_embedded_runtime_payload(
         return Ok(destination);
     }
 
-    fs::create_dir_all(runtime_root)
-        .map_err(|error| format!("create Talk runtime root {}: {error}", runtime_root.display()))?;
+    fs::create_dir_all(runtime_root).map_err(|error| {
+        format!(
+            "create Talk runtime root {}: {error}",
+            runtime_root.display()
+        )
+    })?;
     let temp_dir = runtime_root.join(format!(
         ".{}.tmp-{}-{}",
         payload.archive_sha256,
@@ -258,9 +262,7 @@ fn validated_source_map(
     Ok(source_map)
 }
 
-fn validated_manifest_map(
-    manifest: &PayloadManifest,
-) -> Result<BTreeMap<String, String>, String> {
+fn validated_manifest_map(manifest: &PayloadManifest) -> Result<BTreeMap<String, String>, String> {
     let mut files = BTreeMap::new();
     for file in &manifest.files {
         validate_member_path(&file.path)?;
