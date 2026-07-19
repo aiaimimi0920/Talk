@@ -1135,7 +1135,7 @@ async fn transcribe_output(
             OpenAiCompatibleTranscriber::new_with_transport(
                 endpoint,
                 model,
-                resolve_provider_api_key(config),
+                resolve_provider_api_key(config)?,
                 config.provider.transcription_transport,
             )
             .transcribe(audio_path, context)
@@ -1181,7 +1181,7 @@ async fn process_output(
                 .chat_model
                 .as_deref()
                 .context("provider.chat_model must be set for openai_compatible provider")?;
-            OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config))
+            OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config)?)
                 .process(transcript, mode, context)
                 .await
                 .map_err(Into::into)
@@ -1196,8 +1196,20 @@ pub fn provider_text_processing_credentials_available(config: &TalkConfig) -> bo
     }
 }
 
-fn resolve_provider_api_key(config: &TalkConfig) -> Option<String> {
-    resolve_provider_credential(config).into_api_key()
+fn resolve_provider_api_key(config: &TalkConfig) -> Result<Option<String>> {
+    let credential = resolve_provider_credential(config);
+    if credential.is_available() {
+        return Ok(credential.into_api_key());
+    }
+
+    if let Some(env_name) = config.provider.api_key_env.as_deref() {
+        anyhow::bail!(
+            "provider credential is unavailable from provider.api_key_env {env_name} or the standard DashScope credential file"
+        );
+    }
+    anyhow::bail!(
+        "provider credential is unavailable; set provider.api_key, provider.api_key_env, or the standard DashScope credential file"
+    )
 }
 
 fn insert_output_with_hooks<F, G>(

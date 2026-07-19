@@ -240,7 +240,6 @@ Run:
   -VersionId 'talk-single-exe-20260719-r4' `
   -ReleaseRoot 'C:\Users\Public\nas_home\AI\GameEditor\Neuro\release\Talk' `
   -ProductProfile `
-  -DisablePackagedApiKeyDiscovery `
   -SkipSmoke `
   -SkipNativePreflight `
   -SkipNativeReadiness

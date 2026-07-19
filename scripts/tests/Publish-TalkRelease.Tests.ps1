@@ -155,7 +155,7 @@ Describe 'Publish-TalkRelease helpers' {
         $configText | Should Match 'connect_timeout_ms = 15000'
     }
 
-    It 'can disable environment and local-file api key auto-discovery for public releases' {
+    It 'never auto-discovers build-machine credentials for packaging' {
         $tempHome = Join-Path ([System.IO.Path]::GetTempPath()) ('talk-release-no-key-' + [guid]::NewGuid().ToString('N'))
         $credentialDir = Join-Path $tempHome '.neuro\qwen-platform\qwen-dashscope-openai\api-key'
         $credentialPath = Join-Path $credentialDir 'manual-live.json'
@@ -171,8 +171,8 @@ Describe 'Publish-TalkRelease helpers' {
             $env:TALK_PROVIDER_API_KEY = 'environment-test-key'
 
             $resolved = Resolve-TalkReleasePackagedApiKey `
-                -ConfigText 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' `
-                -DisableAutoDiscovery
+                -PackagedApiKey $null `
+                -PackagedApiKeyJsonPath $null
 
             $resolved | Should BeNullOrEmpty
         } finally {

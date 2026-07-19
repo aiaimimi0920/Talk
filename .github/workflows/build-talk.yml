@@ -64,7 +64,6 @@ jobs:
             -ReleaseRoot $releaseRoot `
             -ProductProfile `
             -EmitEvidence `
-            -DisablePackagedApiKeyDiscovery `
             -SkipVerification `
             -SkipSmoke `
             -SkipNativePreflight `

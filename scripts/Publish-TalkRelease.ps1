@@ -7,7 +7,6 @@ param(
     [string]$PackagedApiKeyJsonPath,
     [switch]$ProductProfile,
     [switch]$EmitEvidence,
-    [switch]$DisablePackagedApiKeyDiscovery,
     [switch]$SkipVerification,
     [switch]$SkipBuild,
     [switch]$SkipSmoke,
@@ -158,21 +157,6 @@ function Write-Utf8NoBomText {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
-function Get-TalkReleaseHomeDirectory {
-    $candidates = @(
-        [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process')
-        [Environment]::GetEnvironmentVariable('HOME', 'Process')
-    )
-
-    foreach ($candidate in $candidates) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-            return [System.IO.Path]::GetFullPath($candidate)
-        }
-    }
-
-    $null
-}
-
 function Resolve-TalkReleaseApiKeyFromJsonPath {
     param(
         [Parameter(Mandatory = $true)][string]$ApiKeyJsonPath,
@@ -196,47 +180,10 @@ function Resolve-TalkReleaseApiKeyFromJsonPath {
     $jsonApiKey
 }
 
-function Resolve-TalkReleaseAutoApiKeyJsonPath {
-    param([Parameter(Mandatory = $true)][string]$ConfigText)
-
-    $credentialRelativeDir = if ($ConfigText -match 'coding\.dashscope\.aliyuncs\.com') {
-        '.neuro\qwen-platform\qwen-coding-plan-openai\api-key'
-    } elseif ($ConfigText -match 'dashscope\.aliyuncs\.com/compatible-mode/') {
-        '.neuro\qwen-platform\qwen-dashscope-openai\api-key'
-    } else {
-        $null
-    }
-
-    if ([string]::IsNullOrWhiteSpace($credentialRelativeDir)) {
-        return $null
-    }
-
-    $homeDirectory = Get-TalkReleaseHomeDirectory
-    if ([string]::IsNullOrWhiteSpace($homeDirectory)) {
-        return $null
-    }
-
-    $credentialDir = Join-Path $homeDirectory $credentialRelativeDir
-    if (-not (Test-Path -LiteralPath $credentialDir)) {
-        return $null
-    }
-
-    $preferredPath = Join-Path $credentialDir 'manual-live.json'
-    if (Test-Path -LiteralPath $preferredPath) {
-        return $preferredPath
-    }
-
-    Get-ChildItem -LiteralPath $credentialDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -ExpandProperty FullName -First 1
-}
-
 function Resolve-TalkReleasePackagedApiKey {
     param(
         [string]$PackagedApiKey,
-        [string]$PackagedApiKeyJsonPath,
-        [Parameter(Mandatory = $true)][string]$ConfigText,
-        [switch]$DisableAutoDiscovery
+        [string]$PackagedApiKeyJsonPath
     )
 
     if (-not [string]::IsNullOrWhiteSpace($PackagedApiKey)) {
@@ -250,25 +197,6 @@ function Resolve-TalkReleasePackagedApiKey {
         return Resolve-TalkReleaseApiKeyFromJsonPath `
             -ApiKeyJsonPath $PackagedApiKeyJsonPath `
             -ContextLabel 'Talk release packaged'
-    }
-
-    if ($DisableAutoDiscovery) {
-        return $null
-    }
-
-    $envApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
-    if (-not [string]::IsNullOrWhiteSpace($envApiKey)) {
-        if ($envApiKey.Trim() -ne $envApiKey) {
-            throw 'TALK_PROVIDER_API_KEY must not have leading or trailing whitespace'
-        }
-        return $envApiKey
-    }
-
-    $autoDiscoveredJsonPath = Resolve-TalkReleaseAutoApiKeyJsonPath -ConfigText $ConfigText
-    if (-not [string]::IsNullOrWhiteSpace($autoDiscoveredJsonPath)) {
-        return Resolve-TalkReleaseApiKeyFromJsonPath `
-            -ApiKeyJsonPath $autoDiscoveredJsonPath `
-            -ContextLabel 'Talk release packaged auto-discovered'
     }
 
     $null
@@ -1481,7 +1409,6 @@ function Publish-TalkProductRelease {
         [string]$ReleaseRoot,
         [string]$PackagedApiKey,
         [string]$PackagedApiKeyJsonPath,
-        [switch]$DisablePackagedApiKeyDiscovery,
         [switch]$EmitEvidence,
         [switch]$SkipVerification,
         [switch]$SkipBuild
@@ -1545,9 +1472,7 @@ function Publish-TalkProductRelease {
     $configContent = New-TalkReleaseDesktopConfigContent
     $resolvedPackagedApiKey = Resolve-TalkReleasePackagedApiKey `
         -PackagedApiKey $PackagedApiKey `
-        -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath `
-        -ConfigText $configContent `
-        -DisableAutoDiscovery:$DisablePackagedApiKeyDiscovery
+        -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath
     if (-not [string]::IsNullOrWhiteSpace($resolvedPackagedApiKey)) {
         $configContent = New-TalkReleaseDesktopConfigContent -PackagedApiKey $resolvedPackagedApiKey
     }
@@ -1598,7 +1523,6 @@ function Publish-TalkRelease {
         [string]$PackagedApiKeyJsonPath,
         [switch]$ProductProfile,
         [switch]$EmitEvidence,
-        [switch]$DisablePackagedApiKeyDiscovery,
         [switch]$SkipVerification,
         [switch]$SkipBuild,
         [switch]$SkipSmoke,
@@ -1612,7 +1536,6 @@ function Publish-TalkRelease {
             -ReleaseRoot $ReleaseRoot `
             -PackagedApiKey $PackagedApiKey `
             -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath `
-            -DisablePackagedApiKeyDiscovery:$DisablePackagedApiKeyDiscovery `
             -EmitEvidence:$EmitEvidence `
             -SkipVerification:$SkipVerification `
             -SkipBuild:$SkipBuild
@@ -1737,9 +1660,7 @@ function Publish-TalkRelease {
     $desktopConfigContent = New-TalkReleaseDesktopConfigContent
     $resolvedPackagedApiKey = Resolve-TalkReleasePackagedApiKey `
         -PackagedApiKey $PackagedApiKey `
-        -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath `
-        -ConfigText $desktopConfigContent `
-        -DisableAutoDiscovery:$DisablePackagedApiKeyDiscovery
+        -PackagedApiKeyJsonPath $PackagedApiKeyJsonPath
     if (-not [string]::IsNullOrWhiteSpace($resolvedPackagedApiKey)) {
         $desktopConfigContent = New-TalkReleaseDesktopConfigContent -PackagedApiKey $resolvedPackagedApiKey
     }
@@ -1944,7 +1865,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         -SmokeRoot $SmokeRoot `
         -ProductProfile:$ProductProfile `
         -EmitEvidence:$EmitEvidence `
-        -DisablePackagedApiKeyDiscovery:$DisablePackagedApiKeyDiscovery `
         -SkipVerification:$SkipVerification `
         -SkipBuild:$SkipBuild `
         -SkipSmoke:$SkipSmoke `

@@ -142,16 +142,14 @@ async fn missing_openai_credentials_do_not_send_provider_request() {
     .await
     .expect_err("missing credentials should fail before provider I/O");
 
-    let provider_request_observed = detector.join().expect("provider request detector should join");
+    let provider_request_observed = detector
+        .join()
+        .expect("provider request detector should join");
     assert!(
         !provider_request_observed,
         "missing credentials must not create an outbound provider connection"
     );
-    assert!(
-        error
-            .to_string()
-            .contains("TALK_TEST_MISSING_PROVIDER_KEY")
-    );
+    assert!(error.to_string().contains("TALK_TEST_MISSING_PROVIDER_KEY"));
 }
 
 #[test]
