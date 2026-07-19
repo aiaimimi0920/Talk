@@ -3,6 +3,7 @@ mod credentials;
 mod loom_config;
 mod segmenter;
 mod speculative;
+use credentials::resolve_provider_credential;
 pub use segmenter::{
     evaluate_segment_readiness, SegmentReadiness, SegmenterConfig, SegmenterInput,
 };
@@ -1134,7 +1135,7 @@ async fn transcribe_output(
             OpenAiCompatibleTranscriber::new_with_transport(
                 endpoint,
                 model,
-                resolve_provider_api_key(config)?,
+                resolve_provider_api_key(config),
                 config.provider.transcription_transport,
             )
             .transcribe(audio_path, context)
@@ -1180,7 +1181,7 @@ async fn process_output(
                 .chat_model
                 .as_deref()
                 .context("provider.chat_model must be set for openai_compatible provider")?;
-            OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config)?)
+            OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config))
                 .process(transcript, mode, context)
                 .await
                 .map_err(Into::into)
@@ -1191,45 +1192,12 @@ async fn process_output(
 pub fn provider_text_processing_credentials_available(config: &TalkConfig) -> bool {
     match config.provider.kind {
         ProviderKind::Mock | ProviderKind::Http => true,
-        ProviderKind::OpenAiCompatible => {
-            if config
-                .provider
-                .api_key
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-            {
-                return true;
-            }
-            config
-                .provider
-                .api_key_env
-                .as_deref()
-                .and_then(|name| std::env::var(name).ok())
-                .is_some_and(|value| !value.trim().is_empty() && value.trim() == value)
-        }
+        ProviderKind::OpenAiCompatible => resolve_provider_credential(config).is_available(),
     }
 }
 
-fn resolve_provider_api_key(config: &TalkConfig) -> Result<Option<String>> {
-    if let Some(api_key) = config.provider.api_key.as_ref() {
-        return Ok(Some(api_key.clone()));
-    }
-
-    let Some(env_name) = config.provider.api_key_env.as_deref() else {
-        return Ok(None);
-    };
-    let value = std::env::var(env_name).with_context(|| {
-        format!("provider.api_key_env environment variable {env_name} is not set")
-    })?;
-    if value.trim().is_empty() {
-        anyhow::bail!("provider.api_key_env environment variable {env_name} is blank");
-    }
-    if value.trim() != value {
-        anyhow::bail!(
-            "provider.api_key_env environment variable {env_name} must not have leading or trailing whitespace"
-        );
-    }
-    Ok(Some(value))
+fn resolve_provider_api_key(config: &TalkConfig) -> Option<String> {
+    resolve_provider_credential(config).into_api_key()
 }
 
 fn insert_output_with_hooks<F, G>(

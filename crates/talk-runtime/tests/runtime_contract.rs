@@ -72,6 +72,21 @@ fn provider_text_processing_credentials_are_checked_without_exposing_secrets() {
 }
 
 #[test]
+fn ambient_dashscope_file_does_not_enable_non_dashscope_provider() {
+    let mut config = config_with_mock_provider("non-dashscope-credentials");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.mock_transcript = None;
+    config.provider.audio_transcriptions_endpoint =
+        Some("https://example.invalid/v1/audio/transcriptions".to_string());
+    config.provider.chat_completions_endpoint =
+        Some("https://example.invalid/v1/chat/completions".to_string());
+    config.provider.api_key = None;
+    config.provider.api_key_env = None;
+
+    assert!(!provider_text_processing_credentials_available(&config));
+}
+
+#[test]
 fn local_transcript_completes_without_openai_credentials() {
     let mut config = config_with_mock_provider("local-transcript-without-provider-key");
     config.provider.kind = ProviderKind::OpenAiCompatible;
