@@ -25,7 +25,7 @@ use talk_runtime::{RuntimePhase, SpeculativeRuntimeEvent};
 pub const TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV: &str = "TALK_DESKTOP_AUDIO_FILE_OVERRIDE";
 pub const TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV: &str = "TALK_DESKTOP_INSERT_TARGET_WINDOW";
 pub const TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV: &str = "TALK_DESKTOP_INSERT_TARGET_FOCUS";
-pub const TALK_DESKTOP_DEFAULT_CONFIG_FILE_NAME: &str = "talk-desktop.toml";
+pub const TALK_DESKTOP_DEFAULT_CONFIG_FILE_NAME: &str = "talk.toml";
 pub const TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME: &str = "talk-local-asr-sherpa.exe";
 const DESKTOP_LISTENING_LOCAL_DETECTION_PLACEHOLDER: &str = "...";
 
@@ -3936,6 +3936,27 @@ pub fn desktop_packaged_local_asr_daemon_launch_plan_with_config(
     local_daemon: Option<&SpeculativeLocalAsrDaemonConfig>,
 ) -> Result<Option<DesktopLocalAsrDaemonLaunchPlan>, String> {
     let executable_path = desktop_packaged_local_asr_daemon_path(desktop_executable_path);
+    let model_root = desktop_executable_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    desktop_product_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        &model_root,
+        endpoint,
+        local_daemon,
+    )
+}
+
+pub fn desktop_product_local_asr_daemon_launch_plan_with_config(
+    worker_executable_path: &Path,
+    model_root: &Path,
+    endpoint: &str,
+    local_daemon: Option<&SpeculativeLocalAsrDaemonConfig>,
+) -> Result<Option<DesktopLocalAsrDaemonLaunchPlan>, String> {
+    let executable_path = worker_executable_path.to_path_buf();
     if !executable_path.is_file() {
         return Ok(None);
     }
@@ -3948,7 +3969,7 @@ pub fn desktop_packaged_local_asr_daemon_launch_plan_with_config(
     let local_daemon = if let Some(local_daemon) = local_daemon {
         Some(local_daemon)
     } else {
-        auto_local_daemon = desktop_auto_release_local_asr_daemon_config(desktop_executable_path);
+        auto_local_daemon = desktop_auto_local_asr_daemon_config(model_root);
         auto_local_daemon.as_ref()
     };
     if let Some(local_daemon) = local_daemon {
@@ -3961,17 +3982,18 @@ pub fn desktop_packaged_local_asr_daemon_launch_plan_with_config(
     }))
 }
 
-fn desktop_auto_release_local_asr_daemon_config(
-    desktop_executable_path: &Path,
+fn desktop_auto_local_asr_daemon_config(
+    model_root: &Path,
 ) -> Option<SpeculativeLocalAsrDaemonConfig> {
-    let model_root = desktop_executable_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(".runtime")
-        .join("models")
-        .join("sherpa-onnx");
     desktop_installed_zipformer_daemon_config(&model_root)
         .or_else(|| desktop_installed_paraformer_daemon_config(&model_root))
+}
+
+pub fn desktop_effective_streaming_asr_enabled(
+    configured_route: DesktopSpeculativeLocalAsrRoute,
+    local_asr_ready: bool,
+) -> bool {
+    configured_route == DesktopSpeculativeLocalAsrRoute::StreamingService && local_asr_ready
 }
 
 fn desktop_installed_zipformer_daemon_config(
