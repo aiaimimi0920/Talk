@@ -56,7 +56,8 @@ mod windows_app {
         desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
         desktop_listening_hud_complete_button_rect, desktop_listening_hud_partial_text_layout,
         desktop_listening_hud_visible_partial_text, desktop_listening_hud_waveform_rect,
-        desktop_live_correction_eligibility, desktop_local_asr_daemon_bind_from_endpoint,
+        desktop_live_correction_context_before, desktop_live_correction_eligibility,
+        desktop_live_correction_inserted_baseline, desktop_local_asr_daemon_bind_from_endpoint,
         desktop_mode_dropdown_model, desktop_mode_text_result_model, desktop_output_plan,
         desktop_overlay_scale_factor_for_dpi,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
@@ -67,7 +68,8 @@ mod windows_app {
         desktop_shortcut_help_model, desktop_shortcut_help_position,
         desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
         desktop_speculative_local_asr_route, desktop_speculative_replacement_selection_count,
-        desktop_streaming_hud_transcript, desktop_streaming_latest_segment_allows_auto_patch,
+        desktop_streaming_final_correction_job_enabled, desktop_streaming_hud_transcript,
+        desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_stop_aggregate,
         desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
         download_and_install_model, extract_embedded_runtime_payload,
         foreground_target_refresh_requested, foreground_target_stability_satisfied,
@@ -86,7 +88,7 @@ mod windows_app {
         DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudMetrics,
         DesktopHudPresentation, DesktopHudViewModel, DesktopHudVisualState,
         DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
-        DesktopListeningHudAction, DesktopLiveCorrectionEligibility,
+        DesktopListeningHudAction, DesktopLiveCorrectionEligibility, DesktopLiveCorrectionSegment,
         DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
         DesktopOverlayActivationPolicy, DesktopRecordingStopWatcherPolicy,
         DesktopRuntimeInsertDirective, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
@@ -283,7 +285,8 @@ mod windows_app {
         live_streaming_inserted_segment_ids: Vec<String>,
         hud_streaming_segments: Vec<(String, String)>,
         live_streaming_correction_sender:
-            tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>,
+            Option<tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>>,
+        live_streaming_correction_tracker: Arc<LiveCorrectionTracker>,
         last_streaming_asr_event: Option<StreamingAsrEvent>,
         last_streaming_asr_event_at: Option<Instant>,
     }
@@ -352,6 +355,178 @@ mod windows_app {
         hud_hwnd_value: usize,
     }
 
+    struct LiveCorrectionTracker {
+        generation: u64,
+        state: Mutex<LiveCorrectionTrackerState>,
+        idle_notify: tokio::sync::Notify,
+    }
+
+    struct LiveCorrectionTrackerState {
+        segments: Vec<DesktopLiveCorrectionSegment>,
+        pending_jobs: usize,
+        stopping: bool,
+        cancelled: bool,
+    }
+
+    impl LiveCorrectionTracker {
+        fn new(generation: u64) -> Self {
+            Self {
+                generation,
+                state: Mutex::new(LiveCorrectionTrackerState {
+                    segments: Vec::new(),
+                    pending_jobs: 0,
+                    stopping: false,
+                    cancelled: false,
+                }),
+                idle_notify: tokio::sync::Notify::new(),
+            }
+        }
+
+        fn register_job(
+            &self,
+            segment_id: &str,
+            local_text: &str,
+            anchor: Option<SpeculativeInsertAnchor>,
+        ) -> bool {
+            let Ok(mut state) = self.state.lock() else {
+                return false;
+            };
+            if state.cancelled
+                || state.stopping
+                || state
+                    .segments
+                    .iter()
+                    .any(|segment| segment.segment_id == segment_id)
+            {
+                return false;
+            }
+            state.segments.push(DesktopLiveCorrectionSegment {
+                segment_id: segment_id.to_string(),
+                local_text: local_text.to_string(),
+                corrected_text: None,
+                insert_anchor: anchor,
+            });
+            state.pending_jobs += 1;
+            true
+        }
+
+        fn corrected_context_before(&self, segment_id: &str, max_chars: usize) -> String {
+            let Ok(state) = self.state.lock() else {
+                return String::new();
+            };
+            desktop_live_correction_context_before(&state.segments, segment_id, max_chars)
+        }
+
+        fn can_process(&self, segment_id: &str) -> bool {
+            let Ok(state) = self.state.lock() else {
+                return false;
+            };
+            !state.cancelled
+                && state.segments.iter().any(|segment| {
+                    segment.segment_id == segment_id && segment.corrected_text.is_none()
+                })
+        }
+
+        fn should_show_live_feedback(&self) -> bool {
+            self.state
+                .lock()
+                .ok()
+                .is_some_and(|state| !state.cancelled && !state.stopping)
+        }
+
+        fn record_result(
+            &self,
+            segment_id: &str,
+            corrected_text: &str,
+            anchor: Option<SpeculativeInsertAnchor>,
+        ) {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if state.cancelled {
+                return;
+            }
+            if let Some(segment) = state
+                .segments
+                .iter_mut()
+                .find(|segment| segment.segment_id == segment_id)
+            {
+                segment.corrected_text = Some(corrected_text.to_string());
+                if anchor.is_some() {
+                    segment.insert_anchor = anchor;
+                }
+            }
+        }
+
+        fn complete_job(
+            &self,
+            segment_id: &str,
+            corrected_text: Option<&str>,
+            anchor: Option<SpeculativeInsertAnchor>,
+        ) {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if let Some(segment) = state
+                .segments
+                .iter_mut()
+                .find(|segment| segment.segment_id == segment_id)
+            {
+                if let Some(corrected_text) = corrected_text {
+                    segment.corrected_text = Some(corrected_text.to_string());
+                }
+                if anchor.is_some() {
+                    segment.insert_anchor = anchor;
+                }
+            }
+            state.pending_jobs = state.pending_jobs.saturating_sub(1);
+            if state.pending_jobs == 0 {
+                self.idle_notify.notify_waiters();
+            }
+        }
+
+        fn mark_stopping(&self) {
+            if let Ok(mut state) = self.state.lock() {
+                state.stopping = true;
+                if state.pending_jobs == 0 {
+                    self.idle_notify.notify_waiters();
+                }
+            }
+        }
+
+        fn cancel(&self) {
+            if let Ok(mut state) = self.state.lock() {
+                state.cancelled = true;
+                state.stopping = true;
+                if state.pending_jobs == 0 {
+                    self.idle_notify.notify_waiters();
+                }
+            }
+        }
+
+        async fn wait_until_idle(&self) {
+            loop {
+                let notified = self.idle_notify.notified();
+                let is_idle = self
+                    .state
+                    .lock()
+                    .ok()
+                    .is_some_and(|state| state.pending_jobs == 0);
+                if is_idle {
+                    return;
+                }
+                notified.await;
+            }
+        }
+
+        fn snapshot(&self) -> Vec<DesktopLiveCorrectionSegment> {
+            self.state
+                .lock()
+                .map(|state| state.segments.clone())
+                .unwrap_or_default()
+        }
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum LiveStreamingCorrectionInsertOutcome {
         Inserted,
@@ -372,6 +547,7 @@ mod windows_app {
         origin_insert_target: Option<DesktopInsertTargetContext>,
         existing_anchors: HashMap<String, SpeculativeInsertAnchor>,
         live_correction_sender: tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>,
+        live_correction_tracker: Arc<LiveCorrectionTracker>,
         events: Vec<SpeculativeRuntimeEvent>,
         hwnd_value: usize,
         hud_hwnd_value: usize,
@@ -1487,7 +1663,7 @@ mod windows_app {
 
     fn cancel_active_recording(hwnd: HWND) -> Result<()> {
         let state = unsafe { get_window_state_mut(hwnd)? };
-        let (config, runtime_handle, active) = {
+        let (config, runtime_handle, mut active) = {
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
             let Some(active) = shared.active_recording.take() else {
                 return Ok(());
@@ -1501,6 +1677,9 @@ mod windows_app {
             shared.current_phase = None;
             (config, shared.runtime_handle.clone(), active)
         };
+
+        active.live_streaming_correction_tracker.cancel();
+        active.live_streaming_correction_sender.take();
 
         let ActiveRecording {
             session,
@@ -2327,10 +2506,19 @@ mod windows_app {
 
         let (live_correction_sender, mut live_correction_receiver) =
             tokio::sync::mpsc::unbounded_channel::<SpeculativeCloudCorrectionJob>();
+        let live_correction_tracker = Arc::new(LiveCorrectionTracker::new(generation));
         let live_correction_shared = Arc::clone(&state.shared);
+        let live_correction_worker_tracker = Arc::clone(&live_correction_tracker);
         runtime_handle.spawn(async move {
             while let Some(job) = live_correction_receiver.recv().await {
-                run_speculative_cloud_correction(Arc::clone(&live_correction_shared), job).await;
+                let segment_id = job.segment_id.clone();
+                run_speculative_cloud_correction(
+                    Arc::clone(&live_correction_shared),
+                    Some(Arc::clone(&live_correction_worker_tracker)),
+                    job,
+                )
+                .await;
+                live_correction_worker_tracker.complete_job(&segment_id, None, None);
             }
         });
 
@@ -2357,7 +2545,8 @@ mod windows_app {
                 live_streaming_inserted_anchors: HashMap::new(),
                 live_streaming_inserted_segment_ids: Vec::new(),
                 hud_streaming_segments: Vec::new(),
-                live_streaming_correction_sender: live_correction_sender,
+                live_streaming_correction_sender: Some(live_correction_sender),
+                live_streaming_correction_tracker: live_correction_tracker,
                 last_streaming_asr_event: None,
                 last_streaming_asr_event_at: None,
             });
@@ -2580,9 +2769,17 @@ mod windows_app {
 
     async fn run_speculative_cloud_correction(
         shared: Arc<Mutex<SharedState>>,
+        live_tracker: Option<Arc<LiveCorrectionTracker>>,
         job: SpeculativeCloudCorrectionJob,
     ) {
-        if job.anchor.is_none()
+        if live_tracker
+            .as_ref()
+            .is_some_and(|tracker| !tracker.can_process(job.segment_id.as_str()))
+        {
+            return;
+        }
+        if live_tracker.is_none()
+            && job.anchor.is_none()
             && !live_streaming_unanchored_correction_is_current(
                 &shared,
                 job.generation,
@@ -2593,8 +2790,16 @@ mod windows_app {
         }
 
         let mut front_context = FrontContext::default();
-        if let Some(context_before) = job
-            .context_before
+        let corrected_context = live_tracker.as_ref().map(|tracker| {
+            tracker.corrected_context_before(
+                job.segment_id.as_str(),
+                SegmenterConfig::default().correction_context_chars,
+            )
+        });
+        if let Some(context_before) = corrected_context
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| job.context_before.as_deref())
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -2619,9 +2824,13 @@ mod windows_app {
             }
         };
 
-        if corrected_text.trim().is_empty()
-            || (job.anchor.is_some() && corrected_text == job.transcript)
-        {
+        if corrected_text.trim().is_empty() {
+            return;
+        }
+        if job.anchor.is_some() && corrected_text == job.transcript {
+            if let (Some(tracker), Some(anchor)) = (live_tracker.as_ref(), job.anchor.clone()) {
+                tracker.record_result(job.segment_id.as_str(), &corrected_text, Some(anchor));
+            }
             return;
         }
 
@@ -2661,35 +2870,47 @@ mod windows_app {
                     job.config.output.restore_clipboard,
                 ) {
                     Ok(patched) => {
-                        if patched {
-                            if let Some(guard) = job.latest_live_segment_guard {
-                                update_live_streaming_inserted_anchor_text(
-                                    &shared,
-                                    guard.generation,
-                                    anchor.segment_id.as_str(),
-                                    &corrected_text,
-                                );
-                            }
-                        }
+                        record_live_tracker_result_for_anchor(
+                            &shared,
+                            live_tracker.as_ref(),
+                            &job,
+                            anchor,
+                            &corrected_text,
+                            patched,
+                        );
                         patched
                     }
                     Err(error) => {
                         eprintln!("Talk speculative correction patch failed: {error:#}");
+                        record_live_tracker_result_for_anchor(
+                            &shared,
+                            live_tracker.as_ref(),
+                            &job,
+                            anchor,
+                            &corrected_text,
+                            false,
+                        );
                         false
                     }
                 }
             } else {
                 false
             }
-        } else if job.latest_live_segment_guard.is_some() {
-            match insert_live_streaming_corrected_segment_if_current(&shared, &job, &corrected_text)
-            {
+        } else if let Some(tracker) = live_tracker.as_ref() {
+            match insert_live_streaming_corrected_segment_with_tracker(
+                &shared,
+                tracker,
+                &job,
+                &corrected_text,
+            ) {
                 Ok(LiveStreamingCorrectionInsertOutcome::Inserted) => {
-                    queue_live_streaming_corrected_hud(
-                        job.hwnd_value as HWND,
-                        job.generation,
-                        &corrected_text,
-                    );
+                    if tracker.should_show_live_feedback() {
+                        queue_live_streaming_corrected_hud(
+                            job.hwnd_value as HWND,
+                            job.generation,
+                            &corrected_text,
+                        );
+                    }
                     true
                 }
                 Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget) => false,
@@ -2704,6 +2925,13 @@ mod windows_app {
         };
 
         if patched {
+            return;
+        }
+
+        if live_tracker
+            .as_ref()
+            .is_some_and(|tracker| !tracker.should_show_live_feedback())
+        {
             return;
         }
 
@@ -2730,12 +2958,43 @@ mod windows_app {
         }
     }
 
+    fn record_live_tracker_result_for_anchor(
+        shared: &Arc<Mutex<SharedState>>,
+        live_tracker: Option<&Arc<LiveCorrectionTracker>>,
+        job: &SpeculativeCloudCorrectionJob,
+        anchor: &SpeculativeInsertAnchor,
+        corrected_text: &str,
+        patched: bool,
+    ) {
+        if patched {
+            if let Some(guard) = job.latest_live_segment_guard {
+                update_live_streaming_inserted_anchor_text(
+                    shared,
+                    guard.generation,
+                    anchor.segment_id.as_str(),
+                    corrected_text,
+                );
+            }
+        }
+        if let Some(tracker) = live_tracker {
+            let mut tracker_anchor = anchor.clone();
+            if patched {
+                tracker_anchor.inserted_text = corrected_text.to_string();
+            }
+            tracker.record_result(
+                job.segment_id.as_str(),
+                corrected_text,
+                Some(tracker_anchor),
+            );
+        }
+    }
+
     fn spawn_speculative_cloud_correction(
         runtime_handle: tokio::runtime::Handle,
         shared: Arc<Mutex<SharedState>>,
         job: SpeculativeCloudCorrectionJob,
     ) {
-        runtime_handle.spawn(run_speculative_cloud_correction(shared, job));
+        runtime_handle.spawn(run_speculative_cloud_correction(shared, None, job));
     }
 
     fn live_streaming_correction_anchor_still_latest(
@@ -2810,31 +3069,27 @@ mod windows_app {
             == DesktopLiveCorrectionEligibility::Process
     }
 
-    fn insert_live_streaming_corrected_segment_if_current(
+    fn insert_live_streaming_corrected_segment_with_tracker(
         shared: &Arc<Mutex<SharedState>>,
+        tracker: &Arc<LiveCorrectionTracker>,
         job: &SpeculativeCloudCorrectionJob,
         corrected_text: &str,
     ) -> Result<LiveStreamingCorrectionInsertOutcome> {
-        let Some(guard) = job.latest_live_segment_guard else {
+        let mut tracker_state = tracker
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk live correction tracker is poisoned"))?;
+        let active_generation = (!tracker_state.cancelled).then_some(tracker.generation);
+        let Some(segment) = tracker_state
+            .segments
+            .iter_mut()
+            .find(|segment| segment.segment_id == job.segment_id)
+        else {
             return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
         };
-        let mut shared = shared
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?;
-        let active_generation = shared
-            .active_recording
-            .as_ref()
-            .map(|active| active.generation);
-        let already_inserted = shared.active_recording.as_ref().is_some_and(|active| {
-            active
-                .live_streaming_inserted_anchors
-                .contains_key(job.segment_id.as_str())
-        });
-        if desktop_live_correction_eligibility(
-            active_generation,
-            guard.generation,
-            already_inserted,
-        ) != DesktopLiveCorrectionEligibility::Process
+        let already_inserted = segment.corrected_text.is_some();
+        if desktop_live_correction_eligibility(active_generation, job.generation, already_inserted)
+            != DesktopLiveCorrectionEligibility::Process
         {
             return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
         }
@@ -2848,14 +3103,31 @@ mod windows_app {
             corrected_text,
             DesktopTextLifecycleState::Corrected,
         )?;
+        segment.corrected_text = Some(corrected_text.to_string());
         let Some(anchor) = anchor else {
             return Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget);
         };
+        segment.insert_anchor = Some(anchor.clone());
+        drop(tracker_state);
 
-        let active = shared
-            .active_recording
-            .as_mut()
-            .expect("live correction eligibility requires an active recording");
+        mirror_live_streaming_inserted_anchor(shared, job.generation, anchor);
+        Ok(LiveStreamingCorrectionInsertOutcome::Inserted)
+    }
+
+    fn mirror_live_streaming_inserted_anchor(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        anchor: SpeculativeInsertAnchor,
+    ) {
+        let Ok(mut shared) = shared.lock() else {
+            return;
+        };
+        let Some(active) = shared.active_recording.as_mut() else {
+            return;
+        };
+        if active.generation != generation {
+            return;
+        }
         if !active
             .live_streaming_inserted_segment_ids
             .iter()
@@ -2871,7 +3143,6 @@ mod windows_app {
         active
             .live_streaming_inserted_anchors
             .insert(anchor.segment_id.clone(), anchor);
-        Ok(LiveStreamingCorrectionInsertOutcome::Inserted)
     }
 
     fn queue_live_streaming_corrected_hud(hwnd: HWND, generation: u64, corrected_text: &str) {
@@ -3134,6 +3405,9 @@ mod windows_app {
             return;
         }
         active.trigger_events.push("trigger_stop");
+        let live_correction_tracker = Arc::clone(&active.live_streaming_correction_tracker);
+        active.live_streaming_correction_tracker.mark_stopping();
+        active.live_streaming_correction_sender.take();
 
         if show_hud_text(
             hwnd,
@@ -3151,14 +3425,6 @@ mod windows_app {
         let use_external_speculative_asr =
             speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::ExternalCommand;
         let use_streaming_speculative_asr = active.use_streaming_speculative_asr;
-        let live_inserted_anchors_for_stop = active
-            .live_streaming_inserted_segment_ids
-            .iter()
-            .filter_map(|segment_id| active.live_streaming_inserted_anchors.get(segment_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let streaming_stop_policy =
-            desktop_streaming_stop_policy(live_inserted_anchors_for_stop.len());
 
         let stopped_source = match active.source {
             ActiveRecordingSource::Live {
@@ -3314,7 +3580,6 @@ mod windows_app {
         let origin_insert_target = active.origin_insert_target.clone();
         let paste_shortcut_overrides = config.desktop.paste.shortcut_overrides.clone();
         let origin_insert_target_for_before_hook = origin_insert_target.clone();
-        let origin_insert_target_for_tail_insert = origin_insert_target.clone();
         let origin_insert_target_for_report = origin_insert_target.clone();
         let origin_insert_target_source = active.origin_insert_target_source.clone();
         let pending_hotkey_origin_insert_target =
@@ -3327,7 +3592,6 @@ mod windows_app {
         let captured_insert_target_context =
             Arc::new(Mutex::new(None::<DesktopInsertTargetContext>));
         let paste_shortcut_env_restore = Arc::new(Mutex::new(None::<Option<OsString>>));
-        let insert_final_transcript_at_stop = streaming_stop_policy.insert_final_transcript;
         let runtime_voice_mode = mode_override.unwrap_or_else(|| config.default_voice_mode());
         let restore_diagnostic_for_before_hook = Arc::clone(&restore_diagnostic);
         let restore_diagnostic_for_after_hook = Arc::clone(&restore_diagnostic);
@@ -3344,6 +3608,18 @@ mod windows_app {
         let paste_shortcut_env_restore_for_after_hook = Arc::clone(&paste_shortcut_env_restore);
         let shared_for_before_hook = Arc::clone(&shared);
         runtime_handle.spawn(async move {
+            live_correction_tracker.wait_until_idle().await;
+            let tracker_snapshot = live_correction_tracker.snapshot();
+            let mut live_inserted_anchors_for_stop = tracker_snapshot
+                .iter()
+                .filter_map(|segment| segment.insert_anchor.clone())
+                .collect::<Vec<_>>();
+            let mut live_inserted_baseline_for_stop =
+                desktop_live_correction_inserted_baseline(&tracker_snapshot);
+            let streaming_stop_policy =
+                desktop_streaming_stop_policy(live_inserted_anchors_for_stop.len());
+            let insert_final_transcript_at_stop = streaming_stop_policy.insert_final_transcript;
+
             let before_insert = move |insert_context: &talk_runtime::RuntimeInsertContext| {
                 if !insert_final_transcript_at_stop {
                     return RuntimeInsertDirective::DryRunOnly;
@@ -3541,8 +3817,17 @@ mod windows_app {
                                 .or_else(|| events.last())
                                 .cloned();
                             if let Some(selected_event) = selected_event {
-                                let transcript = final_transcript_from_streaming_asr_events(&events)
-                                    .unwrap_or_else(|_| selected_event.text().to_string());
+                                let transcript =
+                                    final_transcript_from_streaming_asr_events(&events)
+                                        .unwrap_or_else(|_| selected_event.text().to_string());
+                                let mut session_transcript = desktop_streaming_stop_aggregate(
+                                    &tracker_snapshot,
+                                    selected_event.segment_id(),
+                                    selected_event.text(),
+                                );
+                                if session_transcript.trim().is_empty() {
+                                    session_transcript = transcript.clone();
+                                }
                                 if streaming_stop_policy.insert_final_transcript
                                     && provider_text_processing_credentials_available(&config)
                                 {
@@ -3550,7 +3835,7 @@ mod windows_app {
                                         &config,
                                         session,
                                         trigger_events,
-                                        transcript,
+                                        session_transcript,
                                         mode_override,
                                         FrontContext::default(),
                                         before_insert,
@@ -3563,7 +3848,7 @@ mod windows_app {
                                         &config,
                                         session,
                                         trigger_events,
-                                        transcript,
+                                        session_transcript,
                                         mode_override,
                                         before_insert,
                                         after_insert,
@@ -3575,28 +3860,21 @@ mod windows_app {
                                         selected_event.text(),
                                         &live_inserted_anchors_for_stop,
                                     );
-                                    let mut session_transcript = live_inserted_anchors_for_stop
-                                        .iter()
-                                        .map(|anchor| anchor.inserted_text.as_str())
-                                        .collect::<String>();
-                                    if let Some(tail_text) = tail_text.as_deref() {
-                                        session_transcript.push_str(tail_text);
-                                    }
-                                    if session_transcript.trim().is_empty() {
-                                        session_transcript = transcript;
-                                    }
-
                                     if let Some(tail_text) = tail_text {
                                         match insert_live_streaming_segment_if_safe(
                                             &config,
                                             hwnd_value as HWND,
                                             hud_hwnd_value as HWND,
-                                            origin_insert_target_for_tail_insert.as_ref(),
+                                            origin_insert_target.as_ref(),
                                             selected_event.segment_id(),
                                             &tail_text,
                                             DesktopTextLifecycleState::Corrected,
                                         ) {
-                                            Ok(Some(_)) => {}
+                                            Ok(Some(anchor)) => {
+                                                live_inserted_baseline_for_stop
+                                                    .push(anchor.inserted_text.clone());
+                                                live_inserted_anchors_for_stop.push(anchor);
+                                            }
                                             Ok(None) => {
                                                 if let Ok(mut shared) = shared.lock() {
                                                     shared.pending_copy_popup =
@@ -3640,7 +3918,6 @@ mod windows_app {
                                             }
                                         }
                                     }
-
                                     run_voice_session_from_local_transcript_with_insert_hooks(
                                         &config,
                                         session,
@@ -3796,7 +4073,7 @@ mod windows_app {
                         if report.session.status() == talk_core::SessionStatus::Completed
                             && output_strategy == DesktopOutputStrategy::HonorConfiguredOutput
                             && cloud_correction_after_local_insert
-                            && streaming_stop_policy.allow_final_correction_job
+                            && desktop_streaming_final_correction_job_enabled(streaming_stop_policy)
                         {
                             if let (Some(target), Some(output_text)) =
                                 (persisted_insert_target, report.session.output_text())
@@ -3817,7 +4094,8 @@ mod windows_app {
                                             context_before: None,
                                             mode_override,
                                             anchor: Some(anchor),
-                                            full_document_inserted_segments: vec![local_text.clone()],
+                                            full_document_inserted_segments:
+                                                live_inserted_baseline_for_stop.clone(),
                                             latest_live_segment_guard: None,
                                             generation,
                                             started_at: Instant::now(),
@@ -4636,20 +4914,28 @@ mod windows_app {
                 )
             });
 
-            let live_dispatch = config.filter(|_| !runtime_events.is_empty()).map(|config| {
-                PendingLiveStreamingDispatch {
-                    pipeline_config: desktop_speculative_pipeline_config(&config),
-                    config,
-                    mode_override: active.mode_override,
-                    generation: active.generation,
-                    origin_insert_target: active.origin_insert_target.clone(),
-                    existing_anchors: active.live_streaming_inserted_anchors.clone(),
-                    live_correction_sender: active.live_streaming_correction_sender.clone(),
-                    events: runtime_events,
-                    hwnd_value: hwnd as usize,
-                    hud_hwnd_value: state.hud_hwnd as usize,
-                }
-            });
+            let live_dispatch = config
+                .filter(|_| !runtime_events.is_empty())
+                .and_then(|config| {
+                    Some(PendingLiveStreamingDispatch {
+                        pipeline_config: desktop_speculative_pipeline_config(&config),
+                        config,
+                        mode_override: active.mode_override,
+                        generation: active.generation,
+                        origin_insert_target: active.origin_insert_target.clone(),
+                        existing_anchors: active.live_streaming_inserted_anchors.clone(),
+                        live_correction_sender: active
+                            .live_streaming_correction_sender
+                            .as_ref()?
+                            .clone(),
+                        live_correction_tracker: Arc::clone(
+                            &active.live_streaming_correction_tracker,
+                        ),
+                        events: runtime_events,
+                        hwnd_value: hwnd as usize,
+                        hud_hwnd_value: state.hud_hwnd as usize,
+                    })
+                });
 
             let latest_hud_transcript = hud_transcript_changed
                 .then(|| hud_streaming_transcript_from_segments(&active.hud_streaming_segments))
@@ -4730,7 +5016,18 @@ mod windows_app {
             }
 
             for job in correction_jobs {
+                let segment_id = job.segment_id.clone();
+                if !dispatch.live_correction_tracker.register_job(
+                    &segment_id,
+                    &job.transcript,
+                    known_anchors.get(&segment_id).cloned(),
+                ) {
+                    continue;
+                }
                 if dispatch.live_correction_sender.send(job).is_err() {
+                    dispatch
+                        .live_correction_tracker
+                        .complete_job(&segment_id, None, None);
                     eprintln!("Talk live correction queue is no longer available");
                 }
             }

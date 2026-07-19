@@ -32,10 +32,11 @@ use talk_desktop::{
     desktop_insert_target_restore_requested, desktop_listening_hud_action_for_point,
     desktop_listening_hud_cancel_button_rect, desktop_listening_hud_complete_button_rect,
     desktop_listening_hud_partial_text_layout, desktop_listening_hud_visible_partial_text,
-    desktop_live_correction_eligibility, desktop_mode_dropdown_model, desktop_mode_output_policy,
-    desktop_mode_text_pane_layout, desktop_mode_text_result_model,
-    desktop_mode_text_result_popup_text, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
-    desktop_packaged_local_asr_daemon_launch_plan,
+    desktop_live_correction_aggregate, desktop_live_correction_context_before,
+    desktop_live_correction_eligibility, desktop_live_correction_inserted_baseline,
+    desktop_mode_dropdown_model, desktop_mode_output_policy, desktop_mode_text_pane_layout,
+    desktop_mode_text_result_model, desktop_mode_text_result_popup_text, desktop_output_plan,
+    desktop_overlay_scale_factor_for_dpi, desktop_packaged_local_asr_daemon_launch_plan,
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
     desktop_preferred_paste_shortcut_for_process_name, desktop_preferred_paste_shortcut_for_target,
     desktop_product_local_asr_daemon_launch_plan_with_config,
@@ -45,7 +46,8 @@ use talk_desktop::{
     desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
     desktop_speculative_local_asr_route, desktop_speculative_pipeline_enabled,
     desktop_speculative_replacement_selection_count, desktop_speculative_transcript_view_model,
-    desktop_streaming_hud_transcript, desktop_streaming_latest_segment_allows_auto_patch,
+    desktop_streaming_final_correction_job_enabled, desktop_streaming_hud_transcript,
+    desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_stop_aggregate,
     desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
     desktop_text_lifecycle_view_model, foreground_target_refresh_requested,
     foreground_target_stability_satisfied, hotkey_status_message, hud_message_for_phase,
@@ -63,19 +65,20 @@ use talk_desktop::{
     DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudGeometryUpdatePlan,
     DesktopHudMetrics, DesktopHudPresentation, DesktopHudVisualState, DesktopInsertTargetContext,
     DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
-    DesktopLiveCorrectionEligibility, DesktopLiveStreamingLocalSegmentPlan,
-    DesktopLocalAsrDaemonLaunchPlan, DesktopModeDropdownEntry, DesktopModeDropdownModel,
-    DesktopModeOutputPolicy, DesktopModeTextPane, DesktopModeTextPaneLayout,
-    DesktopModeTextResultModel, DesktopOutputPlan, DesktopOutputStrategy,
-    DesktopOverlayActivationPolicy, DesktopOverlayPosition, DesktopOverlayRect,
-    DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective, DesktopRuntimeInsertPlan,
-    DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
-    DesktopSpeculativeCorrectionJobModel, DesktopSpeculativeCorrectionOutputTarget,
-    DesktopSpeculativeLocalAsrRoute, DesktopSpeculativePipelineConfig,
-    DesktopSpeculativeTranscriptState, DesktopStreamingStopPolicy, DesktopTextLifecycleState,
-    DesktopTextLifecycleViewModel, ForegroundFocusCaptureSource, ForegroundInsertTarget,
-    ForegroundTargetReleaseReason, ForegroundTargetStabilityProgress, HotkeyBindingState,
-    LastSessionStatus, LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
+    DesktopLiveCorrectionEligibility, DesktopLiveCorrectionSegment,
+    DesktopLiveStreamingLocalSegmentPlan, DesktopLocalAsrDaemonLaunchPlan,
+    DesktopModeDropdownEntry, DesktopModeDropdownModel, DesktopModeOutputPolicy,
+    DesktopModeTextPane, DesktopModeTextPaneLayout, DesktopModeTextResultModel, DesktopOutputPlan,
+    DesktopOutputStrategy, DesktopOverlayActivationPolicy, DesktopOverlayPosition,
+    DesktopOverlayRect, DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective,
+    DesktopRuntimeInsertPlan, DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics,
+    DesktopShortcutHelpModel, DesktopSpeculativeCorrectionJobModel,
+    DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
+    DesktopSpeculativePipelineConfig, DesktopSpeculativeTranscriptState,
+    DesktopStreamingStopPolicy, DesktopTextLifecycleState, DesktopTextLifecycleViewModel,
+    ForegroundFocusCaptureSource, ForegroundInsertTarget, ForegroundTargetReleaseReason,
+    ForegroundTargetStabilityProgress, HotkeyBindingState, LastSessionStatus,
+    LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
     NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor, SpeculativePatchApplication,
     SpeculativePatchCandidate, StatusSnapshot, ToggleDesktopHotkeyRouter,
     ToggleDesktopHotkeyRouterPendingHold, WindowsHotkeyBindingRegistrationPlan,
@@ -737,6 +740,45 @@ fn live_correction_drops_stale_and_duplicate_results_before_insertion() {
 }
 
 #[test]
+fn live_correction_summary_prefers_corrected_text_and_actual_inserted_baseline() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x101, Some(0x102), "seg-1", "你好。", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天我们去北京玩，".to_string(),
+            corrected_text: Some("今天我们去北京游玩，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天我们去上海玩。".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_aggregate(&segments),
+        "你好。今天我们去北京游玩，明天我们去上海玩。"
+    );
+    assert_eq!(
+        desktop_live_correction_inserted_baseline(&segments),
+        vec!["你好。".to_string()]
+    );
+    assert_eq!(
+        desktop_live_correction_context_before(&segments, "seg-1#3", 80),
+        "你好。今天我们去北京游玩，"
+    );
+}
+
+#[test]
 fn desktop_correction_job_model_ignores_non_correction_events_and_disabled_cloud_mode() {
     let disabled_pipeline = DesktopSpeculativePipelineConfig {
         enabled: true,
@@ -880,6 +922,12 @@ fn streaming_stop_policy_skips_final_insert_but_keeps_final_correction_after_liv
             allow_final_correction_job: true,
         }
     );
+    assert!(!desktop_streaming_final_correction_job_enabled(
+        desktop_streaming_stop_policy(0)
+    ));
+    assert!(desktop_streaming_final_correction_job_enabled(
+        desktop_streaming_stop_policy(2)
+    ));
 }
 
 #[test]
@@ -902,6 +950,45 @@ fn desktop_streaming_stop_tail_text_inserts_only_uncommitted_remainder() {
     assert_eq!(
         desktop_streaming_stop_tail_text("seg-1", "完整句。", &[]),
         Some("完整句。".to_string())
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_uses_tracker_segments_and_avoids_duplicate_final_tail() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "你好。", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天我们去北京玩，".to_string(),
+            corrected_text: Some("今天我们去北京游玩，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天我们去上海玩。".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate(&segments, "seg-1#3", "明天我们去上海玩。"),
+        "你好。今天我们去北京游玩，明天我们去上海玩。"
+    );
+    assert_eq!(
+        desktop_streaming_stop_aggregate(&segments, "seg-1#3", "明天我们去上海玩。后天回家。"),
+        "你好。今天我们去北京游玩，明天我们去上海玩。后天回家。"
+    );
+    assert_eq!(
+        desktop_streaming_stop_aggregate(&segments, "seg-9", "额外补一句。"),
+        "你好。今天我们去北京游玩，明天我们去上海玩。额外补一句。"
     );
 }
 

@@ -1675,6 +1675,61 @@ pub enum DesktopLiveCorrectionEligibility {
     DropDuplicate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopLiveCorrectionSegment {
+    pub segment_id: String,
+    pub local_text: String,
+    pub corrected_text: Option<String>,
+    pub insert_anchor: Option<SpeculativeInsertAnchor>,
+}
+
+pub fn desktop_live_correction_aggregate(segments: &[DesktopLiveCorrectionSegment]) -> String {
+    segments
+        .iter()
+        .map(|segment| {
+            segment
+                .corrected_text
+                .as_deref()
+                .unwrap_or(segment.local_text.as_str())
+        })
+        .collect::<String>()
+}
+
+pub fn desktop_live_correction_inserted_baseline(
+    segments: &[DesktopLiveCorrectionSegment],
+) -> Vec<String> {
+    segments
+        .iter()
+        .filter_map(|segment| {
+            segment
+                .insert_anchor
+                .as_ref()
+                .map(|anchor| anchor.inserted_text.clone())
+        })
+        .collect()
+}
+
+pub fn desktop_live_correction_context_before(
+    segments: &[DesktopLiveCorrectionSegment],
+    current_segment_id: &str,
+    max_chars: usize,
+) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let context = segments
+        .iter()
+        .take_while(|segment| segment.segment_id != current_segment_id)
+        .filter_map(|segment| segment.corrected_text.as_deref())
+        .collect::<String>();
+    let char_count = context.chars().count();
+    if char_count <= max_chars {
+        context
+    } else {
+        context.chars().skip(char_count - max_chars).collect()
+    }
+}
+
 pub fn desktop_live_correction_eligibility(
     active_generation: Option<u64>,
     job_generation: u64,
@@ -2509,6 +2564,57 @@ pub fn desktop_streaming_stop_policy(
     DesktopStreamingStopPolicy {
         insert_final_transcript,
         allow_final_correction_job: true,
+    }
+}
+
+pub fn desktop_streaming_final_correction_job_enabled(policy: DesktopStreamingStopPolicy) -> bool {
+    !policy.insert_final_transcript && policy.allow_final_correction_job
+}
+
+pub fn desktop_streaming_stop_aggregate(
+    segments: &[DesktopLiveCorrectionSegment],
+    final_segment_id: &str,
+    final_text: &str,
+) -> String {
+    let aggregate = desktop_live_correction_aggregate(segments);
+    let Some(segment) = segments
+        .iter()
+        .find(|segment| segment.segment_id == final_segment_id)
+    else {
+        return if final_text.trim().is_empty() {
+            aggregate
+        } else {
+            format!("{aggregate}{}", final_text.trim())
+        };
+    };
+
+    let committed_text = segment
+        .corrected_text
+        .as_deref()
+        .unwrap_or(segment.local_text.as_str())
+        .trim();
+    let local_text = segment.local_text.trim();
+    let final_text = final_text.trim();
+    if final_text.is_empty() {
+        return aggregate;
+    }
+    if (!local_text.is_empty() && final_text == local_text)
+        || (!committed_text.is_empty() && final_text == committed_text)
+    {
+        return aggregate;
+    }
+    if let Some(remainder) = final_text
+        .strip_prefix(local_text)
+        .or_else(|| final_text.strip_prefix(committed_text))
+    {
+        let remainder = remainder.trim_start();
+        if remainder.is_empty() {
+            aggregate
+        } else {
+            format!("{aggregate}{remainder}")
+        }
+    } else {
+        aggregate
     }
 }
 
