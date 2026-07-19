@@ -145,14 +145,25 @@ final_timeout_ms = 7000
 streaming service path is the target path for Typeless/OpenLess-like live
 partial text.
 
-When Talk starts a packaged release and no service is already listening at the
-configured endpoint, `talk-desktop.exe` can start
-`.internal\talk-local-asr-sherpa.exe` automatically. Without extra daemon
-settings it starts the daemon in `dry-run` mode so package/protocol smoke tests
-do not require large model files.
+When the standalone `Talk.exe` starts and no service is already listening at the
+configured endpoint, it verifies the embedded runtime payload and extracts the
+hidden `talk-local-asr-sherpa.exe` worker plus its Sherpa/ONNX DLLs into
+`%LOCALAPPDATA%\Talk\runtime\<payload-hash>`. The worker is launched from that
+content-addressed directory and is not visible beside `Talk.exe`.
+The worker and its required native libraries are embedded in `Talk.exe` during
+product publishing.
 
-To opt into a real local sherpa-onnx model, install or validate a model with
-`scripts/Install-TalkSherpaModel.ps1` and add the generated nested daemon table:
+Talk then bootstraps the pinned Zipformer model in
+`%LOCALAPPDATA%\Talk\models\sherpa-onnx`. Download, archive digest, safe
+extraction, required-file validation, and atomic installation all happen before
+the local route is marked ready. Bootstrap status is exposed as `downloading`,
+`verifying`, `ready`, `fallback_cloud`, or `error`. If the local route is not
+ready when a session starts, Talk records the per-session effective route and
+uses cloud transcription when the configured provider supports it.
+
+The following nested daemon table is an engineering/source-checkout override
+for alternate models. It is not required in the product `talk.toml` for the
+pinned Zipformer path:
 
 ```toml
 [speculative.streaming_service.local_daemon]
@@ -185,10 +196,10 @@ sample_rate_hz = 16000
 decoding_method = "greedy_search"
 ```
 
-The desktop config validates that real mode has the required model arguments,
-but it does not bundle or download model files by itself. The daemon still
-performs final file-existence validation at startup. See
-`docs/LOCAL_SHERPA_MODELS.md` for the installer workflow.
+The engineering desktop config validates that real mode has the required model
+arguments, and the daemon performs final file-existence validation at startup.
+See `docs/LOCAL_SHERPA_MODELS.md` for the source/CI installer and benchmark
+workflow. Product users should let `Talk.exe` perform the first-run bootstrap.
 
 ## Reference dry-run daemon
 
@@ -210,8 +221,9 @@ after the first valid audio chunk it can emit a `partial`, then it emits one
 `final` message after `stop`. Real sherpa-onnx Zipformer / Paraformer loading
 should keep the same transport and message schema.
 
-Real sherpa-onnx online mode is explicit because model packages are large and
-are not bundled in the first desktop release package:
+Real sherpa-onnx online mode is explicit in source/CI because model packages are
+large and alternate model selection is an engineering concern. The product
+default is bootstrapped automatically as described above:
 
 ```powershell
 cargo run --manifest-path Talk/Cargo.toml -p talk-local-asr-sherpa -- `
@@ -242,11 +254,11 @@ cargo run --manifest-path Talk/Cargo.toml -p talk-local-asr-sherpa -- `
   --num-threads 2
 ```
 
-On Windows the Talk build currently links `sherpa-onnx` in shared mode, so
-release packaging copies `sherpa-onnx-c-api.dll`,
-`sherpa-onnx-cxx-api.dll`, `onnxruntime.dll`, and
-`onnxruntime_providers_shared.dll` beside
-`.internal\talk-local-asr-sherpa.exe`.
+On Windows the Talk build currently links `sherpa-onnx` in shared mode. Product
+publishing embeds `sherpa-onnx-c-api.dll`, `sherpa-onnx-cxx-api.dll`,
+`onnxruntime.dll`, and `onnxruntime_providers_shared.dll` in the `Talk.exe`
+payload; the runtime extractor places them beside the hidden worker only under
+the per-user runtime cache.
 
 ## Engine adapters
 

@@ -33,7 +33,7 @@
 - Modify: `scripts/tests/Publish-TalkRelease.Tests.ps1`
 - Modify: `scripts/Test-TalkReleaseManifest.ps1`
 
-- [ ] **Step 1: Write the failing product-layout tests**
+- [x] **Step 1: Write the failing product-layout tests**
 
 Add a publish fixture assertion with these exact expectations:
 
@@ -46,7 +46,7 @@ $files = @(Get-ChildItem -LiteralPath $result.DestinationDir -Recurse -File)
 
 Add a manifest contract that requires `profile = 'product'`, exactly one executable named `Talk.exe`, and no `supportFiles` paths inside the product directory.
 
-- [ ] **Step 2: Run only the new tests and verify RED**
+- [x] **Step 2: Run only the new tests and verify RED**
 
 Run:
 
@@ -56,7 +56,7 @@ Invoke-Pester -Script .\\scripts\\tests\\Publish-TalkRelease.Tests.ps1 -PassThru
 
 Expected: the new assertions fail because the current publisher writes `.internal`, PowerShell files, manifests, and the `talk-desktop.exe` name.
 
-- [ ] **Step 3: Commit the failing contract**
+- [x] **Step 3: Commit the failing contract**
 
 ```powershell
 git add scripts/tests/Publish-TalkRelease.Tests.ps1 scripts/Test-TalkReleaseManifest.ps1
@@ -69,7 +69,7 @@ git commit -m "test: define single-exe Talk product layout"
 - Create: `crates/talk-desktop/tests/product_payload_contract.rs`
 - Modify: `crates/talk-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write valid-trailer and failure tests**
+- [x] **Step 1: Write valid-trailer and failure tests**
 
 The tests must construct a temporary executable-like byte file and assert:
 
@@ -81,7 +81,7 @@ assert_eq!(parsed.files[0].path, PathBuf::from("talk-local-asr-sherpa.exe"));
 
 Add tests that expect errors for truncated trailers, a mismatched archive hash, an absolute member path, `../escape`, duplicate members, and an unexpected member such as `asr-bench.exe`.
 
-- [ ] **Step 2: Run the focused Rust test and verify RED**
+- [x] **Step 2: Run the focused Rust test and verify RED**
 
 Run:
 
@@ -91,7 +91,7 @@ cargo test -p talk-desktop --test product_payload_contract
 
 Expected: compilation fails because the payload parser and test helper do not exist.
 
-- [ ] **Step 3: Commit the failing payload tests**
+- [x] **Step 3: Commit the failing payload tests**
 
 ```powershell
 git add crates/talk-desktop/tests/product_payload_contract.rs crates/talk-desktop/src/lib.rs
@@ -106,7 +106,7 @@ git commit -m "test: define embedded Talk runtime payload contract"
 - Modify: `crates/talk-desktop/Cargo.toml`
 - Modify: `Cargo.toml`
 
-- [ ] **Step 1: Add the minimal public API**
+- [x] **Step 1: Add the minimal public API**
 
 Implement these signatures:
 
@@ -130,7 +130,7 @@ pub fn ensure_embedded_runtime(executable_path: &Path, runtime_root: &Path) -> R
 
 Use `sha2` for hashes and `zip` for archive reads. The parser must enforce the fixed trailer lengths, the expected five-member allowlist, UTF-8 relative paths, and per-file hashes.
 
-- [ ] **Step 2: Run the focused tests and verify GREEN**
+- [x] **Step 2: Run the focused tests and verify GREEN**
 
 Run:
 
@@ -140,11 +140,11 @@ cargo test -p talk-desktop --test product_payload_contract
 
 Expected: all payload tests pass, including traversal and corruption rejection.
 
-- [ ] **Step 3: Add extraction idempotency and atomic-install tests**
+- [x] **Step 3: Add extraction idempotency and atomic-install tests**
 
 Assert that a valid payload extracts once to `<runtime-root>\\<payload-hash>`, returns the same path on the second call, and leaves no temporary directory after a successful or failed extraction.
 
-- [ ] **Step 4: Run payload tests again and commit**
+- [x] **Step 4: Run payload tests again and commit**
 
 ```powershell
 cargo test -p talk-desktop --test product_payload_contract
@@ -158,7 +158,7 @@ git commit -m "feat: extract verified embedded Talk runtime payload"
 - Create: `crates/talk-desktop/tests/model_bootstrap_contract.rs`
 - Modify: `crates/talk-desktop/src/lib.rs`
 
-- [ ] **Step 1: Write catalog and cache validation tests**
+- [x] **Step 1: Write catalog and cache validation tests**
 
 Tests must assert:
 
@@ -171,7 +171,7 @@ assert!(spec.url.starts_with("https://"));
 
 Add tests for a valid marker, missing required file, wrong marker digest, archive hash mismatch, and archive path traversal.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -181,7 +181,7 @@ cargo test -p talk-desktop --test model_bootstrap_contract
 
 Expected: compilation fails because the catalog and bootstrap functions do not exist.
 
-- [ ] **Step 3: Commit the failing model tests**
+- [x] **Step 3: Commit the failing model tests**
 
 ```powershell
 git add crates/talk-desktop/tests/model_bootstrap_contract.rs crates/talk-desktop/src/lib.rs
@@ -196,7 +196,7 @@ git commit -m "test: define first-run Zipformer bootstrap contract"
 - Modify: `crates/talk-desktop/Cargo.toml`
 - Modify: `Cargo.toml`
 
-- [ ] **Step 1: Add the catalog and cache types**
+- [x] **Step 1: Add the catalog and cache types**
 
 Implement:
 
@@ -216,7 +216,7 @@ pub fn validate_installed_model(spec: &ModelSpec, model_dir: &Path) -> Result<()
 
 Use `%LOCALAPPDATA%\\Talk` on Windows and return a clear error when the platform has no usable local-data directory.
 
-- [ ] **Step 2: Add the synchronous bootstrap worker with injected downloader**
+- [x] **Step 2: Add the synchronous bootstrap worker with injected downloader**
 
 Implement a testable function with an injected byte source:
 
@@ -230,7 +230,7 @@ pub fn install_model_from_reader<R: Read>(
 
 The production path uses `reqwest` with rustls to stream into `.partial`, hashes the archive while writing, and invokes the same reader-based installer. Use `tar` plus `bzip2` in Rust; do not invoke `tar.exe` or PowerShell from the product executable.
 
-- [ ] **Step 3: Run model-bootstrap tests and verify GREEN**
+- [x] **Step 3: Run model-bootstrap tests and verify GREEN**
 
 Run:
 
@@ -240,7 +240,7 @@ cargo test -p talk-desktop --test model_bootstrap_contract
 
 Expected: catalog, hash, traversal, required-file, and atomic-install tests pass.
 
-- [ ] **Step 4: Add retry and cleanup tests, then commit**
+- [x] **Step 4: Add retry and cleanup tests, then commit**
 
 Assert that a failed hash leaves only a removable `.partial` file, a successful install writes a marker with the catalog digest, and a second install reuses the validated directory.
 
@@ -257,17 +257,17 @@ git commit -m "feat: bootstrap and verify first-run Zipformer model"
 - Modify: `crates/talk-desktop/src/main.rs`
 - Modify: `crates/talk-desktop/tests/desktop_contract.rs`
 
-- [ ] **Step 1: Write failing path-resolution and fallback tests**
+- [x] **Step 1: Write failing path-resolution and fallback tests**
 
 Add tests that sibling `talk.toml` wins over the old `talk-desktop.toml`, local ASR resolves models from `%LOCALAPPDATA%\\Talk\\models\\sherpa-onnx`, and a missing local model produces a cloud-fallback status rather than an unrecoverable startup error.
 
-- [ ] **Step 2: Implement runtime/model startup integration**
+- [x] **Step 2: Implement runtime/model startup integration**
 
 At desktop startup, resolve the product data root, ensure the embedded runtime payload before the first local-ASR session, and start model bootstrap on a worker thread. Store the latest bootstrap status in shared state. `ensure_packaged_local_asr_daemon` must use the extracted worker path rather than a release sibling `.internal` path.
 
 The status messages must include `downloading`, `verifying`, `ready`, `fallback_cloud`, and `error` states. The worker launch remains hidden and uses the existing loopback endpoint validation.
 
-- [ ] **Step 3: Run desktop tests and commit**
+- [x] **Step 3: Run desktop tests and commit**
 
 ```powershell
 cargo test -p talk-desktop
@@ -283,21 +283,21 @@ git commit -m "feat: use embedded runtime and first-run model bootstrap"
 - Modify: `scripts/Test-TalkReleaseSummary.ps1`
 - Modify: `scripts/tests/Publish-TalkRelease.Tests.ps1`
 
-- [ ] **Step 1: Write the failing payload-builder tests**
+- [x] **Step 1: Write the failing payload-builder tests**
 
 Add a fixture test that invokes the payload builder with five known files and asserts that parsing the resulting `Talk.exe` trailer returns the same member list and hashes. Add a product publish test that asserts the destination contains exactly `Talk.exe` and `talk.toml`.
 
-- [ ] **Step 2: Implement payload append and product output**
+- [x] **Step 2: Implement payload append and product output**
 
 Build the four workspace binaries as before, collect only the worker and four native DLLs into a temporary ZIP, append the ZIP and trailer to `talk-desktop.exe`, copy the result as `Talk.exe`, and write the generated default config as `talk.toml`.
 
 Keep `manifest.json`, `release-summary.json`, `BUILD_INFO.txt`, and checksums under a sibling evidence directory such as `<release-root>\\_ci\\<version-id>` when `-EmitEvidence` is supplied. The product directory itself must not contain them.
 
-- [ ] **Step 3: Update validators for product manifests**
+- [x] **Step 3: Update validators for product manifests**
 
 The product manifest must describe the two-file directory and the embedded payload hash without requiring `supportFiles`. Engineering manifests retain their current schema behind the explicit internal profile.
 
-- [ ] **Step 4: Run focused Pester tests and commit**
+- [x] **Step 4: Run focused Pester tests and commit**
 
 ```powershell
 Invoke-Pester -Script .\\scripts\\tests\\Publish-TalkRelease.Tests.ps1 -PassThru
@@ -313,15 +313,15 @@ git commit -m "feat: publish Talk as single-exe product"
 - Modify: `docs/LOCAL_SHERPA_MODELS.md`
 - Modify: `docs/LOCAL_STREAMING_ASR_PROTOCOL.md`
 
-- [ ] **Step 1: Add failing workflow/documentation contract assertions**
+- [x] **Step 1: Add failing workflow/documentation contract assertions**
 
 Assert that workflows upload the product artifact separately from engineering evidence, and that user documentation describes `Talk.exe` first-run bootstrap rather than asking users to run a PowerShell installer.
 
-- [ ] **Step 2: Implement workflow and documentation updates**
+- [x] **Step 2: Implement workflow and documentation updates**
 
 Keep the existing native cache preparation and full CI verification. Upload the two-file product directory as the user artifact and upload evidence/engineering bundles as separate named artifacts.
 
-- [ ] **Step 3: Run workflow contract tests and commit**
+- [x] **Step 3: Run workflow and documentation contract tests**
 
 ```powershell
 Invoke-Pester -Script .\\scripts\\tests\\GitHub-Actions.Tests.ps1 -PassThru

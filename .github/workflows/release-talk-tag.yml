@@ -97,6 +97,8 @@ jobs:
           .\scripts\Publish-TalkRelease.ps1 `
             -VersionId $versionId `
             -ReleaseRoot $releaseRoot `
+            -ProductProfile `
+            -EmitEvidence `
             -DisablePackagedApiKeyDiscovery `
             -SkipVerification `
             -SkipSmoke `
@@ -104,10 +106,9 @@ jobs:
             -SkipNativeReadiness
 
           $releaseDir = Join-Path $releaseRoot $versionId
-          .\scripts\Test-TalkReleaseManifest.ps1 -ManifestPath (Join-Path $releaseDir 'manifest.json')
-          .\scripts\Test-TalkReleaseSummary.ps1 -SummaryPath (Join-Path $releaseDir 'release-summary.json')
+          .\scripts\Test-TalkProductRelease.ps1 -ProductPath $releaseDir
 
-          $configText = Get-Content -LiteralPath (Join-Path $releaseDir 'talk-desktop.toml') -Raw
+          $configText = Get-Content -LiteralPath (Join-Path $releaseDir 'talk.toml') -Raw
           if ($configText -match '(?m)^\s*api_key\s*=') {
             throw 'GitHub release must not contain provider.api_key'
           }
@@ -118,6 +119,14 @@ jobs:
           $assetPath = Join-Path $releaseRoot "talk-windows-x64-$env:TALK_TAG.zip"
           Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $assetPath -Force
           "TALK_RELEASE_ASSET=$assetPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TALK_RELEASE_EVIDENCE_DIR=$(Join-Path (Join-Path $releaseRoot '_ci') $versionId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Upload Talk release validation evidence
+        uses: actions/upload-artifact@v6
+        with:
+          name: talk-windows-x64-evidence-${{ env.TALK_TAG }}
+          path: ${{ env.TALK_RELEASE_EVIDENCE_DIR }}
+          if-no-files-found: error
 
       - name: Publish Talk GitHub release
         uses: softprops/action-gh-release@v3

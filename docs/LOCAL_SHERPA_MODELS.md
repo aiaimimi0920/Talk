@@ -1,24 +1,45 @@
 # Talk Local Sherpa Models
 
-Talk uses a local-first ASR path, but it does not silently download large model
-files when the desktop app starts. Model installation is an explicit operator
-step:
+The standalone `Talk.exe` automatically downloads and verifies its default
+local Zipformer model on first startup. Users do not run a model installer and
+the product release does not contain a PowerShell script.
 
-```powershell
-.\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms
+The pinned default is:
+
+```text
+zipformer-zh-en-punct-int8-480ms
+SHA-256: fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74
 ```
 
-In a source checkout, run:
+Talk stores the validated model under:
 
-```powershell
-.\Talk\scripts\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms
+```text
+%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms
 ```
 
-In a packaged release, run the script from the release directory:
+The archive is downloaded over HTTPS into a `.partial` file while its SHA-256
+is calculated. Talk rejects a digest mismatch, path traversal, links, special
+archive entries, and missing model files. A successful extraction is installed
+atomically and recorded in `model-manifest.json`; later launches reuse the
+validated directory. A failed bootstrap never promotes a partial directory and
+allows the desktop session to use its configured cloud ASR fallback.
+
+The local Sherpa worker and native DLLs are embedded in `Talk.exe`. They are
+verified and extracted automatically into
+`%LOCALAPPDATA%\Talk\runtime\<payload-hash>`, so the user-facing release remains
+only `Talk.exe` plus `talk.toml`.
+
+## Engineering model tools
+
+The commands below are for source development, CI, benchmarking, alternative
+models, and offline archive testing. They are not files shipped in the product
+directory.
+
+From a Talk source checkout, an engineer can still install a catalog model
+explicitly:
 
 ```powershell
-cd C:\path\to\release\Talk\<release-id>
-.\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms
+.\scripts\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms
 ```
 
 The script downloads the archive, extracts it under `.runtime\models\sherpa-onnx`,
@@ -29,15 +50,16 @@ writes:
 <model-dir>\talk-local-daemon.toml.snippet
 ```
 
-Copy that snippet into `talk-desktop.toml` under the existing
-`[speculative.streaming_service]` table. After that, `talk-desktop.exe` will
-start `.internal\talk-local-asr-sherpa.exe` in `sherpa-online` mode and pass the
-validated model paths to it.
+Copy that snippet into an engineering config under the existing
+`[speculative.streaming_service]` table. A source-built `talk-desktop.exe` can
+then start the engineering worker in `sherpa-online` mode and pass the validated
+model paths to it. Product `Talk.exe` does this resolution automatically for the
+pinned default model.
 
 ## Benchmark after installation
 
 After starting `talk-local-asr-sherpa.exe` in `sherpa-online` mode, validate the
-same endpoint with the release-bundled benchmark tool:
+same endpoint with the source-built benchmark tool:
 
 ```powershell
 .\.internal\asr-bench.exe `
@@ -138,7 +160,7 @@ preflight and the full `-SkipRecording` workflow fail before benchmarking. A
 missing status file is tolerated so older or hand-built corpus manifests can
 still be benchmarked directly.
 
-After the comparison exists, use the release-bundled selection gate:
+After the comparison exists, use the source-checkout selection gate:
 
 ```powershell
 .\Select-TalkDefaultAsrModel.ps1 `
@@ -200,7 +222,7 @@ The default model is `zipformer-zh-en-punct-int8-480ms`.
 Current evidence status:
 
 - `zipformer-zh-en-punct-int8-480ms` has been validated end-to-end through the
-  release-bundled daemon and `asr-bench` on a short Microsoft Huihui Chinese TTS
+  source-built daemon and `asr-bench` on a short Microsoft Huihui Chinese TTS
   WAV. The extracted model directory in that release measured about 162 MiB,
   first partial latency was 255 ms, final latency was 317 ms, RTF was 0.207, and
   CER was 0.333 against the reference `你好呀` because the recognized text was
@@ -215,26 +237,26 @@ Current evidence status:
   sherpa-online paths work, but it does not replace real microphone benchmarks.
   Do not promote Paraformer or reject Zipformer until both are benchmarked on
   the same real microphone clips with the same JSON schema.
-- `Invoke-TalkAsrCorpusBenchmark.ps1` is now packaged in Talk releases so the
+- `Invoke-TalkAsrCorpusBenchmark.ps1` is available in the source tree so the
   same real microphone corpus can be replayed against Zipformer, Paraformer,
   future local streaming engines, and cloud-only OpenAI-compatible baselines
   without hand-maintained command drift.
-- `Invoke-TalkAsrCorpusRecorder.ps1` is now packaged in Talk releases so the
-  real microphone corpus itself can be captured from the same release directory
-  before running the same-corpus benchmark helper. Releases also include
-  `asr-real-mic-prompts.json` as a starter prompt manifest for the required
+- `Invoke-TalkAsrCorpusRecorder.ps1` is available in the source tree so the
+  real microphone corpus itself can be captured from the same source/CI
+  checkout before running the same-corpus benchmark helper. The repository
+  includes `asr-real-mic-prompts.json` as a starter prompt manifest for the required
   short search, mixed Chinese/English, punctuation, and natural/noisy samples.
-- `Select-TalkDefaultAsrModel.ps1` is now packaged in Talk releases so the
+- `Select-TalkDefaultAsrModel.ps1` is available in the source tree so the
   final default-model decision can be gated by evidence instead of manually
   reading the comparison JSON or over-trusting a synthetic smoke sample.
-- `Set-TalkDefaultAsrModel.ps1` is now packaged in Talk releases so a successful
+- `Set-TalkDefaultAsrModel.ps1` is available in the source tree so a successful
   selection can be applied to `talk-desktop.toml` through a repeatable,
   backup-producing config update instead of manually copying TOML snippets.
-- `Invoke-TalkAsrDefaultModelWorkflow.ps1` is now packaged in Talk releases so
+- `Invoke-TalkAsrDefaultModelWorkflow.ps1` is available in the source tree so
   the final Task 6 pass can run benchmark -> selection -> optional config apply
-  from one release-side command after the real microphone corpus is recorded.
-- `Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1` is now packaged in Talk
-  releases as the preferred end-to-end Task 6 operator entry. It chains real
+  from one source/CI command after the real microphone corpus is recorded.
+- `Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1` is available in the source
+  tree as the preferred end-to-end engineering operator entry. It chains real
   microphone recording -> same-corpus benchmark -> evidence selection ->
   optional config apply from one release-side command, and it supports
   `-PreflightOnly` so missing models, internal tools, config files, or cloud
@@ -287,10 +309,17 @@ For Paraformer models, validation requires:
 - `encoder*.onnx`
 - `decoder*.onnx`
 
-## Why this is explicit
+## Product bootstrap versus engineering installation
 
-Model archives are tens of megabytes to more than one gigabyte. Downloading them
-inside the desktop app would make startup unpredictable, hide network failures
-inside the interaction loop, and make release smoke tests fragile. The installer
-keeps that step visible and repeatable while leaving the desktop runtime focused
-on low-latency local ASR.
+The product bootstrap is intentionally limited to the pinned Zipformer model so
+first-run behavior is deterministic and its digest can be reviewed in source.
+Download and extraction happen on a background worker after the Windows shell
+initializes; the UI remains available while the model is prepared. If network,
+digest, extraction, or required-file validation fails, Talk keeps the failure
+reason in its status/evidence and uses cloud ASR for the affected session when
+configured.
+
+The PowerShell installer remains useful for engineering-only model comparison,
+offline archives, Paraformer experiments, and corpus benchmarks. Its `.runtime`
+output is deliberately separate from the product cache and must not be copied
+into a user release directory.

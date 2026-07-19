@@ -1,6 +1,9 @@
 $talkRoot = Split-Path (Split-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -Parent) -Parent
 $buildWorkflowPath = Join-Path $talkRoot '.github\workflows\build-talk.yml'
 $releaseWorkflowPath = Join-Path $talkRoot '.github\workflows\release-talk-tag.yml'
+$readmePath = Join-Path $talkRoot 'README.md'
+$localModelsPath = Join-Path $talkRoot 'docs\LOCAL_SHERPA_MODELS.md'
+$localProtocolPath = Join-Path $talkRoot 'docs\LOCAL_STREAMING_ASR_PROTOCOL.md'
 
 function Read-TalkWorkflowText {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -33,6 +36,9 @@ Describe 'Talk GitHub Actions contracts' {
         $workflow | Should Match 'cargo clean -p sherpa-onnx-sys'
         $workflow | Should Match 'cargo test --workspace'
         $workflow | Should Match 'Publish-TalkRelease\.ps1'
+        $workflow | Should Match '-ProductProfile'
+        $workflow | Should Match '-EmitEvidence'
+        $workflow | Should Match 'Test-TalkProductRelease\.ps1'
         $workflow | Should Match '-DisablePackagedApiKeyDiscovery'
         $workflow | Should Match '-SkipVerification'
         $workflow | Should Match '-SkipSmoke'
@@ -60,9 +66,11 @@ Describe 'Talk GitHub Actions contracts' {
         $workflow | Should Match 'Remove-Item.*sherpa-onnx-prebuilt'
         $workflow | Should Match 'cargo clean -p sherpa-onnx-sys'
         $workflow | Should Match 'Publish-TalkRelease\.ps1'
+        $workflow | Should Match '-ProductProfile'
+        $workflow | Should Match '-EmitEvidence'
+        $workflow | Should Match 'Test-TalkProductRelease\.ps1'
         $workflow | Should Match '-DisablePackagedApiKeyDiscovery'
-        $workflow | Should Match 'Test-TalkReleaseManifest\.ps1'
-        $workflow | Should Match 'Test-TalkReleaseSummary\.ps1'
+        $workflow | Should Match 'Test-TalkProductRelease\.ps1'
         $workflow | Should Match 'Compress-Archive'
         $workflow | Should Match 'softprops/action-gh-release@v3'
         $workflow | Should Match '\^V\\d\+\\\.\\d\+\\\.\\d\+\$'
@@ -92,5 +100,18 @@ Describe 'Talk GitHub Actions contracts' {
         )) {
             Test-Path -LiteralPath (Join-Path $talkRoot $relativePath) | Should Be $true
         }
+    }
+
+    It 'documents the two-file product and automatic first-run ASR bootstrap' {
+        $readme = Read-TalkWorkflowText -Path $readmePath
+        $models = Read-TalkWorkflowText -Path $localModelsPath
+        $protocol = Read-TalkWorkflowText -Path $localProtocolPath
+
+        $readme | Should Match 'contains exactly:\s*```text\s*Talk\.exe\s*talk\.toml'
+        $readme | Should Match 'first\s+startup, Talk automatically downloads and verifies'
+        $models | Should Match '`?Talk\.exe`? automatically downloads and verifies'
+        $models | Should Match '%LOCALAPPDATA%\\Talk\\models\\sherpa-onnx'
+        $protocol | Should Match 'embedded (in|inside) `?Talk\.exe`?'
+        $protocol | Should Match 'fallback_cloud'
     }
 }
