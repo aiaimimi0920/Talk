@@ -38,3 +38,29 @@ fn segmenter_forces_long_chunks_even_without_punctuation() {
         SegmentReadiness::Ready
     );
 }
+
+#[test]
+fn segmenter_commits_short_clause_at_chinese_comma() {
+    let input = SegmenterInput {
+        text: "你好，".to_string(),
+        trailing_silence_ms: 0,
+        asr_marked_final: false,
+    };
+    assert_eq!(
+        evaluate_segment_readiness(&SegmenterConfig::default(), &input),
+        SegmentReadiness::Ready
+    );
+}
+
+#[test]
+fn segmenter_waits_for_one_character_clause_at_comma() {
+    let input = SegmenterInput {
+        text: "好，".to_string(),
+        trailing_silence_ms: 0,
+        asr_marked_final: false,
+    };
+    assert_eq!(
+        evaluate_segment_readiness(&SegmenterConfig::default(), &input),
+        SegmentReadiness::Wait
+    );
+}

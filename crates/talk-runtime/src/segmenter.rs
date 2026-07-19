@@ -2,6 +2,7 @@
 pub struct SegmenterConfig {
     pub punctuation_pause_ms: u64,
     pub soft_pause_ms: u64,
+    pub min_clause_chars: usize,
     pub min_final_chars: usize,
     pub max_chunk_chars: usize,
     pub correction_context_chars: usize,
@@ -12,6 +13,7 @@ impl Default for SegmenterConfig {
         Self {
             punctuation_pause_ms: 280,
             soft_pause_ms: 520,
+            min_clause_chars: 2,
             min_final_chars: 6,
             max_chunk_chars: 30,
             correction_context_chars: 80,
@@ -50,6 +52,11 @@ pub fn evaluate_segment_readiness(
     if input.asr_marked_final && char_count >= config.min_final_chars {
         return SegmentReadiness::Ready;
     }
+    if ends_with_clause_punctuation(&input.text)
+        && content_char_count(&input.text) >= config.min_clause_chars
+    {
+        return SegmentReadiness::Ready;
+    }
     if ends_with_sentence_punctuation(&input.text)
         && input.trailing_silence_ms >= config.punctuation_pause_ms
     {
@@ -59,6 +66,25 @@ pub fn evaluate_segment_readiness(
         return SegmentReadiness::Ready;
     }
     SegmentReadiness::Wait
+}
+
+fn content_char_count(text: &str) -> usize {
+    text.chars()
+        .filter(|item| {
+            !item.is_whitespace()
+                && !matches!(
+                    item,
+                    '，' | ',' | '；' | ';' | '：' | ':' | '。' | '！' | '？' | '.' | '!' | '?'
+                )
+        })
+        .count()
+}
+
+fn ends_with_clause_punctuation(text: &str) -> bool {
+    text.trim_end()
+        .chars()
+        .last()
+        .is_some_and(|item| matches!(item, '，' | ',' | '；' | ';' | '：' | ':'))
 }
 
 fn ends_with_sentence_punctuation(text: &str) -> bool {

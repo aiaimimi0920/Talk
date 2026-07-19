@@ -225,6 +225,57 @@ fn speculative_runtime_splits_cumulative_same_asr_segment_into_tail_segments() {
 }
 
 #[test]
+fn speculative_runtime_requests_three_ordered_clause_corrections_for_example_sentence() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let first = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "你好，"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let second = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "你好，今天我们去北京玩，"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let third = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "你好，今天我们去北京玩，明天我们去上海玩。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let corrections = first
+        .into_iter()
+        .chain(second)
+        .chain(third)
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id,
+                local_text,
+                ..
+            } => Some((segment_id, local_text)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        corrections,
+        vec![
+            ("seg-1".to_string(), "你好，".to_string()),
+            ("seg-1#2".to_string(), "今天我们去北京玩，".to_string()),
+            ("seg-1#3".to_string(), "明天我们去上海玩。".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn speculative_runtime_includes_bounded_previous_local_context_for_correction() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig {
