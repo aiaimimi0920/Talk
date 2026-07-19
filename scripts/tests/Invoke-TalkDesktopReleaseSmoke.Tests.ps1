@@ -1048,7 +1048,7 @@ Audio backend readiness: unavailable
                     BinaryPath = $TalkDesktopBinaryPath
                     ScenarioRoot = $ScenarioRoot
                     Status = 'completed'
-                    PopupVisible = $true
+                    PopupVisible = $false
                 }
             }
 
@@ -1060,7 +1060,7 @@ Audio backend readiness: unavailable
             @($results).Count | Should Be 1
             @($results)[0].Scenario | Should Be 'openai-compatible-audio-input-focus-switch-copy-popup-success'
             @($results)[0].Status | Should Be 'completed'
-            @($results)[0].PopupVisible | Should Be $true
+            @($results)[0].PopupVisible | Should Be $false
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force
@@ -1233,7 +1233,7 @@ Audio backend readiness: unavailable
         $coreScenarioText | Should Not Match 'TALK_DESKTOP_INSERT_TARGET_FOCUS'
     }
 
-    It 'keeps the popup open after mouse copy and then closes it explicitly in the focus-switch smoke flow' {
+    It 'waits for corrected text in the current focused target in the focus-switch smoke flow' {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
         $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke'
         $endMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmokeCore'
@@ -1241,16 +1241,11 @@ Audio backend readiness: unavailable
         $endIndex = $scriptText.IndexOf($endMarker)
         $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
 
-        $scenarioText | Should Match 'Get-TalkDesktopCopyPopupCopyButtonClickPoint -Hwnd \$popupHwnd'
-        $scenarioText | Should Match 'Send-TalkDesktopWindowLeftClick -Hwnd \$popupHwnd -X \$copyClick\.X -Y \$copyClick\.Y'
-        $scenarioText | Should Match 'Wait-TalkDesktopWindowHiddenByProcessIdAndClass'
-        $scenarioText | Should Match 'Get-TalkDesktopClipboardText'
-        $scenarioText | Should Match 'Set-TalkDesktopClipboardText -Value ''talk-copy-popup-pending'''
-        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x1B'
-        $scenarioText.IndexOf('Get-TalkDesktopCopyPopupCopyButtonClickPoint -Hwnd $popupHwnd') | Should BeLessThan $scenarioText.IndexOf('Send-TalkDesktopWindowLeftClick -Hwnd $popupHwnd -X $copyClick.X -Y $copyClick.Y')
-        $scenarioText.IndexOf('Send-TalkDesktopWindowLeftClick -Hwnd $popupHwnd -X $copyClick.X -Y $copyClick.Y') | Should BeLessThan $scenarioText.IndexOf('Get-TalkDesktopClipboardText')
-        $scenarioText.IndexOf('Get-TalkDesktopClipboardText') | Should BeLessThan $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B')
-        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B') | Should BeLessThan $scenarioText.IndexOf('Wait-TalkDesktopWindowHiddenByProcessIdAndClass')
+        $scenarioText | Should Match 'Wait-TalkTextCaptureContainsWithForegroundRefresh'
+        $scenarioText | Should Match 'Write-TalkSmokeProgress -Path \$progressPath -Message ''current-focus-text-captured'''
+        $scenarioText | Should Match "outputStrategy -ne 'honor_configured_output'"
+        $scenarioText | Should Not Match 'Get-TalkDesktopCopyPopupCopyButtonClickPoint'
+        $scenarioText | Should Not Match 'Send-TalkDesktopWindowLeftClick'
     }
 
     It 'does not move foreground onto the copy popup when it becomes visible in the focus-switch popup core flow' {
@@ -1330,8 +1325,8 @@ Audio backend readiness: unavailable
                 -SmokeRoot $tempRoot
 
             ((@($results).Scenario) -contains 'openai-compatible-audio-input-insert-success') | Should Be $true
-            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-enter-copy-success') | Should Be $true
-            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-escape-close-success') | Should Be $true
+            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-enter-copy-success') | Should Be $false
+            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-escape-close-success') | Should Be $false
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force
@@ -1367,8 +1362,8 @@ Audio backend readiness: unavailable
                 -SmokeRoot $tempRoot
 
             ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-success') | Should Be $true
-            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-enter-copy-success') | Should Be $true
-            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-escape-close-success') | Should Be $true
+            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-enter-copy-success') | Should Be $false
+            ((@($results).Scenario) -contains 'openai-compatible-audio-input-focus-switch-copy-popup-keyboard-escape-close-success') | Should Be $false
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force

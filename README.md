@@ -662,8 +662,10 @@ shell smoke that was previously manual. By default it:
     Windows clipboard paste path.
   - openai-compatible-audio-input-focus-switch-copy-popup-success starts from
     one editable target, deliberately switches foreground to a different
-    editable target during thinking, and then verifies that Talk shows the
-    Typeless-style copy popup instead of inserting into the second window.
+    editable target during thinking, and then verifies that Talk inserts the
+    corrected result into the currently focused target while leaving the
+    origin target unchanged. The historical scenario name is retained for
+    release-script compatibility.
 
 `http-provider-success` is still available as an explicit manual scenario when
 you want to verify the older Talk-local custom adapter path.
@@ -679,18 +681,17 @@ provider-backed completion, native Windows clipboard paste, and actual text
 landing in a foreground target window.
 
 `openai-compatible-audio-input-focus-switch-copy-popup-success` is available as
-an explicit manual scenario when you want to verify the stricter Typeless
-routing rule now used by Talk desktop:
+an explicit manual scenario when you want to verify current-focus insertion:
 
 - recording starts from origin window **A**
 - if thinking finishes while **A** is still foreground, Talk may insert there
-- if foreground has switched to another window **B**, Talk must not insert into
-  **B** and must show the copy popup instead
+- if foreground has switched to another editable window **B**, Talk inserts
+  into **B** instead of writing back to **A**
+- if the current target is not editable or cannot be proven safe, Talk keeps
+  the corrected result in the copy popup and does not paste
 
-That smoke now also clicks the popup's `复制` button, waits for the popup to
-close, and verifies that the expected assistant output was copied to the
-Windows clipboard while both the origin and alternate text targets remained
-unchanged.
+The smoke verifies the provider result, the current-target diagnostic strategy,
+and the origin/alternate text-target contents.
 
 The desktop copy popup itself now also supports lightweight keyboard handling:
 
