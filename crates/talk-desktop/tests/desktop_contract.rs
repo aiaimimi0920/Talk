@@ -33,11 +33,13 @@ use talk_desktop::{
     desktop_mode_text_result_popup_text, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
     desktop_packaged_local_asr_daemon_launch_plan,
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
+    desktop_product_local_asr_daemon_launch_plan_with_config,
     desktop_preferred_paste_shortcut_for_process_name, desktop_preferred_paste_shortcut_for_target,
     desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
     desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
     desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
     desktop_speculative_local_asr_route, desktop_speculative_pipeline_enabled,
+    desktop_effective_streaming_asr_enabled,
     desktop_speculative_replacement_selection_count, desktop_speculative_transcript_view_model,
     desktop_streaming_hud_transcript, desktop_streaming_latest_segment_allows_auto_patch,
     desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
@@ -3737,6 +3739,50 @@ fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_release_zipformer_m
 }
 
 #[test]
+fn product_local_asr_launch_plan_uses_extracted_worker_and_app_data_model_root() {
+    let temp_dir = unique_temp_dir("talk-desktop-product-local-asr");
+    let runtime_dir = temp_dir.join("runtime").join("payload-hash");
+    let model_root = temp_dir.join("models").join("sherpa-onnx");
+    let model_dir = model_root.join("zipformer-zh-en-punct-int8-480ms");
+    fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+    fs::create_dir_all(&model_dir).expect("create model dir");
+    let worker_path = runtime_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&worker_path, b"worker").expect("write worker");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+    fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
+    fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+
+    let plan = desktop_product_local_asr_daemon_launch_plan_with_config(
+        &worker_path,
+        &model_root,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid product launch plan")
+    .expect("product worker should be available");
+
+    assert_eq!(plan.executable_path, worker_path);
+    assert!(plan
+        .args
+        .iter()
+        .any(|arg| arg.ends_with("encoder.int8.onnx")));
+    fs::remove_dir_all(temp_dir).expect("remove product launch fixture");
+}
+
+#[test]
+fn local_asr_unavailable_disables_streaming_and_preserves_cloud_fallback() {
+    assert!(desktop_effective_streaming_asr_enabled(
+        DesktopSpeculativeLocalAsrRoute::StreamingService,
+        true,
+    ));
+    assert!(!desktop_effective_streaming_asr_enabled(
+        DesktopSpeculativeLocalAsrRoute::StreamingService,
+        false,
+    ));
+}
+
+#[test]
 fn packaged_local_asr_daemon_launch_plan_auto_falls_back_to_installed_release_paraformer_model() {
     let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-paraformer");
     let release_dir = temp_dir.join("release");
@@ -3842,9 +3888,9 @@ fn default_desktop_config_path_prefers_release_sibling_template_when_present() {
     ));
     let release_dir = temp_dir.join("release");
     fs::create_dir_all(&release_dir).expect("create release dir");
-    let release_config_path = release_dir.join("talk-desktop.toml");
+    let release_config_path = release_dir.join("talk.toml");
     fs::write(&release_config_path, b"voice_mode = \"command\"\n").expect("write release config");
-    let executable_path = release_dir.join("talk-desktop.exe");
+    let executable_path = release_dir.join("Talk.exe");
 
     let resolved = resolve_default_desktop_config_path(None, &temp_dir, &executable_path);
 
