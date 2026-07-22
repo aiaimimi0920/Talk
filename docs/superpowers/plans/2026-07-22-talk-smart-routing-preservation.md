@@ -14,7 +14,9 @@
 
 - Modify: `crates/talk-runtime/src/lib.rs` — expose route context/diagnostics, route complete transcripts, apply faithful-output fallback at the provider boundary, and persist non-sensitive diagnostics.
 - Create: `crates/talk-runtime/src/voice_processing.rs` — Smart route analysis and bounded faithful-output validation; no transcript text is stored in diagnostics.
-- Modify: `crates/talk-runtime/tests/runtime_contract.rs` — Smart boundary/quoted-command tests, live-faithful processing tests, provider compression fallback tests, and route diagnostics assertions.
+- Create: `crates/talk-runtime/tests/smart_route_contract.rs` — isolated Smart boundary/quoted-command and route-evidence tests.
+- Create: `crates/talk-runtime/tests/preservation_contract.rs` — isolated faithful-output and single-provider-request tests.
+- Modify: `crates/talk-runtime/tests/runtime_contract.rs` — retain existing compatibility assertions and add only route-context propagation cases that need its helpers.
 - Modify: `crates/talk-desktop/src/lib.rs` — canonical HUD-visible segment view, pending-aware stop aggregate, source-aware non-prefix revision merge, and a pure live-correction mode helper.
 - Modify: `crates/talk-desktop/src/main.rs` — pass HUD pending segments into stop assembly, pass committed segment count into Smart route context, force live jobs to `Transcribe`, and pass the already-resolved concrete mode to the final whole-document job.
 - Modify: `crates/talk-desktop/tests/desktop_contract.rs` — RED/GREEN tests for live mode, HUD/stop equivalence, pending segments, and non-prefix source revision.
@@ -24,7 +26,7 @@
 ## Task 1: Lock the Smart-routing regression contract (RED)
 
 **Files:**
-- Modify: `crates/talk-runtime/tests/runtime_contract.rs`
+- Create: `crates/talk-runtime/tests/smart_route_contract.rs`
 
 - [ ] **Step 1: Add focused failing router tests.** Add tests beside `smart_route_infers_concrete_mode_from_transcript` with these exact cases:
 
@@ -67,7 +69,7 @@ fn smart_route_respects_short_direct_command_and_long_form_boundaries() {
 Run:
 
 ```powershell
-cargo test -p talk-runtime --test runtime_contract smart_route -- --nocapture
+cargo test -p talk-runtime --test smart_route_contract -- --nocapture
 ```
 
 Expected: the existing short command test passes, while the quoted/long-body tests fail because the current whole-transcript keyword scan returns `Command`.
@@ -75,7 +77,7 @@ Expected: the existing short command test passes, while the quoted/long-body tes
 - [ ] **Step 4: Commit only the test file.**
 
 ```powershell
-git add crates/talk-runtime/tests/runtime_contract.rs
+git add crates/talk-runtime/tests/smart_route_contract.rs
 git commit -m "test: cover smart long-form routing boundaries"
 ```
 
@@ -84,7 +86,7 @@ git commit -m "test: cover smart long-form routing boundaries"
 **Files:**
 - Create: `crates/talk-runtime/src/voice_processing.rs`
 - Modify: `crates/talk-runtime/src/lib.rs`
-- Modify: `crates/talk-runtime/tests/runtime_contract.rs`
+- Modify: `crates/talk-runtime/tests/smart_route_contract.rs`
 
 - [ ] **Step 1: Define route constants and diagnostics in `voice_processing.rs`.** Use these initial constants, kept private to the module:
 
@@ -109,7 +111,7 @@ Expose `SmartVoiceRouteAnalysis` with only counts, `long_form_evidence`, `matche
 Run:
 
 ```powershell
-cargo test -p talk-runtime --test runtime_contract smart_route -- --nocapture
+cargo test -p talk-runtime --test smart_route_contract -- --nocapture
 cargo test -p talk-runtime --test runtime_contract -- --nocapture
 ```
 
@@ -118,14 +120,14 @@ Expected: all route tests pass and no existing runtime contract regresses.
 - [ ] **Step 6: Commit the route implementation.**
 
 ```powershell
-git add crates/talk-runtime/src/voice_processing.rs crates/talk-runtime/src/lib.rs crates/talk-runtime/tests/runtime_contract.rs
+git add crates/talk-runtime/src/voice_processing.rs crates/talk-runtime/src/lib.rs crates/talk-runtime/tests/smart_route_contract.rs
 git commit -m "feat: preserve long-form smart transcription intent"
 ```
 
 ## Task 3: Add faithful-output preservation policy (RED then GREEN)
 
 **Files:**
-- Modify: `crates/talk-runtime/tests/runtime_contract.rs`
+- Create: `crates/talk-runtime/tests/preservation_contract.rs`
 - Modify: `crates/talk-runtime/src/voice_processing.rs`
 - Modify: `crates/talk-runtime/src/lib.rs`
 
@@ -171,7 +173,7 @@ fn faithful_validation_rejects_distributed_rewrite_but_accepts_small_corrections
 - [ ] **Step 2: Run the validator tests and verify RED because the validator is not yet present.**
 
 ```powershell
-cargo test -p talk-runtime --test runtime_contract faithful_validation -- --nocapture
+cargo test -p talk-runtime --test preservation_contract -- --nocapture
 ```
 
 - [ ] **Step 3: Implement normalized bounded validation.** Normalize by removing whitespace and punctuation while retaining Unicode alphanumeric content. For inputs with at least 120 normalized characters, require output retention of at least 60%. Compute normalized edit change with a banded Levenshtein calculation whose allowed distance is `floor(max(input_len, output_len) * 0.35)`, using two bounded rows and early exit when the band cannot pass. Do not reuse the existing prefix/suffix segment patch ratio.
@@ -183,9 +185,9 @@ cargo test -p talk-runtime --test runtime_contract faithful_validation -- --noca
 - [ ] **Step 6: Run the focused tests and commit.**
 
 ```powershell
-cargo test -p talk-runtime --test runtime_contract faithful_validation -- --nocapture
+cargo test -p talk-runtime --test preservation_contract -- --nocapture
 cargo test -p talk-runtime --test runtime_contract -- --nocapture
-git add crates/talk-runtime/src/voice_processing.rs crates/talk-runtime/src/lib.rs crates/talk-runtime/tests/runtime_contract.rs
+git add crates/talk-runtime/src/voice_processing.rs crates/talk-runtime/src/lib.rs crates/talk-runtime/tests/preservation_contract.rs
 git commit -m "fix: reject catastrophic faithful transcript rewrites"
 ```
 
@@ -267,6 +269,8 @@ git commit -m "fix: preserve HUD content during streaming stop assembly"
 - [ ] **Step 4: Run all Rust tests touched by this change and commit.**
 
 ```powershell
+cargo test -p talk-runtime --test smart_route_contract -- --nocapture
+cargo test -p talk-runtime --test preservation_contract -- --nocapture
 cargo test -p talk-runtime --test runtime_contract -- --nocapture
 cargo test -p talk-desktop --test desktop_contract -- --nocapture
 git add crates/talk-runtime/src/lib.rs crates/talk-runtime/src/voice_processing.rs crates/talk-runtime/tests/runtime_contract.rs crates/talk-desktop/src/main.rs
