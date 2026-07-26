@@ -77,6 +77,15 @@ struct Cli {
     /// (higher reduces deletions). 0.0 is the sherpa default.
     #[arg(long, default_value_t = 0.0)]
     blank_penalty: f32,
+    /// Modeling unit for tokenizing raw-text hotwords: cjkchar | bpe |
+    /// cjkchar+bpe. Required (with --bpe-vocab for bpe) for hotwords to match on
+    /// SentencePiece/BPE models. Unset = sherpa cannot tokenize raw hotwords.
+    #[arg(long)]
+    modeling_unit: Option<String>,
+    /// BPE vocabulary file used to tokenize raw-text hotwords when
+    /// --modeling-unit includes bpe (derivable from the model's bpe.model).
+    #[arg(long)]
+    bpe_vocab: Option<PathBuf>,
     #[arg(long)]
     hotwords_file: Option<PathBuf>,
     #[arg(long)]
@@ -149,6 +158,8 @@ struct SherpaOnlineConfig {
     max_active_paths: i32,
     hotwords_score: f32,
     blank_penalty: f32,
+    modeling_unit: Option<String>,
+    bpe_vocab: Option<PathBuf>,
     hotwords_file: Option<PathBuf>,
     rule_fsts: Option<PathBuf>,
     rule_fars: Option<PathBuf>,
@@ -241,6 +252,17 @@ impl SherpaOnlineConfig {
         if !cli.blank_penalty.is_finite() {
             anyhow::bail!("--blank-penalty must be a finite number");
         }
+        if let Some(modeling_unit) = cli.modeling_unit.as_deref() {
+            match modeling_unit {
+                "cjkchar" | "bpe" | "cjkchar+bpe" => {}
+                other => {
+                    anyhow::bail!(
+                        "--modeling-unit must be cjkchar, bpe, or cjkchar+bpe, got {other}"
+                    )
+                }
+            }
+        }
+        let bpe_vocab = validate_optional_existing_file("--bpe-vocab", cli.bpe_vocab.as_ref())?;
 
         let tokens = required_existing_file("--tokens", cli.tokens.as_ref())?;
         let encoder = required_existing_file("--encoder", cli.encoder.as_ref())?;
@@ -276,6 +298,8 @@ impl SherpaOnlineConfig {
             max_active_paths: cli.max_active_paths,
             hotwords_score: cli.hotwords_score,
             blank_penalty: cli.blank_penalty,
+            modeling_unit: cli.modeling_unit.clone(),
+            bpe_vocab,
             hotwords_file,
             rule_fsts,
             rule_fars,
@@ -546,6 +570,9 @@ impl SherpaOnlineConfig {
         config.model_config.tokens = Some(path_to_sherpa_string("--tokens", &self.tokens)?);
         config.model_config.num_threads = self.num_threads as i32;
         config.model_config.provider = Some(self.provider.clone());
+        config.model_config.modeling_unit = self.modeling_unit.clone();
+        config.model_config.bpe_vocab =
+            optional_path_to_sherpa_string("--bpe-vocab", &self.bpe_vocab)?;
         config.decoding_method = Some(self.decoding_method.clone());
         config.enable_endpoint = self.enable_endpoint;
         config.rule1_min_trailing_silence = self.rule1_min_trailing_silence;
@@ -1068,6 +1095,8 @@ mod tests {
             max_active_paths: 4,
             hotwords_score: 1.5,
             blank_penalty: 0.0,
+            modeling_unit: None,
+            bpe_vocab: None,
             hotwords_file: None,
             rule_fsts: None,
             rule_fars: None,
