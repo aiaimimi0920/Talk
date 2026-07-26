@@ -300,3 +300,58 @@ Write-Output '{"type":"final","segment_id":"seg-1","text":"你好。"}'
         ]
     );
 }
+
+#[tokio::test]
+async fn collect_available_events_is_bounded_per_drain() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/asr", listener.local_addr().unwrap());
+    let flood = 300usize;
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+        let _start = websocket.next().await.unwrap().unwrap();
+        websocket
+            .send(Message::Text(
+                r#"{"type":"ready","engine":"sherpa-onnx","model":"m","sample_rate_hz":16000,"channels":1}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let _audio = websocket.next().await.unwrap().unwrap();
+        for index in 0..flood {
+            let frame = format!(
+                r#"{{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"p{index}"}}"#
+            );
+            websocket.send(Message::Text(frame.into())).await.unwrap();
+        }
+        // Keep the socket open so the client can drain up to the cap.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    });
+
+    let mut client = LocalStreamingAsrServiceClient::connect(&endpoint, Duration::from_secs(1))
+        .await
+        .unwrap();
+    client
+        .start("session-1", 16_000, 1, Some("zh"), Duration::from_secs(1))
+        .await
+        .unwrap();
+    client
+        .send_audio("session-1", 1, &[0x00, 0x01])
+        .await
+        .unwrap();
+
+    let events = client
+        .collect_available_asr_events_until_idle(Duration::from_millis(500))
+        .await
+        .unwrap();
+
+    // Flooded with 300 partials, one non-blocking drain must stop at the cap.
+    assert_eq!(events.len(), 256, "drain must be bounded to the cap");
+    let _ = server.await;
+}

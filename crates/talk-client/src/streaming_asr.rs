@@ -225,6 +225,13 @@ impl LocalStreamingAsrServiceClient {
         }
     }
 
+    /// Safety backstop bounding how many messages one non-blocking drain will
+    /// consume. Normal ticks drain only a handful before hitting the idle gap;
+    /// this cap ensures a daemon streaming partials faster than `idle_timeout`
+    /// cannot spin this loop indefinitely (which, on the desktop, would hold the
+    /// shared-state lock on the UI thread). Remaining messages drain next tick.
+    const MAX_MESSAGES_PER_AVAILABLE_DRAIN: usize = 256;
+
     pub async fn collect_available_asr_events_until_idle(
         &mut self,
         idle_timeout: Duration,
@@ -235,16 +242,21 @@ impl LocalStreamingAsrServiceClient {
             ));
         }
         let mut events = Vec::new();
+        let mut messages_drained = 0usize;
         loop {
             let Some(message) = self.try_next_server_message(idle_timeout).await? else {
                 return Ok(events);
             };
+            messages_drained += 1;
             if let Some(event) = local_streaming_server_message_to_asr_event(message)? {
                 let is_final = event.is_final();
                 events.push(event);
                 if is_final {
                     return Ok(events);
                 }
+            }
+            if messages_drained >= Self::MAX_MESSAGES_PER_AVAILABLE_DRAIN {
+                return Ok(events);
             }
         }
     }
