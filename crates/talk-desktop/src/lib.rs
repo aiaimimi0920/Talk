@@ -5190,6 +5190,8 @@ fn desktop_zipformer_daemon_config_for_model(
         endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
+        modeling_unit: None,
+        bpe_vocab: None,
         rule_fsts: None,
         rule_fars: None,
     })
@@ -5226,6 +5228,8 @@ fn desktop_installed_paraformer_daemon_config(
         endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
+        modeling_unit: None,
+        bpe_vocab: None,
         rule_fsts: None,
         rule_fars: None,
     })
@@ -5282,6 +5286,12 @@ fn append_desktop_local_asr_daemon_args(
             "--hotwords-file",
             config.hotwords_file.as_ref(),
         );
+        append_optional_desktop_daemon_arg(
+            args,
+            "--modeling-unit",
+            config.modeling_unit.as_deref(),
+        );
+        append_optional_desktop_daemon_path_arg(args, "--bpe-vocab", config.bpe_vocab.as_ref());
         append_optional_desktop_daemon_path_arg(args, "--rule-fsts", config.rule_fsts.as_ref());
         append_optional_desktop_daemon_path_arg(args, "--rule-fars", config.rule_fars.as_ref());
     }

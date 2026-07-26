@@ -5371,6 +5371,8 @@ fn packaged_local_asr_daemon_launch_plan_adds_sherpa_model_args_from_config() {
         endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
+        modeling_unit: None,
+        bpe_vocab: None,
         rule_fsts: None,
         rule_fars: None,
     };
@@ -5441,6 +5443,8 @@ fn sherpa_daemon_config_with(
         endpoint_reset: None,
         hotwords_file,
         hotwords_words,
+        modeling_unit: None,
+        bpe_vocab: None,
         rule_fsts: None,
         rule_fars: None,
     }
@@ -5498,6 +5502,28 @@ fn packaged_local_asr_daemon_launch_plan_emits_endpoint_reset_when_configured() 
     assert_eq!(
         arg_value_after(&plan.args, "--endpoint-reset"),
         Some("true"),
+        "args={:?}",
+        plan.args
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_emits_modeling_unit_and_bpe_vocab_when_configured() {
+    let mut config = sherpa_daemon_config_with(Some("modified_beam_search"), None, None, None);
+    config.modeling_unit = Some("cjkchar+bpe".to_string());
+    config.bpe_vocab = Some(PathBuf::from("C:/models/zipformer/bpe.vocab"));
+    let (_release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-modeling-unit", &config);
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--modeling-unit"),
+        Some("cjkchar+bpe"),
+        "args={:?}",
+        plan.args
+    );
+    assert_eq!(
+        arg_value_after(&plan.args, "--bpe-vocab"),
+        Some("C:/models/zipformer/bpe.vocab"),
         "args={:?}",
         plan.args
     );

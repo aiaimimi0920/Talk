@@ -76,3 +76,9 @@ final_timeout_ms = 7000
 # # search). Advanced users can instead point `hotwords_file` at a pre-tokenized
 # # file directly.
 # hotwords_words = ".runtime/models/sherpa-onnx/talk-hotwords.txt"
+# # Raw-text hotwords only match on SentencePiece/BPE models when sherpa is told
+# # how to tokenize them: set modeling_unit and a bpe_vocab derived from the
+# # model's bpe.model (e.g. via python sentencepiece). Without these, hotwords
+# # cannot match on the default zh-en zipformer.
+# modeling_unit = "cjkchar+bpe"
+# bpe_vocab = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/bpe.vocab"

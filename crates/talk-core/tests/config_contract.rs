@@ -250,6 +250,8 @@ decoding_method = "modified_beam_search"
 enable_endpoint = false
 endpoint_reset = true
 hotwords_words = "C:/models/zipformer/hotwords.txt"
+modeling_unit = "cjkchar+bpe"
+bpe_vocab = "C:/models/zipformer/bpe.vocab"
 "#;
 
     let config =
@@ -296,6 +298,11 @@ hotwords_words = "C:/models/zipformer/hotwords.txt"
         daemon.hotwords_words.as_deref().unwrap().to_string_lossy(),
         "C:/models/zipformer/hotwords.txt"
     );
+    assert_eq!(daemon.modeling_unit.as_deref(), Some("cjkchar+bpe"));
+    assert_eq!(
+        daemon.bpe_vocab.as_deref().unwrap().to_string_lossy(),
+        "C:/models/zipformer/bpe.vocab"
+    );
 }
 
 #[test]
@@ -305,6 +312,8 @@ fn speculative_local_daemon_defaults_new_sherpa_fields_to_none() {
     assert_eq!(daemon.enable_endpoint, None);
     assert_eq!(daemon.endpoint_reset, None);
     assert_eq!(daemon.hotwords_words, None);
+    assert_eq!(daemon.modeling_unit, None);
+    assert_eq!(daemon.bpe_vocab, None);
 }
 
 #[test]

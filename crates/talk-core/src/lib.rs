@@ -578,6 +578,18 @@ fn validate_speculative_local_asr_daemon_config(
         &format!("{prefix}.hotwords_words"),
         problems,
     );
+    if let Some(modeling_unit) = config.modeling_unit.as_deref() {
+        if !matches!(modeling_unit, "cjkchar" | "bpe" | "cjkchar+bpe") {
+            problems.push(format!(
+                "{prefix}.modeling_unit must be cjkchar, bpe, or cjkchar+bpe"
+            ));
+        }
+    }
+    validate_optional_config_path(
+        config.bpe_vocab.as_ref(),
+        &format!("{prefix}.bpe_vocab"),
+        problems,
+    );
     validate_optional_config_path(
         config.rule_fsts.as_ref(),
         &format!("{prefix}.rule_fsts"),
@@ -1079,6 +1091,15 @@ pub struct SpeculativeLocalAsrDaemonConfig {
     /// when rendered into the sherpa hotwords file.
     #[serde(default)]
     pub hotwords_words: Option<PathBuf>,
+    /// Modeling unit for tokenizing raw-text hotwords: `cjkchar`, `bpe`, or
+    /// `cjkchar+bpe`. Required (with `bpe_vocab`) for hotwords to match on
+    /// SentencePiece/BPE models. `None` = daemon default (no tokenization).
+    #[serde(default)]
+    pub modeling_unit: Option<String>,
+    /// BPE vocabulary file (derived from the model's `bpe.model`) used to
+    /// tokenize raw-text hotwords when `modeling_unit` includes `bpe`.
+    #[serde(default)]
+    pub bpe_vocab: Option<PathBuf>,
     #[serde(default)]
     pub rule_fsts: Option<PathBuf>,
     #[serde(default)]
@@ -1106,6 +1127,8 @@ impl Default for SpeculativeLocalAsrDaemonConfig {
             endpoint_reset: None,
             hotwords_file: None,
             hotwords_words: None,
+            modeling_unit: None,
+            bpe_vocab: None,
             rule_fsts: None,
             rule_fars: None,
         }
