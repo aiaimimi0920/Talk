@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::segmenter::{
-    evaluate_segment_readiness, SegmentReadiness, SegmenterConfig, SegmenterInput,
+    evaluate_segment_readiness, is_segment_punctuation, SegmentReadiness, SegmenterConfig,
+    SegmenterInput,
 };
 use talk_client::StreamingAsrEvent;
 use talk_core::{SpeculativeSegment, TalkError};
@@ -389,7 +390,7 @@ fn runtime_segment_candidates(
         if candidate_text.is_empty() {
             continue;
         }
-        let reached_punctuation = is_runtime_segment_punctuation(character)
+        let reached_punctuation = is_segment_punctuation(character)
             && !is_intra_number_separator(text, character_byte, end_byte, character);
         let reached_max_chunk = candidate_text
             .chars()
@@ -501,13 +502,6 @@ fn source_segment_sub_id(source_segment_id: &str, index: usize) -> String {
     }
 }
 
-fn is_runtime_segment_punctuation(character: char) -> bool {
-    matches!(
-        character,
-        '，' | ',' | '；' | ';' | '：' | ':' | '。' | '！' | '？' | '.' | '!' | '?'
-    )
-}
-
 /// Whether the separator at `separator_byte` sits between two ASCII digits
 /// (e.g. `3.14`, `1,000`, `3:30`), which is part of a number/time and must not
 /// be treated as a clause/sentence boundary.
@@ -532,7 +526,7 @@ fn ends_with_any_punctuation(text: &str) -> bool {
     text.trim_end()
         .chars()
         .last()
-        .is_some_and(is_runtime_segment_punctuation)
+        .is_some_and(is_segment_punctuation)
 }
 
 fn append_pause_boundary_punctuation(text: &str) -> String {

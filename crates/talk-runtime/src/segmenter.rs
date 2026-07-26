@@ -68,15 +68,25 @@ pub fn evaluate_segment_readiness(
     SegmentReadiness::Wait
 }
 
+/// Clause-boundary punctuation (comma/semicolon/colon, CJK and ASCII).
+pub(crate) fn is_clause_punctuation(character: char) -> bool {
+    matches!(character, '，' | ',' | '；' | ';' | '：' | ':')
+}
+
+/// Sentence-boundary punctuation (period/exclamation/question, CJK and ASCII).
+pub(crate) fn is_sentence_punctuation(character: char) -> bool {
+    matches!(character, '。' | '！' | '？' | '.' | '!' | '?')
+}
+
+/// Any segmentation punctuation (clause or sentence). Single source of truth so
+/// the segmenter and the runtime splitter cannot drift apart.
+pub(crate) fn is_segment_punctuation(character: char) -> bool {
+    is_clause_punctuation(character) || is_sentence_punctuation(character)
+}
+
 fn content_char_count(text: &str) -> usize {
     text.chars()
-        .filter(|item| {
-            !item.is_whitespace()
-                && !matches!(
-                    item,
-                    '，' | ',' | '；' | ';' | '：' | ':' | '。' | '！' | '？' | '.' | '!' | '?'
-                )
-        })
+        .filter(|item| !item.is_whitespace() && !is_segment_punctuation(*item))
         .count()
 }
 
@@ -84,12 +94,12 @@ fn ends_with_clause_punctuation(text: &str) -> bool {
     text.trim_end()
         .chars()
         .last()
-        .is_some_and(|item| matches!(item, '，' | ',' | '；' | ';' | '：' | ':'))
+        .is_some_and(is_clause_punctuation)
 }
 
 fn ends_with_sentence_punctuation(text: &str) -> bool {
     text.trim_end()
         .chars()
         .last()
-        .is_some_and(|item| matches!(item, '。' | '！' | '？' | '.' | '!' | '?'))
+        .is_some_and(is_sentence_punctuation)
 }
