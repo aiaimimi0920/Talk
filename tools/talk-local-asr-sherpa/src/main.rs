@@ -65,6 +65,18 @@ struct Cli {
     /// Endpoint rule 3: min utterance length (seconds) to force an endpoint.
     #[arg(long, default_value_t = 20.0)]
     rule3_min_utterance_length: f32,
+    /// Beam width for modified_beam_search (used only with that decoding method).
+    /// Must be >= 1; the crate default of 0 would break beam search.
+    #[arg(long, default_value_t = 4)]
+    max_active_paths: i32,
+    /// Boost applied to hotword phrases (used only when hotwords are configured).
+    /// The crate default of 0.0 applies no biasing.
+    #[arg(long, default_value_t = 1.5)]
+    hotwords_score: f32,
+    /// Penalty subtracted from the blank token during transducer decoding
+    /// (higher reduces deletions). 0.0 is the sherpa default.
+    #[arg(long, default_value_t = 0.0)]
+    blank_penalty: f32,
     #[arg(long)]
     hotwords_file: Option<PathBuf>,
     #[arg(long)]
@@ -134,6 +146,9 @@ struct SherpaOnlineConfig {
     rule1_min_trailing_silence: f32,
     rule2_min_trailing_silence: f32,
     rule3_min_utterance_length: f32,
+    max_active_paths: i32,
+    hotwords_score: f32,
+    blank_penalty: f32,
     hotwords_file: Option<PathBuf>,
     rule_fsts: Option<PathBuf>,
     rule_fars: Option<PathBuf>,
@@ -217,6 +232,15 @@ impl SherpaOnlineConfig {
             "--rule3-min-utterance-length",
             cli.rule3_min_utterance_length,
         )?;
+        if cli.max_active_paths < 1 {
+            anyhow::bail!("--max-active-paths must be greater than 0");
+        }
+        if !cli.hotwords_score.is_finite() || cli.hotwords_score < 0.0 {
+            anyhow::bail!("--hotwords-score must be a finite, non-negative number");
+        }
+        if !cli.blank_penalty.is_finite() {
+            anyhow::bail!("--blank-penalty must be a finite number");
+        }
 
         let tokens = required_existing_file("--tokens", cli.tokens.as_ref())?;
         let encoder = required_existing_file("--encoder", cli.encoder.as_ref())?;
@@ -249,6 +273,9 @@ impl SherpaOnlineConfig {
             rule1_min_trailing_silence: cli.rule1_min_trailing_silence,
             rule2_min_trailing_silence: cli.rule2_min_trailing_silence,
             rule3_min_utterance_length: cli.rule3_min_utterance_length,
+            max_active_paths: cli.max_active_paths,
+            hotwords_score: cli.hotwords_score,
+            blank_penalty: cli.blank_penalty,
             hotwords_file,
             rule_fsts,
             rule_fars,
@@ -524,6 +551,9 @@ impl SherpaOnlineConfig {
         config.rule1_min_trailing_silence = self.rule1_min_trailing_silence;
         config.rule2_min_trailing_silence = self.rule2_min_trailing_silence;
         config.rule3_min_utterance_length = self.rule3_min_utterance_length;
+        config.max_active_paths = self.max_active_paths;
+        config.hotwords_score = self.hotwords_score;
+        config.blank_penalty = self.blank_penalty;
         config.hotwords_file =
             optional_path_to_sherpa_string("--hotwords-file", &self.hotwords_file)?;
         config.rule_fsts = optional_path_to_sherpa_string("--rule-fsts", &self.rule_fsts)?;
@@ -1035,6 +1065,9 @@ mod tests {
             rule1_min_trailing_silence: 2.4,
             rule2_min_trailing_silence: 1.2,
             rule3_min_utterance_length: 20.0,
+            max_active_paths: 4,
+            hotwords_score: 1.5,
+            blank_penalty: 0.0,
             hotwords_file: None,
             rule_fsts: None,
             rule_fars: None,
