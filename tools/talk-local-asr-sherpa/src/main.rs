@@ -50,6 +50,11 @@ struct Cli {
     decoding_method: String,
     #[arg(long, default_value_t = true)]
     enable_endpoint: bool,
+    /// Finalize and reset the recognizer on each detected endpoint so
+    /// multi-utterance dictation does not collapse into one segment. Off by
+    /// default (behaviour-preserving) until validated on real speech.
+    #[arg(long, default_value_t = false)]
+    endpoint_reset: bool,
     #[arg(long)]
     hotwords_file: Option<PathBuf>,
     #[arg(long)]
@@ -115,6 +120,7 @@ struct SherpaOnlineConfig {
     sample_rate_hz: u32,
     decoding_method: String,
     enable_endpoint: bool,
+    endpoint_reset: bool,
     hotwords_file: Option<PathBuf>,
     rule_fsts: Option<PathBuf>,
     rule_fars: Option<PathBuf>,
@@ -214,6 +220,7 @@ impl SherpaOnlineConfig {
             sample_rate_hz: cli.sample_rate_hz,
             decoding_method: cli.decoding_method.clone(),
             enable_endpoint: cli.enable_endpoint,
+            endpoint_reset: cli.endpoint_reset,
             hotwords_file,
             rule_fsts,
             rule_fars,
@@ -380,6 +387,8 @@ impl LocalStreamingAsrEngine for SherpaOnlineEngine {
             sample_rate_hz,
             segment_id: "sherpa-segment-1".to_string(),
             last_text: String::new(),
+            endpoint_reset: self.config.endpoint_reset,
+            committed_prefix: String::new(),
         }))
     }
 }
@@ -390,6 +399,18 @@ struct SherpaOnlineSession {
     sample_rate_hz: u32,
     segment_id: String,
     last_text: String,
+    /// When true, finalize + reset the recognizer on each detected endpoint.
+    endpoint_reset: bool,
+    /// Text of already-finalized (endpoint-committed) utterances, prepended to
+    /// the in-progress segment so the emitted transcript stays monotonic.
+    committed_prefix: String,
+}
+
+/// Concatenate the endpoint-committed prefix and the in-progress segment text.
+/// With `endpoint_reset` off the prefix is always empty, so this returns the
+/// current segment text unchanged (behaviour-preserving).
+fn combine_committed_and_segment(committed_prefix: &str, segment_text: &str) -> String {
+    format!("{committed_prefix}{segment_text}")
 }
 
 impl SherpaOnlineSession {
@@ -399,11 +420,19 @@ impl SherpaOnlineSession {
         }
     }
 
-    fn current_text(&self) -> Option<String> {
+    fn current_segment_text(&self) -> String {
         self.recognizer
             .get_result(&self.stream)
             .map(|result| result.text)
-            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_default()
+    }
+
+    /// Full transcript so far: endpoint-committed prefix plus the in-progress
+    /// segment, or `None` when still empty.
+    fn accumulated_text(&self) -> Option<String> {
+        let text =
+            combine_committed_and_segment(&self.committed_prefix, &self.current_segment_text());
+        (!text.trim().is_empty()).then_some(text)
     }
 }
 
@@ -417,7 +446,16 @@ impl LocalStreamingAsrSession for SherpaOnlineSession {
             .accept_waveform(self.sample_rate_hz as i32, &samples);
         self.decode_ready();
 
-        let Some(text) = self.current_text() else {
+        // On a detected endpoint, roll the finished utterance into the committed
+        // prefix and reset the recognizer so the next utterance starts fresh.
+        // The emitted transcript stays monotonic (prefix never shrinks).
+        if self.endpoint_reset && self.recognizer.is_endpoint(&self.stream) {
+            self.committed_prefix =
+                combine_committed_and_segment(&self.committed_prefix, &self.current_segment_text());
+            self.recognizer.reset(&self.stream);
+        }
+
+        let Some(text) = self.accumulated_text() else {
             return Ok(None);
         };
         if text == self.last_text {
@@ -434,7 +472,7 @@ impl LocalStreamingAsrSession for SherpaOnlineSession {
         self.stream.input_finished();
         self.decode_ready();
         let text = self
-            .current_text()
+            .accumulated_text()
             .unwrap_or_else(|| self.last_text.clone());
         if text.trim().is_empty() {
             anyhow::bail!("sherpa-online produced no final transcript");
@@ -753,9 +791,9 @@ fn validate_session_id(session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_connection, should_accept_audio_sequence, streaming_asr_error_frame,
-        validate_loopback_bind, Cli, DaemonConfig, DaemonMode, LocalAsrText,
-        LocalStreamingAsrEngine, LocalStreamingAsrSession, SherpaOnlineModelFamily,
+        combine_committed_and_segment, handle_connection, should_accept_audio_sequence,
+        streaming_asr_error_frame, validate_loopback_bind, Cli, DaemonConfig, DaemonMode,
+        LocalAsrText, LocalStreamingAsrEngine, LocalStreamingAsrSession, SherpaOnlineModelFamily,
     };
     use anyhow::Result;
     use futures_util::{SinkExt, StreamExt};
@@ -770,6 +808,21 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn combine_committed_and_segment_is_passthrough_when_prefix_empty() {
+        // endpoint_reset off => empty prefix => byte-identical to the old path.
+        assert_eq!(combine_committed_and_segment("", "你好呀"), "你好呀");
+        assert_eq!(combine_committed_and_segment("", ""), "");
+    }
+
+    #[test]
+    fn combine_committed_and_segment_prepends_committed_prefix() {
+        assert_eq!(
+            combine_committed_and_segment("第一句。", "第二句"),
+            "第一句。第二句"
+        );
+    }
 
     #[test]
     fn error_frame_has_client_parseable_shape() {
@@ -930,6 +983,7 @@ mod tests {
             sample_rate_hz: 16000,
             decoding_method: "greedy_search".to_string(),
             enable_endpoint: true,
+            endpoint_reset: false,
             hotwords_file: None,
             rule_fsts: None,
             rule_fars: None,
