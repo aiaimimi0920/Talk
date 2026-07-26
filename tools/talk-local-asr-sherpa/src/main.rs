@@ -55,6 +55,16 @@ struct Cli {
     /// default (behaviour-preserving) until validated on real speech.
     #[arg(long, default_value_t = false)]
     endpoint_reset: bool,
+    /// Endpoint rule 1: min trailing silence (seconds) to fire an endpoint even
+    /// with no decoded text. sherpa-onnx standard default.
+    #[arg(long, default_value_t = 2.4)]
+    rule1_min_trailing_silence: f32,
+    /// Endpoint rule 2: min trailing silence (seconds) after some decoded text.
+    #[arg(long, default_value_t = 1.2)]
+    rule2_min_trailing_silence: f32,
+    /// Endpoint rule 3: min utterance length (seconds) to force an endpoint.
+    #[arg(long, default_value_t = 20.0)]
+    rule3_min_utterance_length: f32,
     #[arg(long)]
     hotwords_file: Option<PathBuf>,
     #[arg(long)]
@@ -108,7 +118,7 @@ struct DaemonConfig {
     sherpa_online: Option<SherpaOnlineConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct SherpaOnlineConfig {
     model_family: SherpaOnlineModelFamily,
     tokens: PathBuf,
@@ -121,6 +131,9 @@ struct SherpaOnlineConfig {
     decoding_method: String,
     enable_endpoint: bool,
     endpoint_reset: bool,
+    rule1_min_trailing_silence: f32,
+    rule2_min_trailing_silence: f32,
+    rule3_min_utterance_length: f32,
     hotwords_file: Option<PathBuf>,
     rule_fsts: Option<PathBuf>,
     rule_fars: Option<PathBuf>,
@@ -192,6 +205,18 @@ impl SherpaOnlineConfig {
                 "--decoding-method must be greedy_search or modified_beam_search, got {other}"
             ),
         }
+        validate_nonnegative_seconds(
+            "--rule1-min-trailing-silence",
+            cli.rule1_min_trailing_silence,
+        )?;
+        validate_nonnegative_seconds(
+            "--rule2-min-trailing-silence",
+            cli.rule2_min_trailing_silence,
+        )?;
+        validate_nonnegative_seconds(
+            "--rule3-min-utterance-length",
+            cli.rule3_min_utterance_length,
+        )?;
 
         let tokens = required_existing_file("--tokens", cli.tokens.as_ref())?;
         let encoder = required_existing_file("--encoder", cli.encoder.as_ref())?;
@@ -221,6 +246,9 @@ impl SherpaOnlineConfig {
             decoding_method: cli.decoding_method.clone(),
             enable_endpoint: cli.enable_endpoint,
             endpoint_reset: cli.endpoint_reset,
+            rule1_min_trailing_silence: cli.rule1_min_trailing_silence,
+            rule2_min_trailing_silence: cli.rule2_min_trailing_silence,
+            rule3_min_utterance_length: cli.rule3_min_utterance_length,
             hotwords_file,
             rule_fsts,
             rule_fars,
@@ -493,6 +521,9 @@ impl SherpaOnlineConfig {
         config.model_config.provider = Some(self.provider.clone());
         config.decoding_method = Some(self.decoding_method.clone());
         config.enable_endpoint = self.enable_endpoint;
+        config.rule1_min_trailing_silence = self.rule1_min_trailing_silence;
+        config.rule2_min_trailing_silence = self.rule2_min_trailing_silence;
+        config.rule3_min_utterance_length = self.rule3_min_utterance_length;
         config.hotwords_file =
             optional_path_to_sherpa_string("--hotwords-file", &self.hotwords_file)?;
         config.rule_fsts = optional_path_to_sherpa_string("--rule-fsts", &self.rule_fsts)?;
@@ -784,6 +815,13 @@ fn validate_nonblank(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_nonnegative_seconds(name: &str, value: f32) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!("{name} must be a finite, non-negative number of seconds");
+    }
+    Ok(())
+}
+
 fn validate_session_id(session_id: &str) -> Result<()> {
     validate_nonblank("session_id", session_id)
 }
@@ -792,8 +830,9 @@ fn validate_session_id(session_id: &str) -> Result<()> {
 mod tests {
     use super::{
         combine_committed_and_segment, handle_connection, should_accept_audio_sequence,
-        streaming_asr_error_frame, validate_loopback_bind, Cli, DaemonConfig, DaemonMode,
-        LocalAsrText, LocalStreamingAsrEngine, LocalStreamingAsrSession, SherpaOnlineModelFamily,
+        streaming_asr_error_frame, validate_loopback_bind, validate_nonnegative_seconds, Cli,
+        DaemonConfig, DaemonMode, LocalAsrText, LocalStreamingAsrEngine, LocalStreamingAsrSession,
+        SherpaOnlineModelFamily,
     };
     use anyhow::Result;
     use futures_util::{SinkExt, StreamExt};
@@ -808,6 +847,15 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn validate_nonnegative_seconds_rejects_negative_and_nonfinite() {
+        assert!(validate_nonnegative_seconds("--rule1", 2.4).is_ok());
+        assert!(validate_nonnegative_seconds("--rule1", 0.0).is_ok());
+        assert!(validate_nonnegative_seconds("--rule1", -0.1).is_err());
+        assert!(validate_nonnegative_seconds("--rule1", f32::NAN).is_err());
+        assert!(validate_nonnegative_seconds("--rule1", f32::INFINITY).is_err());
+    }
 
     #[test]
     fn combine_committed_and_segment_is_passthrough_when_prefix_empty() {
@@ -984,6 +1032,9 @@ mod tests {
             decoding_method: "greedy_search".to_string(),
             enable_endpoint: true,
             endpoint_reset: false,
+            rule1_min_trailing_silence: 2.4,
+            rule2_min_trailing_silence: 1.2,
+            rule3_min_utterance_length: 20.0,
             hotwords_file: None,
             rule_fsts: None,
             rule_fars: None,
