@@ -248,6 +248,7 @@ num_threads = 4
 sample_rate_hz = 16000
 decoding_method = "modified_beam_search"
 enable_endpoint = false
+endpoint_reset = true
 hotwords_words = "C:/models/zipformer/hotwords.txt"
 "#;
 
@@ -290,6 +291,7 @@ hotwords_words = "C:/models/zipformer/hotwords.txt"
         Some("modified_beam_search")
     );
     assert_eq!(daemon.enable_endpoint, Some(false));
+    assert_eq!(daemon.endpoint_reset, Some(true));
     assert_eq!(
         daemon.hotwords_words.as_deref().unwrap().to_string_lossy(),
         "C:/models/zipformer/hotwords.txt"
@@ -301,6 +303,7 @@ fn speculative_local_daemon_defaults_new_sherpa_fields_to_none() {
     let daemon = talk_core::SpeculativeLocalAsrDaemonConfig::default();
 
     assert_eq!(daemon.enable_endpoint, None);
+    assert_eq!(daemon.endpoint_reset, None);
     assert_eq!(daemon.hotwords_words, None);
 }
 

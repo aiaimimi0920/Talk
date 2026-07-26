@@ -1067,6 +1067,11 @@ pub struct SpeculativeLocalAsrDaemonConfig {
     pub decoding_method: Option<String>,
     #[serde(default)]
     pub enable_endpoint: Option<bool>,
+    /// Finalize + reset the recognizer on each detected endpoint so
+    /// multi-utterance dictation stays monotonic. `None` keeps the daemon
+    /// default (off).
+    #[serde(default)]
+    pub endpoint_reset: Option<bool>,
     #[serde(default)]
     pub hotwords_file: Option<PathBuf>,
     /// User vocabulary/biasing list (one phrase per line, `#` comments). Each
@@ -1098,6 +1103,7 @@ impl Default for SpeculativeLocalAsrDaemonConfig {
             sample_rate_hz: None,
             decoding_method: None,
             enable_endpoint: None,
+            endpoint_reset: None,
             hotwords_file: None,
             hotwords_words: None,
             rule_fsts: None,

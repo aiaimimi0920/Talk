@@ -66,6 +66,9 @@ final_timeout_ms = 7000
 # decoding_method = "greedy_search"
 # # Endpointing is on by default; set explicitly to override.
 # enable_endpoint = true
+# # Finalize + reset the recognizer on each detected endpoint so multi-utterance
+# # dictation stays monotonic. Off by default; enable to validate on real speech.
+# endpoint_reset = true
 # # Optional biasing. `hotwords_words` is a plain vocabulary list (one phrase per
 # # line, `#` comments, optional trailing `:score`); it is rendered into a sherpa
 # # hotwords file at launch. Configuring any hotwords source upgrades decoding to

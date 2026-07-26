@@ -5368,6 +5368,7 @@ fn packaged_local_asr_daemon_launch_plan_adds_sherpa_model_args_from_config() {
         sample_rate_hz: Some(16_000),
         decoding_method: Some("modified_beam_search".to_string()),
         enable_endpoint: None,
+        endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
         rule_fsts: None,
@@ -5437,6 +5438,7 @@ fn sherpa_daemon_config_with(
         sample_rate_hz: Some(16_000),
         decoding_method: decoding_method.map(str::to_string),
         enable_endpoint,
+        endpoint_reset: None,
         hotwords_file,
         hotwords_words,
         rule_fsts: None,
@@ -5481,6 +5483,21 @@ fn packaged_local_asr_daemon_launch_plan_emits_enable_endpoint_when_configured()
     assert_eq!(
         arg_value_after(&plan.args, "--enable-endpoint"),
         Some("false"),
+        "args={:?}",
+        plan.args
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_emits_endpoint_reset_when_configured() {
+    let mut config = sherpa_daemon_config_with(Some("greedy_search"), None, None, None);
+    config.endpoint_reset = Some(true);
+    let (_release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-endpoint-reset", &config);
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--endpoint-reset"),
+        Some("true"),
         "args={:?}",
         plan.args
     );

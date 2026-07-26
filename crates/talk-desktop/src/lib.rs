@@ -5187,6 +5187,7 @@ fn desktop_zipformer_daemon_config_for_model(
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
         enable_endpoint: None,
+        endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
         rule_fsts: None,
@@ -5222,6 +5223,7 @@ fn desktop_installed_paraformer_daemon_config(
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
         enable_endpoint: None,
+        endpoint_reset: None,
         hotwords_file: None,
         hotwords_words: None,
         rule_fsts: None,
@@ -5266,6 +5268,13 @@ fn append_desktop_local_asr_daemon_args(
                 args,
                 "--enable-endpoint",
                 if enable_endpoint { "true" } else { "false" },
+            );
+        }
+        if let Some(endpoint_reset) = config.endpoint_reset {
+            append_desktop_daemon_arg(
+                args,
+                "--endpoint-reset",
+                if endpoint_reset { "true" } else { "false" },
             );
         }
         append_optional_desktop_daemon_path_arg(
