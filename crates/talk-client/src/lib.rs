@@ -101,6 +101,22 @@ impl TextProcessor for NoopTextProcessor {
     }
 }
 
+/// Connect timeout for cloud provider requests — fail fast if the host is
+/// unreachable rather than hanging the dictation finalize path.
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// Overall request timeout. Generous enough for a large base64 audio upload plus
+/// model inference, but bounded so a stalled/half-open connection cannot hang a
+/// dictation forever (`reqwest::Client::new()` has no timeout at all).
+const HTTP_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
+        .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpTranscriber {
     endpoint: String,
@@ -111,7 +127,7 @@ impl HttpTranscriber {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            client: reqwest::Client::new(),
+            client: build_http_client(),
         }
     }
 }
@@ -172,7 +188,7 @@ impl HttpTextProcessor {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            client: reqwest::Client::new(),
+            client: build_http_client(),
         }
     }
 }
@@ -255,7 +271,7 @@ impl OpenAiCompatibleTranscriber {
             model: model.into(),
             api_key,
             transport,
-            client: reqwest::Client::new(),
+            client: build_http_client(),
         }
     }
 }
@@ -385,7 +401,7 @@ impl OpenAiCompatibleTextProcessor {
             endpoint: endpoint.into(),
             model: model.into(),
             api_key,
-            client: reqwest::Client::new(),
+            client: build_http_client(),
         }
     }
 }

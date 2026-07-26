@@ -390,7 +390,7 @@ fn runtime_segment_candidates(
             continue;
         }
         let reached_punctuation = is_runtime_segment_punctuation(character)
-            && !is_intra_number_period(text, character_byte, end_byte, character);
+            && !is_intra_number_separator(text, character_byte, end_byte, character);
         let reached_max_chunk = candidate_text
             .chars()
             .filter(|item| !item.is_whitespace())
@@ -508,20 +508,21 @@ fn is_runtime_segment_punctuation(character: char) -> bool {
     )
 }
 
-/// Whether the `.` at `period_byte` is a decimal point between two ASCII digits
-/// (e.g. `3.14`), which must not be treated as a clause/sentence boundary.
-fn is_intra_number_period(
+/// Whether the separator at `separator_byte` sits between two ASCII digits
+/// (e.g. `3.14`, `1,000`, `3:30`), which is part of a number/time and must not
+/// be treated as a clause/sentence boundary.
+fn is_intra_number_separator(
     text: &str,
-    period_byte: usize,
-    period_end_byte: usize,
+    separator_byte: usize,
+    separator_end_byte: usize,
     character: char,
 ) -> bool {
-    character == '.'
-        && text[..period_byte]
+    matches!(character, '.' | ',' | ':')
+        && text[..separator_byte]
             .chars()
             .next_back()
             .is_some_and(|previous| previous.is_ascii_digit())
-        && text[period_end_byte..]
+        && text[separator_end_byte..]
             .chars()
             .next()
             .is_some_and(|next| next.is_ascii_digit())

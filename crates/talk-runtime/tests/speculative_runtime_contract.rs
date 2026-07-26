@@ -163,6 +163,49 @@ fn speculative_runtime_does_not_split_decimal_numbers_at_the_period() {
 }
 
 #[test]
+fn speculative_runtime_does_not_split_numbers_at_comma_or_colon_separators() {
+    let config = SegmenterConfig::default();
+
+    // Thousands separator: the comma in "1,000" is not a clause boundary.
+    let mut thousands = SpeculativeRuntimeState::default();
+    let thousands_events = thousands
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "the total is 1,000 dollars"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let thousands_committed = thousands_events.iter().find_map(|event| match event {
+        SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        thousands_committed,
+        Some("the total is 1,000 dollars"),
+        "events = {thousands_events:?}"
+    );
+
+    // Time separator: the colon in "3:30" is not a clause boundary.
+    let mut time = SpeculativeRuntimeState::default();
+    let time_events = time
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "meet at 3:30 today"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let time_committed = time_events.iter().find_map(|event| match event {
+        SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        time_committed,
+        Some("meet at 3:30 today"),
+        "events = {time_events:?}"
+    );
+}
+
+#[test]
 fn speculative_runtime_length_cap_break_backs_up_to_latin_word_boundary() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
