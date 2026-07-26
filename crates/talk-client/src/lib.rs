@@ -455,7 +455,33 @@ struct OpenAiChatChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponseMessage {
+    #[serde(default, deserialize_with = "deserialize_chat_message_content")]
     content: String,
+}
+
+/// Extract assistant text from a chat-completions `content` field. OpenAI-
+/// compatible providers may return it as a plain string, an array of content
+/// parts (`{ "type": "text", "text": ... }`, common with vLLM / multimodal
+/// gateways), or `null` (a reasoning/tool-only turn). Non-text shapes yield an
+/// empty string, which the caller then rejects as a blank transcript instead of
+/// failing to deserialize the whole response.
+fn deserialize_chat_message_content<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(chat_message_content_text(&value))
+}
+
+fn chat_message_content_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<String>(),
+        _ => String::new(),
+    }
 }
 
 #[async_trait]
@@ -659,4 +685,40 @@ fn front_context_has_details(context: &FrontContext) -> bool {
         || context.window_title.is_some()
         || context.selected_text.is_some()
         || !context.extra.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenAiChatResponseMessage;
+
+    fn parse_content(json: &str) -> String {
+        serde_json::from_str::<OpenAiChatResponseMessage>(json)
+            .expect("chat response message should parse")
+            .content
+    }
+
+    #[test]
+    fn chat_content_accepts_plain_string() {
+        assert_eq!(parse_content(r#"{"content":"hello"}"#), "hello");
+    }
+
+    #[test]
+    fn chat_content_concatenates_text_parts_array() {
+        assert_eq!(
+            parse_content(
+                r#"{"content":[{"type":"text","text":"hel"},{"type":"text","text":"lo"}]}"#
+            ),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn chat_content_treats_null_as_empty() {
+        assert_eq!(parse_content(r#"{"content":null}"#), "");
+    }
+
+    #[test]
+    fn chat_content_treats_missing_field_as_empty() {
+        assert_eq!(parse_content(r#"{}"#), "");
+    }
 }
