@@ -585,7 +585,22 @@ async fn handle_connection(
                 if session.session_id != session_id {
                     anyhow::bail!("stop session_id does not match active session");
                 }
-                let final_text = session.asr_session.finish()?;
+                let final_text = match session.asr_session.finish() {
+                    Ok(final_text) => final_text,
+                    Err(error) => {
+                        // Surface a structured error frame (e.g. no speech was
+                        // detected) instead of silently dropping the socket, so
+                        // the client can report a meaningful failure rather than
+                        // a generic "connection closed".
+                        let _ = websocket
+                            .send(Message::Text(
+                                streaming_asr_error_frame(&session.session_id, &error.to_string())
+                                    .into(),
+                            ))
+                            .await;
+                        return Err(error);
+                    }
+                };
                 websocket
                     .send(Message::Text(
                         json!({
@@ -634,6 +649,17 @@ fn should_accept_audio_sequence(last_sequence: Option<u64>, sequence: u64) -> bo
         Some(last_sequence) => sequence > last_sequence,
         None => true,
     }
+}
+
+/// Build a structured `error` server frame the client understands, so a session
+/// failure (e.g. no speech detected) is reported rather than dropped silently.
+fn streaming_asr_error_frame(session_id: &str, message: &str) -> String {
+    json!({
+        "type": "error",
+        "session_id": session_id,
+        "message": message,
+    })
+    .to_string()
 }
 
 fn parse_client_message(message: Message) -> Result<Option<ClientMessage>> {
@@ -727,9 +753,9 @@ fn validate_session_id(session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_connection, should_accept_audio_sequence, validate_loopback_bind, Cli, DaemonConfig,
-        DaemonMode, LocalAsrText, LocalStreamingAsrEngine, LocalStreamingAsrSession,
-        SherpaOnlineModelFamily,
+        handle_connection, should_accept_audio_sequence, streaming_asr_error_frame,
+        validate_loopback_bind, Cli, DaemonConfig, DaemonMode, LocalAsrText,
+        LocalStreamingAsrEngine, LocalStreamingAsrSession, SherpaOnlineModelFamily,
     };
     use anyhow::Result;
     use futures_util::{SinkExt, StreamExt};
@@ -744,6 +770,20 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn error_frame_has_client_parseable_shape() {
+        let frame =
+            streaming_asr_error_frame("sess-1", "sherpa-online produced no final transcript");
+        let value: Value = serde_json::from_str(&frame).expect("error frame must be valid json");
+
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["session_id"], "sess-1");
+        assert_eq!(
+            value["message"],
+            "sherpa-online produced no final transcript"
+        );
+    }
 
     #[test]
     fn bind_must_be_loopback() {
