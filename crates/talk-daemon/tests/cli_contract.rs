@@ -3254,7 +3254,7 @@ fn check_command_rejects_http_provider_without_endpoint() {
 }
 
 #[test]
-fn once_command_uses_http_provider_when_configured() {
+fn once_command_uses_http_provider_and_preserves_unfaithful_transcription_output() {
     let temp_dir = unique_temp_dir("http-provider");
     let (endpoint, provider_handle) = spawn_http_provider();
     let config_path = write_http_provider_config(&temp_dir, &endpoint);
@@ -3300,7 +3300,11 @@ fn once_command_uses_http_provider_when_configured() {
 
     assert_eq!(json["status"], "completed");
     assert_eq!(json["transcript"], "transcribed via http");
-    assert_eq!(json["output_text"], "processed via http");
+    assert_eq!(json["output_text"], "transcribed via http");
+    assert_eq!(
+        json["processing"]["preservation_fallback_reason"],
+        "excessive_sequence_change"
+    );
     assert_eq!(json["insert_outcome"]["method"], "dry_run");
 }
 

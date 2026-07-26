@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use talk_desktop::{
-    build_embedded_runtime_payload, extract_embedded_runtime_payload,
-    parse_embedded_runtime_payload, EmbeddedRuntimePayloadSource,
+    build_embedded_runtime_payload, embedded_runtime_payload_is_appended,
+    extract_embedded_runtime_payload, parse_embedded_runtime_payload, EmbeddedRuntimePayloadSource,
 };
 
 const BASE_EXE: &[u8] = b"MZ-talk-desktop-test";
@@ -32,6 +32,13 @@ fn runtime_sources() -> Vec<EmbeddedRuntimePayloadSource<'static>> {
     ]
 }
 
+#[test]
+fn parser_magic_inside_an_unbundled_executable_does_not_count_as_product_payload() {
+    let executable = b"MZ-talk-desktop-parser-literal-TLPAY001-without-a-payload-trailer";
+
+    assert!(!embedded_runtime_payload_is_appended(executable));
+}
+
 fn unique_temp_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "{name}-{}-{}",
@@ -48,6 +55,7 @@ fn parses_the_expected_embedded_runtime_members() {
     let executable =
         build_embedded_runtime_payload(BASE_EXE, &runtime_sources()).expect("build payload");
 
+    assert!(embedded_runtime_payload_is_appended(&executable));
     let payload = parse_embedded_runtime_payload(&executable).expect("parse payload");
 
     assert_eq!(payload.files.len(), 5);

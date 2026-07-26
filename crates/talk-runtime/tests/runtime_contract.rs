@@ -12,12 +12,16 @@ use talk_core::{
 };
 use talk_insert::{InsertMethod, InsertOutcome};
 use talk_runtime::{
-    complete_failed_session, infer_smart_voice_mode, process_voice_transcript_text,
+    complete_failed_session, complete_failed_session_with_mode_override, infer_smart_voice_mode,
+    process_voice_transcript_text, process_voice_transcript_text_with_diagnostics,
     provider_text_processing_credentials_available, run_voice_session,
     run_voice_session_from_audio_artifact_with_insert_hook,
     run_voice_session_from_audio_artifact_with_insert_hooks,
-    run_voice_session_from_local_transcript_with_insert_hooks, runtime_voice_text_result,
-    RuntimeInsertContext, RuntimeInsertDirective, RuntimePhase, RuntimeVoiceTextResult,
+    run_voice_session_from_local_transcript_with_insert_hooks,
+    run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
+    runtime_voice_text_result, update_session_log_after_text_processing,
+    FaithfulOutputFallbackReason, FaithfulOutputValidation, RuntimeInsertContext,
+    RuntimeInsertDirective, RuntimePhase, RuntimeVoiceTextResult, SmartRouteEvidence,
 };
 
 fn runtime_test_root(name: &str) -> PathBuf {
@@ -152,6 +156,119 @@ async fn missing_openai_credentials_do_not_send_provider_request() {
     assert!(error.to_string().contains("TALK_TEST_MISSING_PROVIDER_KEY"));
 }
 
+#[tokio::test]
+async fn failed_session_preserves_explicit_command_mode() {
+    let mut config = config_with_mock_provider("failed-session-explicit-command-mode");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.mock_transcript = None;
+    config.provider.audio_transcriptions_endpoint = Some("http://127.0.0.1:9/not-used".to_string());
+    config.provider.chat_completions_endpoint = Some("http://127.0.0.1:9/not-used".to_string());
+    config.provider.transcription_model = Some("not-used".to_string());
+    config.provider.chat_model = Some("test-chat-model".to_string());
+    config.provider.api_key = None;
+    config.provider.api_key_env = None;
+
+    let mut session = VoiceSession::new("failed-session-explicit-command-mode");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_transcript_with_route_evidence_and_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        "打开记事本".to_string(),
+        Some(VoiceMode::Command),
+        SmartRouteEvidence {
+            committed_streaming_segment_count: 3,
+        },
+        FrontContext::default(),
+        |_| RuntimeInsertDirective::DryRunOnly,
+        || {},
+        |_| {},
+    )
+    .await
+    .expect("provider credential failure should return a persisted failure report");
+
+    assert_eq!(report.session.status(), SessionStatus::Failed);
+    assert_eq!(report.requested_mode, VoiceMode::Command);
+    assert_eq!(report.smart_routed_mode, None);
+}
+
+#[tokio::test]
+async fn transcription_failure_preserves_explicit_command_mode_in_report_and_log() {
+    let mut config = config_with_mock_provider("transcription-failure-explicit-command-mode");
+    config.provider.mock_transcript = None;
+    let audio_path = runtime_test_root("transcription-failure-explicit-command-mode")
+        .join("audio")
+        .join("captured.wav");
+    std::fs::create_dir_all(audio_path.parent().expect("audio dir")).expect("create audio dir");
+    std::fs::write(&audio_path, b"fake wav").expect("write fake wav");
+
+    let mut session = VoiceSession::new("transcription-failure-explicit-command-mode");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_audio_artifact_with_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        audio_path,
+        None,
+        Some(VoiceMode::Command),
+        FrontContext::default(),
+        |_| RuntimeInsertDirective::DryRunOnly,
+        || {},
+        |_| {},
+    )
+    .await
+    .expect("transcription failure should return a persisted failure report");
+
+    assert_eq!(report.session.status(), SessionStatus::Failed);
+    assert_eq!(report.requested_mode, VoiceMode::Command);
+    assert_eq!(report.smart_routed_mode, None);
+
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read failed-session log"),
+    )
+    .expect("parse failed-session log");
+    assert_eq!(log["processing"]["requested_mode"], "command");
+    assert_eq!(log["processing"]["resolved_mode"], "command");
+}
+
+#[tokio::test]
+async fn blank_transcript_preserves_explicit_document_mode_in_report_and_log() {
+    let config = config_with_mock_provider("blank-transcript-explicit-document-mode");
+    let mut session = VoiceSession::new("blank-transcript-explicit-document-mode");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_transcript_with_route_evidence_and_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        "   ".to_string(),
+        Some(VoiceMode::Document),
+        SmartRouteEvidence::default(),
+        FrontContext::default(),
+        |_| RuntimeInsertDirective::DryRunOnly,
+        || {},
+        |_| {},
+    )
+    .await
+    .expect("blank transcript should return a persisted failure report");
+
+    assert_eq!(report.session.status(), SessionStatus::Failed);
+    assert_eq!(report.requested_mode, VoiceMode::Document);
+    assert_eq!(report.smart_routed_mode, None);
+
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read blank-transcript log"),
+    )
+    .expect("parse blank-transcript log");
+    assert_eq!(log["processing"]["requested_mode"], "document");
+    assert_eq!(log["processing"]["resolved_mode"], "document");
+}
+
 #[test]
 fn local_transcript_completes_without_openai_credentials() {
     let mut config = config_with_mock_provider("local-transcript-without-provider-key");
@@ -277,6 +394,51 @@ async fn smart_runtime_result_exposes_routed_mode_for_desktop_policy() {
 }
 
 #[tokio::test]
+async fn smart_long_form_session_log_records_route_and_preservation_diagnostics() {
+    let config = config_with_mock_provider("smart-long-form-processing-log");
+    let transcript = "这是一次较长的会议记录。主持人先介绍项目背景，随后有人引用演示中的一句话打开记事本，然后继续说明风险、时间表和后续安排。参与者逐一反馈，最后确认下周再复盘。"
+        .repeat(3);
+    assert!(
+        transcript
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count()
+            >= 160
+    );
+
+    let report = run_voice_session(
+        &config,
+        Some(transcript),
+        Some(VoiceMode::Smart),
+        FrontContext::default(),
+        |_| {},
+    )
+    .await
+    .expect("smart long-form mock session should complete");
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read smart processing log"),
+    )
+    .expect("parse smart processing log");
+    let processing = log
+        .get("processing")
+        .expect("session log should include processing diagnostics");
+
+    assert_eq!(processing["requested_mode"], "smart");
+    assert_eq!(processing["resolved_mode"], "transcribe");
+    assert_eq!(processing["route_reason"], "long_character_count");
+    assert!(processing["route_input_char_count"].as_u64().unwrap() >= 160);
+    assert!(processing["sentence_boundary_count"].as_u64().unwrap() >= 3);
+    assert_eq!(processing["streaming_segment_count"], 0);
+    assert_eq!(
+        processing["faithful_input_char_count"],
+        processing["faithful_output_char_count"]
+    );
+    assert_eq!(processing["retention_ratio"], 1.0);
+    assert_eq!(processing["normalized_change_ratio"], 0.0);
+    assert!(processing.get("preservation_fallback_reason").is_none());
+}
+
+#[tokio::test]
 async fn smart_insert_context_exposes_routed_mode_before_insert() {
     let config = config_with_mock_provider("smart-route-insert-context");
     let audio_path = runtime_test_root("smart-route-insert-context")
@@ -341,6 +503,112 @@ async fn runtime_processes_transcript_text_without_insert_side_effects() {
     .unwrap();
 
     assert_eq!(output, "本地识别文本");
+}
+
+#[tokio::test]
+async fn transcript_processing_diagnostics_are_available_to_non_session_callers() {
+    let config = config_with_mock_provider("process-transcript-text-diagnostics");
+    let transcript = "这是一段最终整篇转录，桌面端需要同时拿到忠实度诊断。".repeat(4);
+
+    let output = process_voice_transcript_text_with_diagnostics(
+        &config,
+        transcript.clone(),
+        Some(VoiceMode::Transcribe),
+        FrontContext::default(),
+    )
+    .await
+    .expect("runtime processing with diagnostics should succeed");
+
+    assert_eq!(output.text, transcript);
+    let validation = output
+        .faithful_validation
+        .expect("transcribe processing should expose faithful validation");
+    assert!(validation.accepted);
+    assert_eq!(validation.input_char_count, validation.output_char_count);
+    assert_eq!(validation.normalized_change_ratio, 0.0);
+}
+
+#[test]
+fn final_text_processing_updates_output_and_faithful_metrics_without_losing_route_diagnostics() {
+    let root = runtime_test_root("update-final-processing-log");
+    std::fs::create_dir_all(&root).expect("create final processing log root");
+    let log_path = root.join("session.json");
+    std::fs::write(
+        &log_path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "id": "session",
+            "status": "completed",
+            "transcript": "完整原始转录",
+            "output_text": "本地完整转录",
+            "trigger_mode": "toggle",
+            "trigger_events": ["trigger_start", "trigger_stop"],
+            "processing": {
+                "requested_mode": "smart",
+                "resolved_mode": "transcribe",
+                "route_reason": "multiple_streaming_segments",
+                "streaming_segment_count": 4,
+                "preservation_fallback_reason": "stale_reason"
+            }
+        }))
+        .expect("serialize final processing fixture"),
+    )
+    .expect("write final processing fixture");
+
+    update_session_log_after_text_processing(
+        &log_path,
+        "完整原始转录",
+        Some(FaithfulOutputValidation {
+            accepted: false,
+            fallback_reason: Some(FaithfulOutputFallbackReason::CatastrophicCompression),
+            input_char_count: 5_703,
+            output_char_count: 28,
+            retention_ratio: 28.0 / 5_703.0,
+            normalized_change_ratio: 1.0,
+        }),
+    )
+    .expect("update final processing diagnostics");
+
+    let updated: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&log_path).expect("read updated final processing log"),
+    )
+    .expect("parse updated final processing log");
+    assert_eq!(updated["transcript"], "完整原始转录");
+    assert_eq!(updated["output_text"], "完整原始转录");
+    assert_eq!(updated["processing"]["requested_mode"], "smart");
+    assert_eq!(updated["processing"]["resolved_mode"], "transcribe");
+    assert_eq!(
+        updated["processing"]["route_reason"],
+        "multiple_streaming_segments"
+    );
+    assert_eq!(updated["processing"]["streaming_segment_count"], 4);
+    assert_eq!(updated["processing"]["faithful_input_char_count"], 5_703);
+    assert_eq!(updated["processing"]["faithful_output_char_count"], 28);
+    assert_eq!(
+        updated["processing"]["preservation_fallback_reason"],
+        "catastrophic_compression"
+    );
+
+    update_session_log_after_text_processing(
+        &log_path,
+        "完整原始转录，已修正标点。",
+        Some(FaithfulOutputValidation {
+            accepted: true,
+            fallback_reason: None,
+            input_char_count: 5_703,
+            output_char_count: 5_710,
+            retention_ratio: 1.0,
+            normalized_change_ratio: 0.01,
+        }),
+    )
+    .expect("replace stale fallback reason with accepted validation");
+    let accepted: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&log_path).expect("read accepted final processing log"),
+    )
+    .expect("parse accepted final processing log");
+    assert_eq!(accepted["output_text"], "完整原始转录，已修正标点。");
+    assert!(accepted["processing"]
+        .get("preservation_fallback_reason")
+        .is_none());
 }
 
 #[tokio::test]
@@ -575,6 +843,38 @@ fn complete_failed_session_persists_error_for_pre_recorded_runs() {
         "pre-recorded failure should write log"
     );
     assert_eq!(phases, vec![RuntimePhase::Failed]);
+}
+
+#[test]
+fn externally_completed_failure_can_preserve_explicit_document_mode() {
+    let config = config_with_mock_provider("externally-failed-explicit-document-mode");
+    let mut session = VoiceSession::new("externally-failed-explicit-document-mode");
+    session
+        .apply(VoiceEvent::TriggerStart)
+        .expect("pre-recorded session should start");
+    session
+        .apply(VoiceEvent::TriggerStop)
+        .expect("pre-recorded session should stop into transcribing");
+
+    let report = complete_failed_session_with_mode_override(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        Some(VoiceMode::Document),
+        anyhow::anyhow!("desktop recording failed"),
+        false,
+        |_| {},
+    )
+    .expect("external failure should persist explicit mode");
+
+    assert_eq!(report.requested_mode, VoiceMode::Document);
+    assert_eq!(report.smart_routed_mode, None);
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read external failure log"),
+    )
+    .expect("parse external failure log");
+    assert_eq!(log["processing"]["requested_mode"], "document");
+    assert_eq!(log["processing"]["resolved_mode"], "document");
 }
 
 #[test]

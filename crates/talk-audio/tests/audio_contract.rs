@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use talk_audio::{
     capture_audio, probe_audio_signal, probe_native_windows_audio_readiness, read_wav_info,
-    start_recording, summarize_recent_audio_level, summarize_recent_audio_waveform,
-    write_captured_wav, write_silent_wav, AudioArtifact, AudioCaptureRequest, AudioInputLevel,
-    AudioPlan, AudioSignalProbeRequest, CapturedAudioBuffer, NativeReadinessStatus,
-    RecordingPcmCursor, WavSettings,
+    start_recording, summarize_prepared_wav_signal, summarize_recent_audio_level,
+    summarize_recent_audio_waveform, write_captured_wav, write_silent_wav, AudioArtifact,
+    AudioCaptureRequest, AudioInputLevel, AudioPlan, AudioSignalProbeRequest, CapturedAudioBuffer,
+    NativeReadinessStatus, RecordingPcmCursor, WavSettings,
 };
 use talk_core::AudioBackendMode;
 
@@ -163,6 +163,58 @@ fn write_captured_wav_rejects_non_frame_aligned_source_samples() {
         !artifact.path.exists(),
         "unaligned captured audio must not create {}",
         artifact.path.display()
+    );
+}
+
+#[test]
+fn write_captured_wav_normalizes_quiet_valid_capture() {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("talk-audio-normalize-quiet-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let artifact = AudioArtifact::new(dir.join("quiet.wav"), "audio/wav");
+    let source = CapturedAudioBuffer {
+        sample_rate_hz: 16_000,
+        channels: 1,
+        // Quiet but clearly-above-reject capture (peak 0.3) should be lifted
+        // toward the 0.9 target (gain 3x).
+        samples: vec![0.3; 1_600],
+    };
+
+    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+        .expect("write normalized captured wav");
+
+    let summary = summarize_prepared_wav_signal(&artifact.path).expect("summarize prepared wav");
+    assert!(
+        (0.86..=0.94).contains(&summary.peak),
+        "quiet capture must be normalized toward target peak, got {}",
+        summary.peak
+    );
+}
+
+#[test]
+fn write_captured_wav_preserves_weak_capture_below_reject_threshold() {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("talk-audio-normalize-weak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let artifact = AudioArtifact::new(dir.join("weak.wav"), "audio/wav");
+    let source = CapturedAudioBuffer {
+        sample_rate_hz: 16_000,
+        channels: 1,
+        // Below the weak-signal reject threshold: must NOT be amplified, so the
+        // provider weak-signal reject still fires downstream.
+        samples: vec![0.03; 1_600],
+    };
+
+    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+        .expect("write weak captured wav");
+
+    let summary = summarize_prepared_wav_signal(&artifact.path).expect("summarize prepared wav");
+    assert!(
+        summary.peak < 0.05,
+        "weak capture must be preserved for reject, got {}",
+        summary.peak
     );
 }
 

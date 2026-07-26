@@ -161,12 +161,16 @@ function Test-TalkDefaultModelSherpaInstall {
         throw "Talk sherpa installer script does not exist: $resolvedInstallScriptPath"
     }
 
+    $requestedModelId = $ModelId
+    $requestedModelDir = $ModelDir
     . $resolvedInstallScriptPath
     if (-not (Get-Command Test-TalkSherpaModelInstall -ErrorAction SilentlyContinue)) {
         throw "Talk sherpa installer did not expose Test-TalkSherpaModelInstall: $resolvedInstallScriptPath"
     }
 
-    $validation = Test-TalkSherpaModelInstall -ModelId $ModelId -ModelDir $ModelDir
+    $validation = Test-TalkSherpaModelInstall `
+        -ModelId $requestedModelId `
+        -ModelDir $requestedModelDir
     $validation | Add-Member -NotePropertyName InstallScriptPath -NotePropertyValue $resolvedInstallScriptPath -Force
     $validation
 }

@@ -3,7 +3,7 @@ param(
     [string]$ComparisonJson,
     [string]$OutputJson,
     [int]$MinSamples = 3,
-    [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [switch]$AllowMissingCloudBaseline,
     [switch]$AllowSyntheticSampleIds,
     [switch]$StatusOnly,
@@ -92,6 +92,9 @@ function Resolve-TalkDefaultAsrCandidateModelId {
 
     if ($fingerprint -match 'paraformer-bilingual-zh-en|streaming-paraformer|paraformer') {
         return 'paraformer-bilingual-zh-en'
+    }
+    if ($fingerprint.Contains('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10')) {
+        return 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
     }
     if ($fingerprint -match 'zipformer-zh-en-punct-int8-480ms|480ms-streaming-zipformer|zipformer') {
         return 'zipformer-zh-en-punct-int8-480ms'
@@ -428,7 +431,7 @@ function Select-TalkDefaultAsrModel {
         [Parameter(Mandatory = $true)][string]$ComparisonJson,
         [string]$OutputJson,
         [int]$MinSamples = 3,
-        [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [switch]$AllowMissingCloudBaseline,
         [switch]$AllowSyntheticSampleIds,
         [switch]$StatusOnly,

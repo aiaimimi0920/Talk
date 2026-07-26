@@ -10,16 +10,17 @@ mod windows_app {
     use clap::Parser;
     use serde_json::Value;
     use std::cell::Cell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::ffi::OsString;
     use std::fs;
+    use std::future::Future;
     use std::mem;
     use std::net::{SocketAddr, TcpStream};
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::Stdio;
     use std::ptr;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
     use talk_audio::{
@@ -45,33 +46,49 @@ mod windows_app {
         desktop_copy_popup_editor_frame_rect as popup_editor_frame_layout_rect,
         desktop_copy_popup_metrics, desktop_copy_popup_model,
         desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
-        desktop_copy_popup_position, desktop_document_recorrection_session_decision,
-        desktop_effective_streaming_asr_enabled, desktop_hud_activation_policy,
+        desktop_copy_popup_position, desktop_correction_text_with_local_boundary,
+        desktop_document_recorrection_generation_is_current,
+        desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
+        desktop_failure_cleanup_plan, desktop_final_correction_processing_mode,
+        desktop_hud_activation_policy, desktop_hud_audio_meter_model_for_waveform,
         desktop_hud_detail_lifecycle, desktop_hud_geometry_update_plan,
         desktop_hud_metrics_for_view_model, desktop_hud_presentation_for_phase,
         desktop_hud_thinking_palette, desktop_hud_thinking_progress_model,
         desktop_hud_thinking_text_wave_offsets, desktop_hud_view_model_for_corrected_text,
         desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle,
         desktop_hud_view_model_for_phase, desktop_insert_target_restore_requested,
-        desktop_listening_hud_action_for_point, desktop_listening_hud_cancel_button_rect,
-        desktop_listening_hud_complete_button_rect, desktop_listening_hud_partial_text_layout,
-        desktop_listening_hud_visible_partial_text, desktop_listening_hud_waveform_rect,
+        desktop_listening_hud_action_for_point, desktop_listening_hud_auto_follow_for_scroll,
+        desktop_listening_hud_cancel_button_rect, desktop_listening_hud_complete_button_rect,
+        desktop_listening_hud_line_origin, desktop_listening_hud_partial_text_layout,
+        desktop_listening_hud_reconcile_scroll_state, desktop_listening_hud_requires_text_layout,
+        desktop_listening_hud_scroll_line_offset_for_pointer,
+        desktop_listening_hud_scroll_line_offset_for_wheel,
+        desktop_listening_hud_scroll_max_offset, desktop_listening_hud_scrollbar_hit_rect,
+        desktop_listening_hud_scrollbar_thumb_rect, desktop_listening_hud_text_unit_width,
+        desktop_listening_hud_visible_lines, desktop_listening_hud_waveform_rect,
+        desktop_live_clipboard_settle_delay_ms, desktop_live_correction_anchor_policy,
         desktop_live_correction_context_before, desktop_live_correction_eligibility,
-        desktop_live_correction_inserted_baseline, desktop_local_asr_daemon_bind_from_endpoint,
+        desktop_live_correction_inserted_baseline, desktop_live_correction_ordered_backlog,
+        desktop_live_correction_presentation, desktop_live_correction_processing_mode,
+        desktop_live_correction_target_apply_allowed, desktop_live_correction_timing_log,
+        desktop_live_correction_worker_policy, desktop_live_smart_route_lock,
+        desktop_live_smart_transcribe_evidence, desktop_local_asr_daemon_bind_from_endpoint,
         desktop_mode_dropdown_model, desktop_mode_text_result_model, desktop_output_plan,
         desktop_overlay_scale_factor_for_dpi,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
         desktop_preferred_paste_shortcut_for_target,
         desktop_product_local_asr_daemon_launch_plan_with_config,
-        desktop_product_local_asr_startup_timeout_ms, desktop_runtime_insert_directive_for_mode,
-        desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
-        desktop_shortcut_help_model, desktop_shortcut_help_position,
+        desktop_product_local_asr_model_available, desktop_product_local_asr_startup_timeout_ms,
+        desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
+        desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
         desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
         desktop_speculative_local_asr_route, desktop_speculative_replacement_selection_count,
-        desktop_streaming_final_correction_job_enabled, desktop_streaming_hud_transcript,
-        desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_stop_aggregate,
-        desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
-        download_and_install_model, extract_embedded_runtime_payload,
+        desktop_streaming_effective_segment_count, desktop_streaming_final_correction_job_enabled,
+        desktop_streaming_hud_transcript_parts, desktop_streaming_latest_segment_allows_auto_patch,
+        desktop_streaming_segment_cache_text, desktop_streaming_stop_aggregate_with_pending,
+        desktop_streaming_stop_policy, desktop_streaming_stop_reconciliation_plan,
+        desktop_streaming_stop_tail_target_unchanged, download_and_install_model,
+        embedded_runtime_payload_is_appended, extract_embedded_runtime_payload,
         foreground_target_refresh_requested, foreground_target_stability_satisfied,
         hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
         idle_status_detail, live_streaming_segment_plan_for_lifecycle, native_status_message,
@@ -88,12 +105,15 @@ mod windows_app {
         DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudMetrics,
         DesktopHudPresentation, DesktopHudViewModel, DesktopHudVisualState,
         DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
-        DesktopListeningHudAction, DesktopLiveCorrectionEligibility, DesktopLiveCorrectionSegment,
+        DesktopListeningHudAction, DesktopListeningHudPartialTextLayout,
+        DesktopLiveCorrectionAnchorPolicy, DesktopLiveCorrectionEligibility,
+        DesktopLiveCorrectionPresentation, DesktopLiveCorrectionSegment,
         DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
-        DesktopOverlayActivationPolicy, DesktopRecordingStopWatcherPolicy,
+        DesktopOverlayActivationPolicy, DesktopOverlayRect, DesktopRecordingStopWatcherPolicy,
         DesktopRuntimeInsertDirective, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
         DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
-        DesktopSpeculativePipelineConfig, DesktopTextLifecycleState, ForegroundInsertTarget,
+        DesktopSpeculativePipelineConfig, DesktopStreamingHudTranscriptParts,
+        DesktopStreamingStopReconciliationPlan, DesktopTextLifecycleState, ForegroundInsertTarget,
         ForegroundTargetReleaseReason, ForegroundTargetStabilityProgress, HotkeyBindingState,
         HotkeySpec, LastSessionStatus, LowLevelHotkeyTracker, LowLevelHotkeyTransition,
         NativeBackendSnapshot, NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor,
@@ -109,15 +129,19 @@ mod windows_app {
         TALK_WINDOWS_PASTE_SHORTCUT_ENV,
     };
     use talk_runtime::{
-        complete_cancelled_session, complete_failed_session, load_effective_config,
-        process_voice_transcript_text, provider_text_processing_credentials_available,
+        analyze_smart_voice_mode, complete_cancelled_session, complete_failed_session,
+        complete_failed_session_with_mode_override, load_effective_config,
+        process_voice_transcript_text_with_diagnostics,
+        provider_text_processing_credentials_available,
         run_local_streaming_asr_service_from_recording, run_mock_speculative_session,
         run_voice_session_from_audio_artifact_with_insert_hooks,
         run_voice_session_from_external_asr_command_with_insert_hooks,
-        run_voice_session_from_local_transcript_with_insert_hooks,
-        run_voice_session_from_transcript_with_insert_hooks, runtime_voice_text_result,
-        LocalStreamingAsrLiveSession, RuntimeInsertDirective, RuntimePhase, SegmenterConfig,
-        SpeculativeRuntimeEvent, SpeculativeRuntimeState,
+        run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks,
+        run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
+        runtime_voice_text_result, smart_transcribe_fallback_is_stable,
+        update_session_log_after_text_processing, LocalStreamingAsrLiveSession,
+        RuntimeInsertDirective, RuntimePhase, RuntimeProcessedOutput, SegmenterConfig,
+        SmartRouteEvidence, SmartRouteReason, SpeculativeRuntimeEvent, SpeculativeRuntimeState,
     };
     use tokio::runtime::Builder;
     use uiautomation::patterns::{UITextPattern, UIValuePattern};
@@ -138,7 +162,7 @@ mod windows_app {
         SetBkMode, SetTextColor, SetWindowRgn, TextOutW, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
         COLOR_WINDOW, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER,
         DT_EDITCONTROL, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE,
-        FW_BOLD, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HOLLOW_BRUSH,
+        FW_BOLD, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HOLLOW_BRUSH, OPAQUE,
         OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT, TRIVERTEX,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -151,8 +175,9 @@ mod windows_app {
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetFocus, RegisterHotKey, SendInput, SetActiveWindow, SetFocus, UnregisterHotKey, INPUT,
-        INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_LEFT, VK_SHIFT,
+        GetAsyncKeyState, GetFocus, RegisterHotKey, ReleaseCapture, SendInput, SetActiveWindow,
+        SetCapture, SetFocus, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+        KEYEVENTF_KEYUP, VK_LEFT, VK_SHIFT,
     };
     use windows_sys::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -171,12 +196,12 @@ mod windows_app {
         IDC_ARROW, IDI_APPLICATION, KBDLLHOOKSTRUCT, MB_ICONINFORMATION, MB_OK, MF_CHECKED,
         MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_APP, WM_COMMAND,
-        WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETFONT, WM_HOTKEY,
-        WM_KEYDOWN, WM_KEYUP, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT,
-        WM_RBUTTONUP, WM_SETFONT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
-        WS_TABSTOP, WS_VISIBLE,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_APP, WM_CAPTURECHANGED,
+        WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETFONT,
+        WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        WM_TIMER, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_OVERLAPPEDWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     };
 
     const WINDOW_CLASS_NAME: &str = "TalkDesktopMessageWindow";
@@ -189,6 +214,7 @@ mod windows_app {
     const COPY_POPUP_MAX_PANES: usize = 4;
     const EM_SETREADONLY_MESSAGE: u32 = 0x00CF;
     const VK_CONTROL_KEY: u16 = 0x11;
+    const VK_MENU_KEY: i32 = 0x12;
     const VK_A_KEY: u16 = 0x41;
     const TRAY_ICON_ID: u32 = 1;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -265,11 +291,15 @@ mod windows_app {
             recording: RecordingSession,
             streaming_session: Option<LocalStreamingAsrLiveSession>,
         },
+        StreamingEvents {
+            events: Result<Vec<StreamingAsrEvent>>,
+        },
     }
 
     struct ActiveRecording {
         action_index: usize,
         mode_override: Option<VoiceMode>,
+        live_smart_routed_mode: Option<VoiceMode>,
         generation: u64,
         session: VoiceSession,
         trigger_events: Vec<&'static str>,
@@ -285,7 +315,7 @@ mod windows_app {
         live_streaming_inserted_segment_ids: Vec<String>,
         hud_streaming_segments: Vec<(String, String)>,
         live_streaming_correction_sender:
-            Option<tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>>,
+            Option<tokio::sync::mpsc::Sender<SpeculativeCloudCorrectionJob>>,
         live_streaming_correction_tracker: Arc<LiveCorrectionTracker>,
         last_streaming_asr_event: Option<StreamingAsrEvent>,
         last_streaming_asr_event_at: Option<Instant>,
@@ -305,6 +335,8 @@ mod windows_app {
         active_recording: Option<ActiveRecording>,
         worker_generation: Option<u64>,
         pending_worker_error: Option<(u64, String)>,
+        pending_worker_task: Option<(u64, tokio::task::JoinHandle<()>)>,
+        pending_stop_live_correction_tracker: Option<Arc<LiveCorrectionTracker>>,
         pending_copy_popup: Option<PendingCopyPopup>,
         pending_corrected_hud: Option<PendingCorrectedHud>,
         pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
@@ -312,6 +344,11 @@ mod windows_app {
         local_asr_bootstrap_status: LocalAsrBootstrapStatus,
         product_runtime_worker: Option<PathBuf>,
         product_model_root: Option<PathBuf>,
+        correction_worker_gate: CorrectionWorkerGate,
+        foreground_apply_gate: ForegroundApplyGate,
+        pending_document_correction_task: Option<(u64, tokio::task::JoinHandle<()>)>,
+        pending_model_bootstrap_task: Option<tokio::task::JoinHandle<()>>,
+        shutting_down: bool,
         runtime_handle: tokio::runtime::Handle,
         next_generation: u64,
     }
@@ -319,6 +356,230 @@ mod windows_app {
     struct ManagedLocalAsrDaemon {
         endpoint: String,
         child: std::process::Child,
+    }
+
+    #[derive(Clone)]
+    struct CorrectionWorkerGate {
+        semaphore: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[derive(Clone)]
+    struct ForegroundApplyGate {
+        state: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    struct ForegroundApplyLease {
+        state: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl ForegroundApplyGate {
+        fn new() -> Self {
+            Self {
+                state: Arc::new((Mutex::new(false), Condvar::new())),
+            }
+        }
+
+        fn acquire(&self) -> ForegroundApplyLease {
+            let (active, idle) = &*self.state;
+            let mut active = active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while *active {
+                active = idle
+                    .wait(active)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            *active = true;
+            ForegroundApplyLease {
+                state: Arc::clone(&self.state),
+            }
+        }
+    }
+
+    impl Drop for ForegroundApplyLease {
+        fn drop(&mut self) {
+            let (active, idle) = &*self.state;
+            let mut active = active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *active = false;
+            drop(active);
+            idle.notify_one();
+        }
+    }
+
+    impl CorrectionWorkerGate {
+        fn new(max_concurrency: usize) -> Self {
+            Self {
+                semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrency)),
+            }
+        }
+
+        async fn acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+            Arc::clone(&self.semaphore).acquire_owned().await.ok()
+        }
+    }
+
+    async fn abort_pending_task(pending: &mut Option<(u64, tokio::task::JoinHandle<()>)>) {
+        if let Some((_, task)) = pending.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    async fn abort_pending_join_handle(pending: &mut Option<tokio::task::JoinHandle<()>>) {
+        if let Some(task) = pending.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    fn register_pending_worker_task(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        task: tokio::task::JoinHandle<()>,
+    ) {
+        let mut task = Some(task);
+        if let Ok(mut shared) = shared.lock() {
+            if !shared.shutting_down && shared.worker_generation == Some(generation) {
+                if let Some((_, previous_task)) = shared.pending_worker_task.take() {
+                    previous_task.abort();
+                }
+                shared.pending_worker_task = Some((generation, task.take().expect("worker task")));
+            }
+        }
+        if let Some(task) = task {
+            task.abort();
+        }
+    }
+
+    fn stop_worker_side_effects_allowed(
+        shutting_down: bool,
+        worker_generation: Option<u64>,
+        next_generation: u64,
+        generation: u64,
+    ) -> bool {
+        !shutting_down
+            && worker_generation == Some(generation)
+            && desktop_document_recorrection_generation_is_current(next_generation, generation)
+    }
+
+    fn stop_worker_side_effects_allowed_for_shared(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+    ) -> bool {
+        shared.lock().ok().is_some_and(|shared| {
+            stop_worker_side_effects_allowed(
+                shared.shutting_down,
+                shared.worker_generation,
+                shared.next_generation,
+                generation,
+            )
+        })
+    }
+
+    fn model_bootstrap_side_effects_allowed(shutting_down: bool) -> bool {
+        !shutting_down
+    }
+
+    fn correction_foreground_side_effects_allowed(
+        shutting_down: bool,
+        next_generation: u64,
+        generation: u64,
+    ) -> bool {
+        !shutting_down
+            && desktop_document_recorrection_generation_is_current(next_generation, generation)
+    }
+
+    fn correction_foreground_side_effects_allowed_for_shared(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+    ) -> bool {
+        shared.lock().ok().is_some_and(|shared| {
+            correction_foreground_side_effects_allowed(
+                shared.shutting_down,
+                shared.next_generation,
+                generation,
+            )
+        })
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    struct PasteShortcutModifierKeyState {
+        control: bool,
+        alt: bool,
+        shift: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct PasteShortcutModifierReleaseWaitOutcome {
+        cleared: bool,
+        poll_count: u32,
+        initial_state: PasteShortcutModifierKeyState,
+        final_state: PasteShortcutModifierKeyState,
+    }
+
+    fn paste_shortcut_modifier_keys_clear(state: PasteShortcutModifierKeyState) -> bool {
+        !state.control && !state.alt && !state.shift
+    }
+
+    fn wait_for_paste_shortcut_modifier_release_with_sampler<F>(
+        timeout: Duration,
+        poll_interval: Duration,
+        mut sample: F,
+    ) -> PasteShortcutModifierReleaseWaitOutcome
+    where
+        F: FnMut() -> PasteShortcutModifierKeyState,
+    {
+        let initial_state = sample();
+        let mut final_state = initial_state;
+        let mut poll_count = 1u32;
+        if paste_shortcut_modifier_keys_clear(initial_state) {
+            return PasteShortcutModifierReleaseWaitOutcome {
+                cleared: true,
+                poll_count,
+                initial_state,
+                final_state,
+            };
+        }
+
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            thread::sleep(poll_interval);
+            final_state = sample();
+            poll_count += 1;
+            if paste_shortcut_modifier_keys_clear(final_state) {
+                return PasteShortcutModifierReleaseWaitOutcome {
+                    cleared: true,
+                    poll_count,
+                    initial_state,
+                    final_state,
+                };
+            }
+        }
+
+        PasteShortcutModifierReleaseWaitOutcome {
+            cleared: false,
+            poll_count,
+            initial_state,
+            final_state,
+        }
+    }
+
+    fn sample_paste_shortcut_modifier_key_state() -> PasteShortcutModifierKeyState {
+        PasteShortcutModifierKeyState {
+            control: unsafe { GetAsyncKeyState(VK_CONTROL_KEY as i32) } < 0,
+            alt: unsafe { GetAsyncKeyState(VK_MENU_KEY) } < 0,
+            shift: unsafe { GetAsyncKeyState(VK_SHIFT as i32) } < 0,
+        }
+    }
+
+    fn wait_for_paste_shortcut_modifier_release() -> PasteShortcutModifierReleaseWaitOutcome {
+        wait_for_paste_shortcut_modifier_release_with_sampler(
+            Duration::from_millis(350),
+            Duration::from_millis(10),
+            sample_paste_shortcut_modifier_key_state,
+        )
     }
 
     #[derive(Debug, Clone)]
@@ -345,18 +606,96 @@ mod windows_app {
         segment_id: String,
         transcript: String,
         context_before: Option<String>,
-        mode_override: Option<VoiceMode>,
+        processing_mode: VoiceMode,
+        requested_mode: VoiceMode,
+        origin_insert_target: Option<DesktopInsertTargetContext>,
         anchor: Option<SpeculativeInsertAnchor>,
         full_document_inserted_segments: Vec<String>,
+        session_log_path: Option<PathBuf>,
         latest_live_segment_guard: Option<LatestLiveSegmentGuard>,
+        allow_target_apply: bool,
         generation: u64,
         started_at: Instant,
         hwnd_value: usize,
         hud_hwnd_value: usize,
     }
 
+    struct LiveCorrectionTiming {
+        segment_id: String,
+        queued_at: Instant,
+        worker_started_at: Instant,
+        provider_started_at: Option<Instant>,
+        provider_finished_at: Option<Instant>,
+        apply_started_at: Option<Instant>,
+        outcome: &'static str,
+    }
+
+    impl LiveCorrectionTiming {
+        fn new(job: &SpeculativeCloudCorrectionJob) -> Self {
+            Self {
+                segment_id: job.segment_id.clone(),
+                queued_at: job.started_at,
+                worker_started_at: Instant::now(),
+                provider_started_at: None,
+                provider_finished_at: None,
+                apply_started_at: None,
+                outcome: "skipped",
+            }
+        }
+
+        fn provider_started(&mut self) {
+            self.provider_started_at = Some(Instant::now());
+        }
+
+        fn provider_finished(&mut self) {
+            self.provider_finished_at = Some(Instant::now());
+        }
+
+        fn apply_started(&mut self) {
+            self.apply_started_at = Some(Instant::now());
+        }
+
+        fn outcome(&mut self, outcome: &'static str) {
+            self.outcome = outcome;
+        }
+    }
+
+    impl Drop for LiveCorrectionTiming {
+        fn drop(&mut self) {
+            let queue_wait_ms = self
+                .worker_started_at
+                .saturating_duration_since(self.queued_at)
+                .as_millis();
+            let provider_ms = self
+                .provider_started_at
+                .zip(self.provider_finished_at)
+                .map(|(started, finished)| finished.saturating_duration_since(started).as_millis())
+                .unwrap_or_default();
+            let apply_ms = self
+                .apply_started_at
+                .map(|started| started.elapsed().as_millis())
+                .unwrap_or_default();
+            let total_ms = self.queued_at.elapsed().as_millis();
+            eprintln!(
+                "{}",
+                desktop_live_correction_timing_log(
+                    &self.segment_id,
+                    queue_wait_ms,
+                    provider_ms,
+                    apply_ms,
+                    total_ms,
+                    self.outcome,
+                )
+            );
+        }
+    }
+
+    struct LiveCorrectionApplyLease<'a> {
+        _guard: std::sync::MutexGuard<'a, ()>,
+    }
+
     struct LiveCorrectionTracker {
-        generation: u64,
+        apply_gate: Mutex<()>,
         state: Mutex<LiveCorrectionTrackerState>,
         idle_notify: tokio::sync::Notify,
     }
@@ -364,17 +703,19 @@ mod windows_app {
     struct LiveCorrectionTrackerState {
         segments: Vec<DesktopLiveCorrectionSegment>,
         pending_jobs: usize,
+        completed_jobs: HashSet<String>,
         stopping: bool,
         cancelled: bool,
     }
 
     impl LiveCorrectionTracker {
-        fn new(generation: u64) -> Self {
+        fn new(_generation: u64) -> Self {
             Self {
-                generation,
+                apply_gate: Mutex::new(()),
                 state: Mutex::new(LiveCorrectionTrackerState {
                     segments: Vec::new(),
                     pending_jobs: 0,
+                    completed_jobs: HashSet::new(),
                     stopping: false,
                     cancelled: false,
                 }),
@@ -427,6 +768,14 @@ mod windows_app {
                 })
         }
 
+        fn acquire_apply_lease(&self, segment_id: &str) -> Option<LiveCorrectionApplyLease<'_>> {
+            let guard = self.apply_gate.lock().ok()?;
+            if !self.can_process(segment_id) {
+                return None;
+            }
+            Some(LiveCorrectionApplyLease { _guard: guard })
+        }
+
         fn should_show_live_feedback(&self) -> bool {
             self.state
                 .lock()
@@ -458,6 +807,21 @@ mod windows_app {
             }
         }
 
+        fn local_fallback_text(&self, segment_id: &str) -> Option<String> {
+            let state = self.state.lock().ok()?;
+            if state.cancelled {
+                return None;
+            }
+            let segment = state
+                .segments
+                .iter()
+                .find(|segment| segment.segment_id == segment_id)?;
+            if segment.corrected_text.is_some() {
+                return None;
+            }
+            Some(segment.local_text.clone())
+        }
+
         fn complete_job(
             &self,
             segment_id: &str,
@@ -479,10 +843,9 @@ mod windows_app {
                     segment.insert_anchor = anchor;
                 }
             }
+            state.completed_jobs.insert(segment_id.to_string());
             state.pending_jobs = state.pending_jobs.saturating_sub(1);
-            if state.pending_jobs == 0 {
-                self.idle_notify.notify_waiters();
-            }
+            self.idle_notify.notify_waiters();
         }
 
         fn mark_stopping(&self) {
@@ -495,12 +858,55 @@ mod windows_app {
         }
 
         fn cancel(&self) {
+            let _apply_guard = match self.apply_gate.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             if let Ok(mut state) = self.state.lock() {
                 state.cancelled = true;
                 state.stopping = true;
-                if state.pending_jobs == 0 {
-                    self.idle_notify.notify_waiters();
+            }
+            self.idle_notify.notify_waiters();
+        }
+
+        fn is_cancelled(&self) -> bool {
+            self.state.lock().ok().is_some_and(|state| state.cancelled)
+        }
+
+        async fn wait_until_cancelled(&self) {
+            loop {
+                let notified = self.idle_notify.notified();
+                if self.is_cancelled() {
+                    return;
                 }
+                notified.await;
+            }
+        }
+
+        async fn wait_until_apply_turn(&self, segment_id: &str) -> bool {
+            loop {
+                let notified = self.idle_notify.notified();
+                let decision = self.state.lock().ok().and_then(|state| {
+                    if state.cancelled {
+                        return Some(false);
+                    }
+                    let index = state
+                        .segments
+                        .iter()
+                        .position(|segment| segment.segment_id == segment_id)?;
+                    if state.segments[..index]
+                        .iter()
+                        .all(|segment| state.completed_jobs.contains(&segment.segment_id))
+                    {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(decision) = decision {
+                    return decision;
+                }
+                notified.await;
             }
         }
 
@@ -527,13 +933,6 @@ mod windows_app {
         }
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum LiveStreamingCorrectionInsertOutcome {
-        Inserted,
-        NoEditableTarget,
-        StaleOrDuplicate,
-    }
-
     #[derive(Debug, Clone, Copy)]
     struct LatestLiveSegmentGuard {
         generation: u64,
@@ -542,13 +941,17 @@ mod windows_app {
     struct PendingLiveStreamingDispatch {
         config: TalkConfig,
         pipeline_config: DesktopSpeculativePipelineConfig,
-        mode_override: Option<VoiceMode>,
         generation: u64,
         origin_insert_target: Option<DesktopInsertTargetContext>,
         existing_anchors: HashMap<String, SpeculativeInsertAnchor>,
-        live_correction_sender: tokio::sync::mpsc::UnboundedSender<SpeculativeCloudCorrectionJob>,
+        live_correction_sender: tokio::sync::mpsc::Sender<SpeculativeCloudCorrectionJob>,
         live_correction_tracker: Arc<LiveCorrectionTracker>,
         events: Vec<SpeculativeRuntimeEvent>,
+        requested_mode: VoiceMode,
+        smart_routed_mode: Option<VoiceMode>,
+        flush_corrected_backlog: bool,
+        latest_live_segment_guard: Option<LatestLiveSegmentGuard>,
+        allow_target_apply: bool,
         hwnd_value: usize,
         hud_hwnd_value: usize,
     }
@@ -655,11 +1058,20 @@ mod windows_app {
         hud_model: Option<DesktopHudViewModel>,
         hud_geometry: Option<DesktopHudGeometry>,
         hud_meter_bins: [f32; 9],
-        hud_streaming_partial_text: Option<String>,
-        hud_streaming_corrected_text: Option<String>,
+        hud_streaming_corrected_prefix: Option<String>,
+        hud_streaming_partial_tail: Option<String>,
+        hud_streaming_partial_layout: Option<DesktopListeningHudPartialTextLayout>,
+        hud_streaming_scroll_line_offset: usize,
+        hud_streaming_scroll_dragging: bool,
+        hud_streaming_scroll_user_scrolled: bool,
         hud_thinking_pulse_tick: u32,
         copy_popup: Option<CopyPopupRenderState>,
         shortcut_help: Option<DesktopShortcutHelpModel>,
+    }
+
+    enum RecordingHudRefreshUpdate {
+        Text(DesktopHudViewModel),
+        WaveformOnly,
     }
 
     fn overlay_ui_state() -> &'static Mutex<OverlayUiState> {
@@ -672,10 +1084,9 @@ mod windows_app {
         segment_id: &str,
         text: &str,
     ) {
-        let text = text.trim();
-        if text.is_empty() {
+        let Some(text) = desktop_streaming_segment_cache_text(text) else {
             return;
-        }
+        };
 
         if let Some((_, existing_text)) = segments
             .iter_mut()
@@ -688,14 +1099,140 @@ mod windows_app {
         }
     }
 
-    fn hud_streaming_transcript_from_segments(segments: &[(String, String)]) -> Option<String> {
-        let borrowed_segments = segments
+    /// Drop streaming HUD segments whose ids were rolled back by an ASR revision
+    /// that segmented into fewer pieces. Retained/re-committed segments keep
+    /// their position, so display order is preserved.
+    fn remove_hud_streaming_segments(segments: &mut Vec<(String, String)>, segment_ids: &[String]) {
+        if segment_ids.is_empty() {
+            return;
+        }
+        segments.retain(|(segment_id, _)| !segment_ids.iter().any(|removed| removed == segment_id));
+    }
+
+    fn display_text_units(text: &str) -> usize {
+        text.chars()
+            .map(|character| if character.is_ascii() { 1 } else { 2 })
+            .sum()
+    }
+
+    fn active_recording_hud_transcript_parts(
+        active: &ActiveRecording,
+    ) -> DesktopStreamingHudTranscriptParts {
+        let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
+        let pending_segments = active
+            .hud_streaming_segments
             .iter()
             .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
             .collect::<Vec<_>>();
-        let transcript = desktop_streaming_hud_transcript(&borrowed_segments, None);
+        desktop_streaming_hud_transcript_parts(&tracker_snapshot, &pending_segments)
+    }
 
-        (!transcript.is_empty()).then_some(transcript)
+    fn live_smart_route_for_transcript(
+        requested_mode: VoiceMode,
+        current_lock: Option<VoiceMode>,
+        transcript: &str,
+        committed_segment_count: usize,
+    ) -> Option<VoiceMode> {
+        if requested_mode != VoiceMode::Smart {
+            return None;
+        }
+        let analysis = analyze_smart_voice_mode(
+            transcript,
+            SmartRouteEvidence {
+                committed_streaming_segment_count: committed_segment_count,
+            },
+        );
+        desktop_live_smart_route_lock(
+            current_lock,
+            analysis.resolved_mode,
+            analysis.long_form_evidence,
+        )
+    }
+
+    fn live_smart_route_for_corrected_transcript(
+        requested_mode: VoiceMode,
+        current_lock: Option<VoiceMode>,
+        transcript: &str,
+        committed_segment_count: usize,
+    ) -> Option<VoiceMode> {
+        if requested_mode != VoiceMode::Smart {
+            return None;
+        }
+        let analysis = analyze_smart_voice_mode(
+            transcript,
+            SmartRouteEvidence {
+                committed_streaming_segment_count: committed_segment_count,
+            },
+        );
+        let transcribe_evidence = desktop_live_smart_transcribe_evidence(
+            analysis.resolved_mode,
+            analysis.long_form_evidence,
+            analysis.reason == SmartRouteReason::TranscribeFallback
+                && smart_transcribe_fallback_is_stable(transcript),
+        );
+        desktop_live_smart_route_lock(current_lock, analysis.resolved_mode, transcribe_evidence)
+    }
+
+    fn live_correction_job_target_apply_allowed(
+        job_allow_target_apply: bool,
+        has_live_segment_guard: bool,
+        requested_mode: VoiceMode,
+        smart_routed_mode: Option<VoiceMode>,
+    ) -> bool {
+        job_allow_target_apply
+            || (has_live_segment_guard
+                && desktop_live_correction_target_apply_allowed(requested_mode, smart_routed_mode))
+    }
+
+    fn live_correction_backlog_drain_allowed(
+        dispatch_allow_target_apply: bool,
+        flush_corrected_backlog: bool,
+        rejected_local_fallback: bool,
+        requested_mode: VoiceMode,
+        smart_routed_mode: Option<VoiceMode>,
+    ) -> bool {
+        dispatch_allow_target_apply
+            && (flush_corrected_backlog || rejected_local_fallback)
+            && desktop_live_correction_target_apply_allowed(requested_mode, smart_routed_mode)
+    }
+
+    fn listening_hud_transcript_text_and_lifecycle(
+        parts: &DesktopStreamingHudTranscriptParts,
+    ) -> (Option<String>, DesktopTextLifecycleState) {
+        let display_text = format!("{}{}", parts.corrected_prefix, parts.pre_recognized_tail);
+        let display_text = display_text.trim().to_string();
+        let lifecycle = if parts.pre_recognized_tail.trim().is_empty()
+            && !parts.corrected_prefix.trim().is_empty()
+        {
+            DesktopTextLifecycleState::Corrected
+        } else {
+            DesktopTextLifecycleState::PreRecognized
+        };
+
+        (
+            (!display_text.is_empty()).then_some(display_text),
+            lifecycle,
+        )
+    }
+
+    fn cached_hud_streaming_transcript_parts() -> DesktopStreamingHudTranscriptParts {
+        overlay_ui_state()
+            .lock()
+            .ok()
+            .map(|overlay| DesktopStreamingHudTranscriptParts {
+                corrected_prefix: overlay
+                    .hud_streaming_corrected_prefix
+                    .clone()
+                    .unwrap_or_default(),
+                pre_recognized_tail: overlay
+                    .hud_streaming_partial_tail
+                    .clone()
+                    .unwrap_or_default(),
+            })
+            .unwrap_or(DesktopStreamingHudTranscriptParts {
+                corrected_prefix: String::new(),
+                pre_recognized_tail: String::new(),
+            })
     }
 
     fn enable_desktop_dpi_awareness() {
@@ -795,6 +1332,8 @@ mod windows_app {
             active_recording: None,
             worker_generation: None,
             pending_worker_error: None,
+            pending_worker_task: None,
+            pending_stop_live_correction_tracker: None,
             pending_copy_popup: None,
             pending_corrected_hud: None,
             pending_hotkey_origin_insert_target: None,
@@ -802,6 +1341,13 @@ mod windows_app {
             local_asr_bootstrap_status: LocalAsrBootstrapStatus::NotStarted,
             product_runtime_worker: None,
             product_model_root: None,
+            correction_worker_gate: CorrectionWorkerGate::new(
+                desktop_live_correction_worker_policy().max_concurrency,
+            ),
+            foreground_apply_gate: ForegroundApplyGate::new(),
+            pending_document_correction_task: None,
+            pending_model_bootstrap_task: None,
+            shutting_down: false,
             runtime_handle: runtime.handle().clone(),
             next_generation: 1,
         }));
@@ -1072,6 +1618,20 @@ mod windows_app {
         (index < COPY_POPUP_MAX_PANES).then_some(index)
     }
 
+    fn copy_popup_edit_control_style() -> u32 {
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | WS_VSCROLL
+            | ES_CENTER as u32
+            | ES_MULTILINE as u32
+            | ES_AUTOVSCROLL as u32
+    }
+
+    fn copy_popup_edit_background_mode() -> i32 {
+        OPAQUE as i32
+    }
+
     fn create_copy_popup_edit_control(
         copy_popup_hwnd: HWND,
         dpi: u32,
@@ -1088,12 +1648,7 @@ mod windows_app {
                 0,
                 to_wide(COPY_POPUP_EDIT_CLASS_NAME).as_ptr(),
                 to_wide("").as_ptr(),
-                WS_CHILD
-                    | WS_VISIBLE
-                    | WS_TABSTOP
-                    | (ES_CENTER as u32)
-                    | (ES_MULTILINE as u32)
-                    | (ES_AUTOVSCROLL as u32),
+                copy_popup_edit_control_style(),
                 editor_rect.left,
                 editor_rect.top,
                 editor_rect.right - editor_rect.left,
@@ -1189,10 +1744,7 @@ mod windows_app {
                 return;
             }
         };
-        let has_embedded_payload = executable_bytes
-            .windows(b"TLPAY001".len())
-            .any(|window| window == b"TLPAY001");
-        if !has_embedded_payload {
+        if !embedded_runtime_payload_is_appended(&executable_bytes) {
             set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::EngineeringFallback);
             return;
         }
@@ -1229,18 +1781,41 @@ mod windows_app {
         };
         let shared_for_task = Arc::clone(&shared);
         let hwnd_value = hwnd as usize;
-        runtime_handle.spawn(async move {
+        let task = runtime_handle.spawn(async move {
             let status = match download_and_install_model(&spec, &model_root).await {
                 Ok(_) => LocalAsrBootstrapStatus::Ready,
                 Err(error) => LocalAsrBootstrapStatus::FallbackCloud(format!(
                     "download local ASR model: {error}"
                 )),
             };
-            set_local_asr_bootstrap_status(&shared_for_task, status);
-            unsafe {
-                let _ = PostMessageW(hwnd_value as HWND, MODEL_BOOTSTRAP_MESSAGE, 0, 0);
+            let should_notify = shared_for_task.lock().ok().is_some_and(|mut shared_state| {
+                if !model_bootstrap_side_effects_allowed(shared_state.shutting_down) {
+                    return false;
+                }
+                shared_state.local_asr_bootstrap_status = status;
+                true
+            });
+            if should_notify {
+                unsafe {
+                    let _ = PostMessageW(hwnd_value as HWND, MODEL_BOOTSTRAP_MESSAGE, 0, 0);
+                }
             }
         });
+        let mut task = Some(task);
+        let previous_task = shared.lock().ok().and_then(|mut shared_state| {
+            if !model_bootstrap_side_effects_allowed(shared_state.shutting_down) {
+                return None;
+            }
+            shared_state
+                .pending_model_bootstrap_task
+                .replace(task.take().expect("model bootstrap task"))
+        });
+        if let Some(previous_task) = previous_task {
+            previous_task.abort();
+        }
+        if let Some(task) = task {
+            task.abort();
+        }
         let _ = update_tray_icon(hwnd, "Talk: downloading local ASR model");
     }
 
@@ -1256,11 +1831,10 @@ mod windows_app {
         let status = unsafe { get_window_state_mut(hwnd) }
             .ok()
             .and_then(|state| {
-                state
-                    .shared
-                    .lock()
-                    .ok()
-                    .map(|shared| shared.local_asr_bootstrap_status.clone())
+                state.shared.lock().ok().map(|mut shared| {
+                    shared.pending_model_bootstrap_task.take();
+                    shared.local_asr_bootstrap_status.clone()
+                })
             });
         match status {
             Some(LocalAsrBootstrapStatus::Ready) => {
@@ -1716,6 +2290,98 @@ mod windows_app {
         Ok(())
     }
 
+    fn fail_active_recording(
+        hwnd: HWND,
+        state: &mut WindowState,
+        error_message: String,
+        copy_text: Option<String>,
+    ) -> Result<()> {
+        let (config, mut active) = {
+            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let Some(active) = shared.active_recording.take() else {
+                return Ok(());
+            };
+            shared.shell_state = shared.shell_state.complete();
+            shared.current_phase = None;
+            shared.worker_generation = None;
+            (shared.config.clone(), active)
+        };
+        let generation = active.generation;
+
+        active.live_streaming_correction_tracker.cancel();
+        active.live_streaming_correction_sender.take();
+
+        let ActiveRecording {
+            session,
+            trigger_events,
+            source,
+            ..
+        } = active;
+        if let ActiveRecordingSource::Live {
+            recording,
+            streaming_session,
+        } = source
+        {
+            drop(streaming_session);
+            if let Err(error) = recording.cancel() {
+                eprintln!("Talk recording cleanup after streaming failure failed: {error}");
+            }
+        }
+
+        let copy_text = copy_text.filter(|text| !text.trim().is_empty());
+        let persistence_result = config.as_ref().map(|config| {
+            complete_failed_session(
+                config,
+                session,
+                trigger_events,
+                anyhow::anyhow!(error_message.clone()),
+                false,
+                |_| {},
+            )
+        });
+        let cleanup_plan = desktop_failure_cleanup_plan(
+            persistence_result
+                .as_ref()
+                .is_some_and(|result| result.is_ok()),
+            copy_text.is_some(),
+        );
+        if let Some(Err(error)) = persistence_result {
+            eprintln!("Talk failed-session log persistence failed: {error:#}");
+        } else if cleanup_plan.persistence_failed {
+            eprintln!("Talk failed-session log persistence skipped because config is unavailable");
+        }
+        {
+            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            set_last_session(&mut shared, "failed", Some(error_message));
+            if let Some(copy_text) = copy_text.as_deref() {
+                shared.pending_copy_popup = Some(PendingCopyPopup {
+                    generation,
+                    model: desktop_copy_popup_model(copy_text),
+                });
+            }
+        }
+
+        if cleanup_plan.stop_recording_timer {
+            unsafe {
+                KillTimer(hwnd, TIMER_RECORDING_LEVEL);
+            }
+        }
+        if let Err(error) = update_tray_icon(hwnd, "Talk: failed") {
+            eprintln!("Talk failed-state tray update failed: {error:#}");
+        }
+        if cleanup_plan.hide_hud {
+            if let Err(error) = hide_hud(hwnd) {
+                eprintln!("Talk failed-state HUD cleanup failed: {error:#}");
+            }
+        }
+        if cleanup_plan.show_copy_popup {
+            unsafe {
+                let _ = PostMessageW(hwnd, CORRECTION_COPY_POPUP_MESSAGE, generation as usize, 0);
+            }
+        }
+        Ok(())
+    }
+
     fn register_or_mark_hotkey_failure(hwnd: HWND, shared: &mut SharedState) {
         unregister_bound_hotkey(hwnd);
         if !shared.config_status.is_ready() {
@@ -1891,8 +2557,46 @@ mod windows_app {
                     KillTimer(hwnd, TIMER_THINKING_PROGRESS);
                 }
                 if let Ok(state) = get_window_state_mut(hwnd) {
-                    if let Ok(mut shared) = state.shared.lock() {
-                        if let Some(active) = shared.active_recording.take() {
+                    let foreground_apply_gate = state
+                        .shared
+                        .lock()
+                        .ok()
+                        .map(|shared| shared.foreground_apply_gate.clone());
+                    let foreground_apply_lease = foreground_apply_gate
+                        .as_ref()
+                        .map(ForegroundApplyGate::acquire);
+                    let shutdown_state = state.shared.lock().ok().map(|mut shared| {
+                        shared.shutting_down = true;
+                        shared.next_generation = shared.next_generation.saturating_add(1);
+                        shared.worker_generation = None;
+                        (
+                            shared.active_recording.take(),
+                            shared.local_asr_daemon.take(),
+                            shared.runtime_handle.clone(),
+                            shared.config.clone(),
+                            shared.pending_document_correction_task.take(),
+                            shared.pending_worker_task.take(),
+                            shared.pending_stop_live_correction_tracker.take(),
+                            shared.pending_model_bootstrap_task.take(),
+                        )
+                    });
+                    drop(foreground_apply_lease);
+                    if let Some((
+                        active,
+                        daemon,
+                        runtime_handle,
+                        config,
+                        mut pending_correction,
+                        mut pending_worker,
+                        stop_tracker,
+                        mut pending_model_bootstrap,
+                    )) = shutdown_state
+                    {
+                        if let Some(tracker) = stop_tracker {
+                            tracker.cancel();
+                        }
+                        if let Some(active) = active {
+                            active.live_streaming_correction_tracker.cancel();
                             let ActiveRecording {
                                 session,
                                 trigger_events,
@@ -1905,8 +2609,7 @@ mod windows_app {
                             } = source
                             {
                                 if let Some(streaming_session) = streaming_session {
-                                    let runtime_handle = shared.runtime_handle.clone();
-                                    runtime_handle.spawn(async move {
+                                    runtime_handle.block_on(async move {
                                         if let Err(error) = streaming_session.cancel().await {
                                             eprintln!(
                                                 "Talk local streaming ASR cancel failed: {error:#}"
@@ -1916,7 +2619,7 @@ mod windows_app {
                                 }
                                 let _ = recording.cancel();
                             }
-                            if let Some(config) = shared.config.as_ref() {
+                            if let Some(config) = config.as_ref() {
                                 let _ = complete_cancelled_session(
                                     config,
                                     session,
@@ -1925,11 +2628,16 @@ mod windows_app {
                                 );
                             }
                         }
-                        if let Some(daemon) = shared.local_asr_daemon.take() {
+                        runtime_handle.block_on(async {
+                            abort_pending_task(&mut pending_correction).await;
+                            abort_pending_task(&mut pending_worker).await;
+                            abort_pending_join_handle(&mut pending_model_bootstrap).await;
+                        });
+                        if let Some(daemon) = daemon {
                             stop_managed_local_asr_daemon(daemon);
                         }
-                        unregister_bound_hotkey(hwnd);
                     }
+                    unregister_bound_hotkey(hwnd);
                     if !state.hud_hwnd.is_null() {
                         let _ = DestroyWindow(state.hud_hwnd);
                     }
@@ -1970,8 +2678,26 @@ mod windows_app {
                 paint_hud_window(hwnd);
                 0
             }
+            WM_LBUTTONDOWN => {
+                handle_listening_hud_mouse_down(hwnd, point_from_lparam(lparam));
+                0
+            }
+            WM_MOUSEMOVE => {
+                handle_listening_hud_mouse_move(hwnd, point_from_lparam(lparam));
+                0
+            }
+            WM_MOUSEWHEEL => {
+                handle_listening_hud_mouse_wheel(hwnd, wheel_delta_from_wparam(wparam));
+                0
+            }
             WM_LBUTTONUP => {
-                handle_listening_hud_click(hwnd, point_from_lparam(lparam));
+                handle_listening_hud_mouse_up(hwnd, point_from_lparam(lparam));
+                0
+            }
+            WM_CAPTURECHANGED => {
+                if let Ok(mut overlay) = overlay_ui_state().lock() {
+                    overlay.hud_streaming_scroll_dragging = false;
+                }
                 0
             }
             WM_ERASEBKGND => 1,
@@ -2041,7 +2767,7 @@ mod windows_app {
                 let hdc = wparam as windows_sys::Win32::Graphics::Gdi::HDC;
                 SetTextColor(hdc, typeless_popup_editor_text_color());
                 SetBkColor(hdc, typeless_popup_editor_fill_color());
-                SetBkMode(hdc, TRANSPARENT as i32);
+                SetBkMode(hdc, copy_popup_edit_background_mode());
                 copy_popup_edit_brush() as isize
             }
             WM_ERASEBKGND => 1,
@@ -2125,6 +2851,21 @@ mod windows_app {
         }
     }
 
+    fn local_asr_bootstrap_allows_packaged_daemon(
+        status: &LocalAsrBootstrapStatus,
+        has_explicit_model: bool,
+        has_installed_model: bool,
+    ) -> bool {
+        match status {
+            LocalAsrBootstrapStatus::Downloading
+            | LocalAsrBootstrapStatus::NotStarted
+            | LocalAsrBootstrapStatus::FallbackCloud(_) => {
+                has_explicit_model || has_installed_model
+            }
+            LocalAsrBootstrapStatus::EngineeringFallback | LocalAsrBootstrapStatus::Ready => true,
+        }
+    }
+
     fn ensure_packaged_local_asr_daemon(
         shared: &mut SharedState,
         config: &TalkConfig,
@@ -2134,11 +2875,17 @@ mod windows_app {
         };
         let endpoint = service.endpoint.clone();
 
-        match &shared.local_asr_bootstrap_status {
-            LocalAsrBootstrapStatus::Downloading
-            | LocalAsrBootstrapStatus::NotStarted
-            | LocalAsrBootstrapStatus::FallbackCloud(_) => return Ok(false),
-            LocalAsrBootstrapStatus::EngineeringFallback | LocalAsrBootstrapStatus::Ready => {}
+        let has_explicit_model = service.local_daemon.is_some();
+        let has_installed_model = shared
+            .product_model_root
+            .as_deref()
+            .is_some_and(desktop_product_local_asr_model_available);
+        if !local_asr_bootstrap_allows_packaged_daemon(
+            &shared.local_asr_bootstrap_status,
+            has_explicit_model,
+            has_installed_model,
+        ) {
+            return Ok(false);
         }
 
         if let Some(mut daemon) = shared.local_asr_daemon.take() {
@@ -2284,8 +3031,12 @@ mod windows_app {
             shell_state,
             config_path,
             pending_hotkey_origin_insert_target,
+            mut pending_document_correction_task,
         ) = {
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            if shared.shutting_down {
+                anyhow::bail!("Talk desktop is shutting down");
+            }
             if !shared.shell_state.can_start_session() {
                 anyhow::bail!("Talk desktop is already busy");
             }
@@ -2327,8 +3078,10 @@ mod windows_app {
                 } else {
                     None
                 },
+                shared.pending_document_correction_task.take(),
             )
         };
+        runtime_handle.block_on(abort_pending_task(&mut pending_document_correction_task));
 
         let mut session = VoiceSession::new(session_id.clone());
         session
@@ -2343,13 +3096,16 @@ mod windows_app {
                     pending_hotkey_origin_insert_target.as_ref(),
                     release_time_origin_target.as_ref(),
                 );
-                let origin_insert_target_source = if pending_hotkey_origin_insert_target.is_some() {
-                    Some("hotkey_pending_pretrigger".to_string())
-                } else if release_time_origin_target.is_some() {
-                    Some("hotkey_release_time".to_string())
-                } else {
-                    None
-                };
+                let origin_insert_target_source =
+                    origin_insert_target.as_ref().and_then(|target| {
+                        if pending_hotkey_origin_insert_target.as_ref() == Some(target) {
+                            Some("hotkey_pending_pretrigger".to_string())
+                        } else if release_time_origin_target.as_ref() == Some(target) {
+                            Some("hotkey_release_time".to_string())
+                        } else {
+                            None
+                        }
+                    });
                 (
                     origin_insert_target,
                     origin_insert_target_source,
@@ -2438,10 +3194,11 @@ mod windows_app {
                                 Ok(streaming_session) => Some(streaming_session),
                                 Err(error) => {
                                     let _ = recording.cancel();
-                                    let _ = complete_failed_session(
+                                    let _ = complete_failed_session_with_mode_override(
                                         &config,
                                         session,
                                         trigger_events,
+                                        mode_override,
                                         error,
                                         false,
                                         |_| {},
@@ -2467,10 +3224,11 @@ mod windows_app {
                         }
                     }
                     Err(error) => {
-                        let _ = complete_failed_session(
+                        let _ = complete_failed_session_with_mode_override(
                             &config,
                             session,
                             trigger_events,
+                            mode_override,
                             anyhow::anyhow!(error.to_string()),
                             false,
                             |_| {},
@@ -2486,10 +3244,11 @@ mod windows_app {
                 }
             }
             Err(error) => {
-                let _ = complete_failed_session(
+                let _ = complete_failed_session_with_mode_override(
                     &config,
                     session,
                     trigger_events,
+                    mode_override,
                     anyhow::anyhow!(error.clone()),
                     false,
                     |_| {},
@@ -2504,21 +3263,34 @@ mod windows_app {
             }
         };
 
+        let correction_policy = desktop_live_correction_worker_policy();
         let (live_correction_sender, mut live_correction_receiver) =
-            tokio::sync::mpsc::unbounded_channel::<SpeculativeCloudCorrectionJob>();
+            tokio::sync::mpsc::channel::<SpeculativeCloudCorrectionJob>(
+                correction_policy.queue_capacity,
+            );
         let live_correction_tracker = Arc::new(LiveCorrectionTracker::new(generation));
         let live_correction_shared = Arc::clone(&state.shared);
         let live_correction_worker_tracker = Arc::clone(&live_correction_tracker);
+        let correction_worker_gate = state
+            .shared
+            .lock()
+            .expect("Talk desktop shared state")
+            .correction_worker_gate
+            .clone();
         runtime_handle.spawn(async move {
             while let Some(job) = live_correction_receiver.recv().await {
                 let segment_id = job.segment_id.clone();
-                run_speculative_cloud_correction(
-                    Arc::clone(&live_correction_shared),
-                    Some(Arc::clone(&live_correction_worker_tracker)),
-                    job,
-                )
-                .await;
-                live_correction_worker_tracker.complete_job(&segment_id, None, None);
+                let permit = match correction_worker_gate.acquire().await {
+                    Some(permit) => permit,
+                    None => break,
+                };
+                let shared = Arc::clone(&live_correction_shared);
+                let tracker = Arc::clone(&live_correction_worker_tracker);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    run_speculative_cloud_correction(shared, Some(Arc::clone(&tracker)), job).await;
+                    tracker.complete_job(&segment_id, None, None);
+                });
             }
         });
 
@@ -2531,6 +3303,7 @@ mod windows_app {
             shared.active_recording = Some(ActiveRecording {
                 action_index,
                 mode_override,
+                live_smart_routed_mode: None,
                 generation,
                 session,
                 trigger_events,
@@ -2553,12 +3326,19 @@ mod windows_app {
         }
 
         if source == ActivationSource::Hotkey {
-            spawn_hotkey_origin_enrichment(hwnd, state.hud_hwnd, generation);
+            spawn_hotkey_origin_enrichment(
+                hwnd,
+                state.hud_hwnd,
+                generation,
+                Arc::clone(&state.shared),
+            );
         }
 
         update_tray_icon(hwnd, "Talk: listening")?;
         show_hud_text(hwnd, hud_message_for_phase(RuntimePhase::Recording), None)?;
 
+        let stop_watcher_policy =
+            recording_stop_watcher_policy(trigger_mode, max_recording_seconds);
         if trigger_mode == TriggerMode::PushToTalk && source == ActivationSource::Hotkey {
             if let Some(hotkey) = hotkey {
                 match select_windows_hotkey_binding_strategy(&hotkey) {
@@ -2566,14 +3346,20 @@ mod windows_app {
                         spawn_release_watcher(hwnd, generation, hotkey, max_recording_seconds);
                     }
                     WindowsHotkeyBindingStrategy::LowLevelHook => {
-                        spawn_timeout_watcher(hwnd, generation, max_recording_seconds);
+                        if let DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) =
+                            stop_watcher_policy
+                        {
+                            spawn_timeout_watcher(hwnd, generation, seconds);
+                        }
                     }
                 }
-            } else {
-                spawn_timeout_watcher(hwnd, generation, max_recording_seconds);
+            } else if let DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) =
+                stop_watcher_policy
+            {
+                spawn_timeout_watcher(hwnd, generation, seconds);
             }
         } else {
-            match recording_stop_watcher_policy(trigger_mode, max_recording_seconds) {
+            match stop_watcher_policy {
                 DesktopRecordingStopWatcherPolicy::ManualOnly => {}
                 DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) => {
                     spawn_timeout_watcher(hwnd, generation, seconds);
@@ -2611,7 +3397,8 @@ mod windows_app {
                 | SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => {
                     show_hud_text(hwnd, &text, None)?;
                 }
-                SpeculativeRuntimeEvent::CorrectionRequested { .. } => {}
+                SpeculativeRuntimeEvent::CorrectionRequested { .. }
+                | SpeculativeRuntimeEvent::LocalSegmentsInvalidated { .. } => {}
             }
         }
         Ok(())
@@ -2622,6 +3409,7 @@ mod windows_app {
         hwnd: HWND,
         hud_hwnd: HWND,
         anchor: &SpeculativeInsertAnchor,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
         segment_id: &str,
         corrected_text: &str,
         received_at_ms: u64,
@@ -2634,6 +3422,16 @@ mod windows_app {
         else {
             return Ok(false);
         };
+        if desktop_output_plan(
+            OutputMode::ClipboardPaste,
+            origin_insert_target,
+            current_context.as_ref(),
+        )
+        .insert_target
+            != Some(current_target)
+        {
+            return Ok(false);
+        }
         let candidate = SpeculativePatchCandidate::new(
             current_target.window_handle,
             current_target.focus_handle,
@@ -2657,10 +3455,11 @@ mod windows_app {
         } else {
             ClipboardRestorePolicy::LeaveInsertedText
         };
-        let inserter = ClipboardPasteInserter::new(
+        let inserter = ClipboardPasteInserter::with_settle_delay(
             WindowsClipboardBackend,
             WindowsPasteShortcut,
             restore_policy,
+            Duration::from_millis(desktop_live_clipboard_settle_delay_ms()),
         );
         inserter.insert_text(corrected_text)?;
         Ok(true)
@@ -2685,6 +3484,25 @@ mod windows_app {
     fn capture_current_insert_target_text(context: &DesktopInsertTargetContext) -> Option<String> {
         let target = context.target?;
         ensure_uia_com_initialized_for_current_thread();
+
+        if let Some(focus_handle) = target.focus_handle {
+            let focus_hwnd = focus_handle as HWND;
+            if !focus_hwnd.is_null() {
+                if let Ok(automation) = UIAutomation::new() {
+                    if let Ok(element) = automation
+                        .element_from_handle(UiAutomationHandle::from(WinHwnd(focus_hwnd)))
+                    {
+                        if let Some(text) = automation_element_current_text(&element) {
+                            return Some(text);
+                        }
+                    }
+                }
+                if let Some(text) = window_text(focus_hwnd) {
+                    return Some(text);
+                }
+            }
+        }
+
         if let Ok(automation) = UIAutomation::new() {
             if let Ok(element) = automation.get_focused_element() {
                 if let Some(text) = automation_element_current_text(&element) {
@@ -2692,7 +3510,7 @@ mod windows_app {
                 }
             }
 
-            let candidate_hwnd = target.focus_handle.unwrap_or(target.window_handle) as HWND;
+            let candidate_hwnd = target.window_handle as HWND;
             if !candidate_hwnd.is_null() {
                 if let Ok(element) = automation
                     .element_from_handle(UiAutomationHandle::from(WinHwnd(candidate_hwnd)))
@@ -2704,16 +3522,13 @@ mod windows_app {
             }
         }
 
-        target
-            .focus_handle
-            .or(Some(target.window_handle))
-            .and_then(|handle| window_text(handle as HWND))
+        window_text(target.window_handle as HWND)
     }
 
     fn apply_document_recorrection_patch_if_safe(
         hwnd: HWND,
         hud_hwnd: HWND,
-        anchor: &SpeculativeInsertAnchor,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
         inserted_segments: &[String],
         corrected_text: &str,
         restore_clipboard: bool,
@@ -2729,8 +3544,13 @@ mod windows_app {
         let Some(current_target) = current_context.target else {
             return Ok(false);
         };
-        let target_still_safe = anchor.window_handle == current_target.window_handle
-            && anchor.focus_handle == current_target.focus_handle;
+        let target_still_safe = desktop_output_plan(
+            OutputMode::ClipboardPaste,
+            origin_insert_target,
+            Some(current_context),
+        )
+        .insert_target
+            == Some(current_target);
         if !target_still_safe {
             return Ok(false);
         }
@@ -2767,15 +3587,91 @@ mod windows_app {
         Ok(true)
     }
 
+    fn document_recorrection_generation_is_current_for_shared(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+    ) -> bool {
+        shared.lock().ok().is_some_and(|shared| {
+            desktop_document_recorrection_generation_is_current(shared.next_generation, generation)
+        })
+    }
+
+    fn apply_document_recorrection_patch_if_current(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        hwnd: HWND,
+        hud_hwnd: HWND,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
+        inserted_segments: &[String],
+        corrected_text: &str,
+        restore_clipboard: bool,
+    ) -> Result<bool> {
+        // Keep the generation lease through the target mutation. begin_recording also
+        // takes this mutex, so a newer session cannot start between the check and Ctrl+A.
+        let generation_lease = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk shared state is poisoned"))?;
+        if !desktop_document_recorrection_generation_is_current(
+            generation_lease.next_generation,
+            generation,
+        ) {
+            return Ok(false);
+        }
+        apply_document_recorrection_patch_if_safe(
+            hwnd,
+            hud_hwnd,
+            origin_insert_target,
+            inserted_segments,
+            corrected_text,
+            restore_clipboard,
+        )
+    }
+
+    enum SpeculativeProviderWait<T> {
+        Completed(T),
+        TimedOut,
+        Cancelled,
+    }
+
+    async fn wait_for_speculative_provider<T, F>(
+        live_tracker: Option<&LiveCorrectionTracker>,
+        timeout: Duration,
+        provider: F,
+    ) -> SpeculativeProviderWait<T>
+    where
+        F: Future<Output = T>,
+    {
+        if let Some(tracker) = live_tracker {
+            tokio::select! {
+                _ = tracker.wait_until_cancelled() => SpeculativeProviderWait::Cancelled,
+                result = tokio::time::timeout(timeout, provider) => match result {
+                    Ok(result) => SpeculativeProviderWait::Completed(result),
+                    Err(_) => SpeculativeProviderWait::TimedOut,
+                },
+            }
+        } else {
+            match tokio::time::timeout(timeout, provider).await {
+                Ok(result) => SpeculativeProviderWait::Completed(result),
+                Err(_) => SpeculativeProviderWait::TimedOut,
+            }
+        }
+    }
+
     async fn run_speculative_cloud_correction(
         shared: Arc<Mutex<SharedState>>,
         live_tracker: Option<Arc<LiveCorrectionTracker>>,
         job: SpeculativeCloudCorrectionJob,
     ) {
+        let mut timing = LiveCorrectionTiming::new(&job);
+        let foreground_apply_gate = shared
+            .lock()
+            .ok()
+            .map(|shared| shared.foreground_apply_gate.clone());
         if live_tracker
             .as_ref()
             .is_some_and(|tracker| !tracker.can_process(job.segment_id.as_str()))
         {
+            timing.outcome("stale_or_cancelled");
             return;
         }
         if live_tracker.is_none()
@@ -2786,6 +3682,14 @@ mod windows_app {
                 job.segment_id.as_str(),
             )
         {
+            timing.outcome("stale_unanchored");
+            return;
+        }
+        if live_tracker.is_none()
+            && !job.full_document_inserted_segments.is_empty()
+            && !document_recorrection_generation_is_current_for_shared(&shared, job.generation)
+        {
+            timing.outcome("stale_document");
             return;
         }
 
@@ -2809,38 +3713,242 @@ mod windows_app {
                 Value::String(context_before.to_string()),
             );
         }
-        let corrected_text = match process_voice_transcript_text(
-            &job.config,
-            job.transcript.clone(),
-            job.mode_override,
-            front_context,
+        timing.provider_started();
+        let provider_timeout =
+            Duration::from_millis(desktop_live_correction_worker_policy().provider_timeout_ms);
+        let RuntimeProcessedOutput {
+            text: corrected_text,
+            faithful_validation,
+        } = match wait_for_speculative_provider(
+            live_tracker.as_deref(),
+            provider_timeout,
+            process_voice_transcript_text_with_diagnostics(
+                &job.config,
+                job.transcript.clone(),
+                Some(job.processing_mode),
+                front_context,
+            ),
         )
         .await
         {
-            Ok(text) => text,
-            Err(error) => {
+            SpeculativeProviderWait::Completed(Ok(output)) => {
+                timing.provider_finished();
+                output
+            }
+            SpeculativeProviderWait::Completed(Err(error)) => {
+                timing.provider_finished();
                 eprintln!("Talk speculative cloud correction failed: {error:#}");
+                let Some(output) =
+                    live_correction_local_fallback_output(live_tracker.as_ref(), &job)
+                else {
+                    timing.outcome("provider_error");
+                    return;
+                };
+                output
+            }
+            SpeculativeProviderWait::TimedOut => {
+                timing.provider_finished();
+                let Some(output) =
+                    live_correction_local_fallback_output(live_tracker.as_ref(), &job)
+                else {
+                    timing.outcome("provider_timeout");
+                    return;
+                };
+                output
+            }
+            SpeculativeProviderWait::Cancelled => {
+                timing.provider_finished();
+                timing.outcome("cancelled");
                 return;
             }
         };
+        if let Some(tracker) = live_tracker.as_ref() {
+            if !tracker.wait_until_apply_turn(job.segment_id.as_str()).await {
+                timing.outcome("cancelled_before_apply");
+                return;
+            }
+        }
+        let corrected_text =
+            desktop_correction_text_with_local_boundary(&job.transcript, &corrected_text);
+        timing.apply_started();
 
         if corrected_text.trim().is_empty() {
+            timing.outcome("empty_result");
             return;
         }
-        if job.anchor.is_some() && corrected_text == job.transcript {
+        if let Some(session_log_path) = job.session_log_path.as_deref() {
+            if let Err(error) = update_session_log_after_text_processing(
+                session_log_path,
+                &corrected_text,
+                faithful_validation,
+            ) {
+                eprintln!(
+                    "Talk final text processing log update failed for {}: {error:#}",
+                    session_log_path.display()
+                );
+            }
+        }
+        if job.anchor.is_none() {
+            if let Some(tracker) = live_tracker.as_ref() {
+                let Some(_apply_lease) = tracker.acquire_apply_lease(job.segment_id.as_str())
+                else {
+                    timing.outcome("cancelled_before_apply");
+                    return;
+                };
+                tracker.record_result(job.segment_id.as_str(), &corrected_text, None);
+
+                let current_smart_routed_mode = shared.lock().ok().and_then(|shared| {
+                    shared
+                        .active_recording
+                        .as_ref()
+                        .filter(|active| active.generation == job.generation)
+                        .and_then(|active| active.live_smart_routed_mode)
+                });
+                let target_apply_allowed = live_correction_job_target_apply_allowed(
+                    job.allow_target_apply,
+                    job.latest_live_segment_guard.is_some(),
+                    job.requested_mode,
+                    current_smart_routed_mode,
+                );
+                if !target_apply_allowed {
+                    if tracker.should_show_live_feedback() {
+                        queue_live_streaming_corrected_hud(
+                            job.hwnd_value as HWND,
+                            job.generation,
+                            &corrected_text,
+                        );
+                    }
+                    timing.outcome("recorded_for_backlog");
+                    return;
+                }
+
+                let Some(foreground_apply_gate) = foreground_apply_gate else {
+                    if tracker.should_show_live_feedback() {
+                        queue_live_streaming_corrected_hud(
+                            job.hwnd_value as HWND,
+                            job.generation,
+                            &corrected_text,
+                        );
+                    }
+                    timing.outcome("foreground_gate_unavailable");
+                    return;
+                };
+                let foreground_apply_lease = foreground_apply_gate.acquire();
+                if !correction_foreground_side_effects_allowed_for_shared(&shared, job.generation) {
+                    if tracker.should_show_live_feedback() {
+                        queue_live_streaming_corrected_hud(
+                            job.hwnd_value as HWND,
+                            job.generation,
+                            &corrected_text,
+                        );
+                    }
+                    timing.outcome("stale_before_foreground_apply");
+                    return;
+                }
+
+                for anchor in insert_live_streaming_corrected_backlog_if_safe(
+                    &job.config,
+                    job.hwnd_value as HWND,
+                    job.hud_hwnd_value as HWND,
+                    job.origin_insert_target.as_ref(),
+                    tracker,
+                ) {
+                    mirror_live_streaming_inserted_anchor(&shared, job.generation, anchor);
+                }
+                let inserted = tracker.snapshot().iter().any(|segment| {
+                    segment.segment_id == job.segment_id && segment.insert_anchor.is_some()
+                });
+                drop(foreground_apply_lease);
+
+                if tracker.should_show_live_feedback() {
+                    queue_live_streaming_corrected_hud(
+                        job.hwnd_value as HWND,
+                        job.generation,
+                        &corrected_text,
+                    );
+                    timing.outcome(if inserted { "patched" } else { "hud_refreshed" });
+                } else {
+                    timing.outcome(if inserted { "patched" } else { "recorded" });
+                }
+                return;
+            }
+        }
+        let current_smart_routed_mode = shared.lock().ok().and_then(|shared| {
+            shared
+                .active_recording
+                .as_ref()
+                .filter(|active| active.generation == job.generation)
+                .and_then(|active| active.live_smart_routed_mode)
+        });
+        let target_apply_allowed = live_correction_job_target_apply_allowed(
+            job.allow_target_apply,
+            job.latest_live_segment_guard.is_some(),
+            job.requested_mode,
+            current_smart_routed_mode,
+        );
+        if live_tracker.is_some() && !target_apply_allowed {
+            if let Some(tracker) = live_tracker.as_ref() {
+                tracker.record_result(job.segment_id.as_str(), &corrected_text, job.anchor.clone());
+                if tracker.should_show_live_feedback() {
+                    queue_live_streaming_corrected_hud(
+                        job.hwnd_value as HWND,
+                        job.generation,
+                        &corrected_text,
+                    );
+                }
+            }
+            timing.outcome("recorded_for_backlog");
+            return;
+        }
+        let _apply_lease = if let Some(tracker) = live_tracker.as_ref() {
+            let Some(lease) = tracker.acquire_apply_lease(job.segment_id.as_str()) else {
+                timing.outcome("cancelled_before_apply");
+                return;
+            };
+            Some(lease)
+        } else {
+            None
+        };
+        if speculative_correction_unchanged_fast_path_allowed(&job, &corrected_text) {
             if let (Some(tracker), Some(anchor)) = (live_tracker.as_ref(), job.anchor.clone()) {
                 tracker.record_result(job.segment_id.as_str(), &corrected_text, Some(anchor));
+                if matches!(
+                    desktop_live_correction_presentation(
+                        true,
+                        tracker.should_show_live_feedback(),
+                        false,
+                    ),
+                    DesktopLiveCorrectionPresentation::RefreshHud
+                ) {
+                    queue_live_streaming_corrected_hud(
+                        job.hwnd_value as HWND,
+                        job.generation,
+                        &corrected_text,
+                    );
+                }
             }
+            timing.outcome("unchanged");
             return;
         }
 
         let received_at_ms = job.started_at.elapsed().as_millis() as u64;
+        let Some(foreground_apply_gate) = foreground_apply_gate else {
+            timing.outcome("foreground_gate_unavailable");
+            return;
+        };
+        let foreground_apply_lease = foreground_apply_gate.acquire();
+        if !correction_foreground_side_effects_allowed_for_shared(&shared, job.generation) {
+            timing.outcome("stale_before_foreground_apply");
+            return;
+        }
         let patched = if let Some(anchor) = job.anchor.as_ref() {
             if !job.full_document_inserted_segments.is_empty() {
-                match apply_document_recorrection_patch_if_safe(
+                match apply_document_recorrection_patch_if_current(
+                    &shared,
+                    job.generation,
                     job.hwnd_value as HWND,
                     job.hud_hwnd_value as HWND,
-                    anchor,
+                    job.origin_insert_target.as_ref(),
                     &job.full_document_inserted_segments,
                     &corrected_text,
                     job.config.output.restore_clipboard,
@@ -2851,37 +3959,55 @@ mod windows_app {
                         false
                     }
                 }
-            } else if job.latest_live_segment_guard.is_none_or(|guard| {
-                live_streaming_correction_anchor_still_latest(
-                    &shared,
-                    guard,
-                    anchor.segment_id.as_str(),
-                )
-            }) {
-                match apply_speculative_correction_patch_if_safe(
-                    job.hwnd_value as HWND,
-                    job.hud_hwnd_value as HWND,
-                    anchor,
-                    anchor.segment_id.as_str(),
-                    &corrected_text,
-                    received_at_ms,
-                    job.config.speculative.max_patch_age_ms,
-                    job.config.speculative.max_auto_patch_edit_ratio,
-                    job.config.output.restore_clipboard,
-                ) {
-                    Ok(patched) => {
-                        record_live_tracker_result_for_anchor(
+            } else {
+                let patch_allowed = job.allow_target_apply
+                    && job.latest_live_segment_guard.is_none_or(|guard| {
+                        live_streaming_correction_anchor_still_latest(
                             &shared,
-                            live_tracker.as_ref(),
-                            &job,
+                            guard,
+                            anchor.segment_id.as_str(),
+                        )
+                    });
+                match desktop_live_correction_anchor_policy(live_tracker.is_some(), patch_allowed) {
+                    DesktopLiveCorrectionAnchorPolicy::PatchAndRecord => {
+                        match apply_speculative_correction_patch_if_safe(
+                            job.hwnd_value as HWND,
+                            job.hud_hwnd_value as HWND,
                             anchor,
+                            job.origin_insert_target.as_ref(),
+                            anchor.segment_id.as_str(),
                             &corrected_text,
-                            patched,
-                        );
-                        patched
+                            received_at_ms,
+                            job.config.speculative.max_patch_age_ms,
+                            job.config.speculative.max_auto_patch_edit_ratio,
+                            job.config.output.restore_clipboard,
+                        ) {
+                            Ok(patched) => {
+                                record_live_tracker_result_for_anchor(
+                                    &shared,
+                                    live_tracker.as_ref(),
+                                    &job,
+                                    anchor,
+                                    &corrected_text,
+                                    patched,
+                                );
+                                patched
+                            }
+                            Err(error) => {
+                                eprintln!("Talk speculative correction patch failed: {error:#}");
+                                record_live_tracker_result_for_anchor(
+                                    &shared,
+                                    live_tracker.as_ref(),
+                                    &job,
+                                    anchor,
+                                    &corrected_text,
+                                    false,
+                                );
+                                false
+                            }
+                        }
                     }
-                    Err(error) => {
-                        eprintln!("Talk speculative correction patch failed: {error:#}");
+                    DesktopLiveCorrectionAnchorPolicy::RecordOnly => {
                         record_live_tracker_result_for_anchor(
                             &shared,
                             live_tracker.as_ref(),
@@ -2892,70 +4018,86 @@ mod windows_app {
                         );
                         false
                     }
-                }
-            } else {
-                false
-            }
-        } else if let Some(tracker) = live_tracker.as_ref() {
-            match insert_live_streaming_corrected_segment_with_tracker(
-                &shared,
-                tracker,
-                &job,
-                &corrected_text,
-            ) {
-                Ok(LiveStreamingCorrectionInsertOutcome::Inserted) => {
-                    if tracker.should_show_live_feedback() {
-                        queue_live_streaming_corrected_hud(
-                            job.hwnd_value as HWND,
-                            job.generation,
-                            &corrected_text,
-                        );
-                    }
-                    true
-                }
-                Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget) => false,
-                Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate) => return,
-                Err(error) => {
-                    eprintln!("Talk corrected streaming insert failed: {error:#}");
-                    false
+                    DesktopLiveCorrectionAnchorPolicy::Ignore => false,
                 }
             }
         } else {
             false
         };
+        drop(foreground_apply_lease);
 
-        if patched {
-            return;
-        }
-
-        if live_tracker
-            .as_ref()
-            .is_some_and(|tracker| !tracker.should_show_live_feedback())
-        {
-            return;
+        match desktop_live_correction_presentation(
+            live_tracker.is_some(),
+            live_tracker
+                .as_ref()
+                .is_some_and(|tracker| tracker.should_show_live_feedback()),
+            patched,
+        ) {
+            DesktopLiveCorrectionPresentation::RefreshHud => {
+                queue_live_streaming_corrected_hud(
+                    job.hwnd_value as HWND,
+                    job.generation,
+                    &corrected_text,
+                );
+                timing.outcome(if patched { "patched" } else { "hud_refreshed" });
+                return;
+            }
+            DesktopLiveCorrectionPresentation::None => {
+                timing.outcome(if patched { "patched" } else { "recorded" });
+                return;
+            }
+            DesktopLiveCorrectionPresentation::ShowCopyPopup => {}
         }
 
         if job
             .latest_live_segment_guard
             .is_some_and(|guard| !live_streaming_correction_generation_is_active(&shared, guard))
         {
+            timing.outcome("stale_before_popup");
             return;
         }
 
-        if let Ok(mut shared) = shared.lock() {
-            shared.pending_copy_popup = Some(PendingCopyPopup {
-                generation: job.generation,
-                model: desktop_copy_popup_model(&corrected_text),
-            });
+        let queued = if let Ok(mut shared) = shared.lock() {
+            if desktop_document_recorrection_generation_is_current(
+                shared.next_generation,
+                job.generation,
+            ) {
+                shared.pending_copy_popup = Some(PendingCopyPopup {
+                    generation: job.generation,
+                    model: desktop_copy_popup_model(&corrected_text),
+                });
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if queued {
+            unsafe {
+                let _ = PostMessageW(
+                    job.hwnd_value as HWND,
+                    CORRECTION_COPY_POPUP_MESSAGE,
+                    job.generation as usize,
+                    0,
+                );
+            }
+            timing.outcome("popup_queued");
+        } else {
+            timing.outcome("popup_skipped");
         }
-        unsafe {
-            let _ = PostMessageW(
-                job.hwnd_value as HWND,
-                CORRECTION_COPY_POPUP_MESSAGE,
-                job.generation as usize,
-                0,
-            );
-        }
+    }
+
+    fn live_correction_local_fallback_output(
+        live_tracker: Option<&Arc<LiveCorrectionTracker>>,
+        job: &SpeculativeCloudCorrectionJob,
+    ) -> Option<RuntimeProcessedOutput> {
+        let tracker = live_tracker?;
+        let text = tracker.local_fallback_text(job.segment_id.as_str())?;
+        Some(RuntimeProcessedOutput {
+            text,
+            faithful_validation: None,
+        })
     }
 
     fn record_live_tracker_result_for_anchor(
@@ -2994,7 +4136,38 @@ mod windows_app {
         shared: Arc<Mutex<SharedState>>,
         job: SpeculativeCloudCorrectionJob,
     ) {
-        runtime_handle.spawn(run_speculative_cloud_correction(shared, None, job));
+        let correction_worker_gate = match shared.lock() {
+            Ok(shared) => shared.correction_worker_gate.clone(),
+            Err(_) => return,
+        };
+        let generation = job.generation;
+        let task_shared = Arc::clone(&shared);
+        let task = runtime_handle.spawn(async move {
+            let Some(_permit) = correction_worker_gate.acquire().await else {
+                return;
+            };
+            run_speculative_cloud_correction(task_shared, None, job).await;
+        });
+        let mut task = Some(task);
+
+        if let Ok(mut shared) = shared.lock() {
+            if !shared.shutting_down
+                && desktop_document_recorrection_generation_is_current(
+                    shared.next_generation,
+                    generation,
+                )
+            {
+                if let Some((_, previous_task)) = shared.pending_document_correction_task.take() {
+                    previous_task.abort();
+                }
+                shared.pending_document_correction_task =
+                    Some((generation, task.take().expect("document correction task")));
+            }
+        }
+
+        if let Some(task) = task {
+            task.abort();
+        }
     }
 
     fn live_streaming_correction_anchor_still_latest(
@@ -3069,51 +4242,6 @@ mod windows_app {
             == DesktopLiveCorrectionEligibility::Process
     }
 
-    fn insert_live_streaming_corrected_segment_with_tracker(
-        shared: &Arc<Mutex<SharedState>>,
-        tracker: &Arc<LiveCorrectionTracker>,
-        job: &SpeculativeCloudCorrectionJob,
-        corrected_text: &str,
-    ) -> Result<LiveStreamingCorrectionInsertOutcome> {
-        let mut tracker_state = tracker
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Talk live correction tracker is poisoned"))?;
-        let active_generation = (!tracker_state.cancelled).then_some(tracker.generation);
-        let Some(segment) = tracker_state
-            .segments
-            .iter_mut()
-            .find(|segment| segment.segment_id == job.segment_id)
-        else {
-            return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
-        };
-        let already_inserted = segment.corrected_text.is_some();
-        if desktop_live_correction_eligibility(active_generation, job.generation, already_inserted)
-            != DesktopLiveCorrectionEligibility::Process
-        {
-            return Ok(LiveStreamingCorrectionInsertOutcome::StaleOrDuplicate);
-        }
-
-        let anchor = insert_live_streaming_segment_if_safe(
-            &job.config,
-            job.hwnd_value as HWND,
-            job.hud_hwnd_value as HWND,
-            None,
-            job.segment_id.as_str(),
-            corrected_text,
-            DesktopTextLifecycleState::Corrected,
-        )?;
-        segment.corrected_text = Some(corrected_text.to_string());
-        let Some(anchor) = anchor else {
-            return Ok(LiveStreamingCorrectionInsertOutcome::NoEditableTarget);
-        };
-        segment.insert_anchor = Some(anchor.clone());
-        drop(tracker_state);
-
-        mirror_live_streaming_inserted_anchor(shared, job.generation, anchor);
-        Ok(LiveStreamingCorrectionInsertOutcome::Inserted)
-    }
-
     fn mirror_live_streaming_inserted_anchor(
         shared: &Arc<Mutex<SharedState>>,
         generation: u64,
@@ -3145,23 +4273,46 @@ mod windows_app {
             .insert(anchor.segment_id.clone(), anchor);
     }
 
-    fn queue_live_streaming_corrected_hud(hwnd: HWND, generation: u64, corrected_text: &str) {
-        if let Ok(mut overlay) = overlay_ui_state().lock() {
-            let meter_bins = overlay.hud_meter_bins;
-            overlay.hud_streaming_corrected_text = Some(corrected_text.to_string());
-            if let Some(hud_model) = overlay
-                .hud_model
-                .as_mut()
-                .filter(|model| model.visual_state == DesktopHudVisualState::Listening)
-            {
-                *hud_model =
-                    desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
-                        meter_bins,
-                        Some(corrected_text),
-                        DesktopTextLifecycleState::Corrected,
+    fn insert_live_streaming_corrected_backlog_if_safe(
+        config: &TalkConfig,
+        hwnd: HWND,
+        hud_hwnd: HWND,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
+        tracker: &Arc<LiveCorrectionTracker>,
+    ) -> Vec<SpeculativeInsertAnchor> {
+        let backlog = desktop_live_correction_ordered_backlog(&tracker.snapshot());
+        let mut anchors = Vec::new();
+        for item in backlog {
+            let anchor = match insert_live_streaming_segment_if_safe(
+                config,
+                hwnd,
+                hud_hwnd,
+                origin_insert_target,
+                item.segment_id.as_str(),
+                item.corrected_text.as_str(),
+                DesktopTextLifecycleState::Corrected,
+            ) {
+                Ok(Some(anchor)) => anchor,
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!(
+                        "Talk corrected streaming backlog insert failed for {}: {error:#}",
+                        item.segment_id
                     );
-            }
+                    break;
+                }
+            };
+            tracker.record_result(
+                item.segment_id.as_str(),
+                item.corrected_text.as_str(),
+                Some(anchor.clone()),
+            );
+            anchors.push(anchor);
         }
+        anchors
+    }
+
+    fn queue_live_streaming_corrected_hud(hwnd: HWND, generation: u64, _corrected_text: &str) {
         unsafe {
             let _ = PostMessageW(
                 hwnd,
@@ -3229,10 +4380,11 @@ mod windows_app {
         } else {
             ClipboardRestorePolicy::LeaveInsertedText
         };
-        let inserter = ClipboardPasteInserter::new(
+        let inserter = ClipboardPasteInserter::with_settle_delay(
             WindowsClipboardBackend,
             WindowsPasteShortcut,
             restore_policy,
+            Duration::from_millis(desktop_live_clipboard_settle_delay_ms()),
         );
         let insert_result = inserter.insert_text(&text);
 
@@ -3259,8 +4411,11 @@ mod windows_app {
         config: &TalkConfig,
         pipeline_config: &DesktopSpeculativePipelineConfig,
         event: &SpeculativeRuntimeEvent,
+        requested_mode: VoiceMode,
         anchor: Option<&SpeculativeInsertAnchor>,
-        mode_override: Option<VoiceMode>,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
+        latest_live_segment_guard: Option<LatestLiveSegmentGuard>,
+        allow_target_apply: bool,
         generation: u64,
         hwnd_value: usize,
         hud_hwnd_value: usize,
@@ -3288,15 +4443,80 @@ mod windows_app {
             segment_id: model.segment_id,
             transcript: model.local_text,
             context_before: Some(model.context_before),
-            mode_override,
+            processing_mode: desktop_live_correction_processing_mode(),
+            requested_mode,
+            origin_insert_target: origin_insert_target.cloned(),
             anchor,
             full_document_inserted_segments: Vec::new(),
-            latest_live_segment_guard: Some(LatestLiveSegmentGuard { generation }),
+            session_log_path: None,
+            latest_live_segment_guard,
+            allow_target_apply,
             generation,
             started_at: Instant::now(),
             hwnd_value,
             hud_hwnd_value,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn speculative_correction_job_for_final_document(
+        config: &TalkConfig,
+        segment_id: &str,
+        transcript: String,
+        requested_mode: VoiceMode,
+        smart_routed_mode: Option<VoiceMode>,
+        origin_insert_target: Option<&DesktopInsertTargetContext>,
+        target: ForegroundInsertTarget,
+        full_document_inserted_segments: Vec<String>,
+        session_log_path: PathBuf,
+        generation: u64,
+        hwnd_value: usize,
+        hud_hwnd_value: usize,
+    ) -> Result<SpeculativeCloudCorrectionJob> {
+        let anchor = SpeculativeInsertAnchor::new(
+            target.window_handle,
+            target.focus_handle,
+            segment_id,
+            transcript.clone(),
+            0,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
+
+        Ok(SpeculativeCloudCorrectionJob {
+            config: config.clone(),
+            segment_id: segment_id.to_string(),
+            transcript,
+            context_before: None,
+            processing_mode: desktop_final_correction_processing_mode(
+                requested_mode,
+                smart_routed_mode,
+            ),
+            requested_mode,
+            origin_insert_target: origin_insert_target.cloned(),
+            anchor: Some(anchor),
+            full_document_inserted_segments,
+            session_log_path: Some(session_log_path),
+            latest_live_segment_guard: None,
+            allow_target_apply: true,
+            generation,
+            started_at: Instant::now(),
+            hwnd_value,
+            hud_hwnd_value,
+        })
+    }
+
+    fn speculative_correction_unchanged_fast_path_allowed(
+        job: &SpeculativeCloudCorrectionJob,
+        corrected_text: &str,
+    ) -> bool {
+        if job.anchor.is_none() {
+            return false;
+        }
+        if job.full_document_inserted_segments.is_empty() {
+            return corrected_text == job.transcript;
+        }
+
+        corrected_text == job.full_document_inserted_segments.concat()
     }
 
     fn send_shift_left_selection(count: usize) -> Result<()> {
@@ -3371,7 +4591,7 @@ mod windows_app {
             Ok(state) => state,
             Err(_) => return,
         };
-        let (config, runtime_handle, mut active) = {
+        let (config, runtime_handle, mut active, foreground_apply_gate) = {
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
             let Some(active) = shared.active_recording.take() else {
                 return;
@@ -3383,20 +4603,32 @@ mod windows_app {
             shared.shell_state = shared.shell_state.set_busy();
             shared.worker_generation = Some(generation);
             shared.current_phase = Some(RuntimePhase::Transcribing);
-            let Some(config) = shared.config.clone() else {
+            let config = shared.config.clone();
+            if config.is_none() {
                 shared.shell_state = shared.shell_state.complete();
                 shared.current_phase = None;
                 shared.worker_generation = None;
-                return;
-            };
-            (config, shared.runtime_handle.clone(), active)
+            }
+            (
+                config,
+                shared.runtime_handle.clone(),
+                active,
+                shared.foreground_apply_gate.clone(),
+            )
+        };
+        let live_correction_tracker = Arc::clone(&active.live_streaming_correction_tracker);
+        let Some(config) = config else {
+            live_correction_tracker.cancel();
+            return;
         };
 
         if let Err(error) = active.session.apply(VoiceEvent::TriggerStop) {
-            let _ = complete_failed_session(
+            live_correction_tracker.cancel();
+            let _ = complete_failed_session_with_mode_override(
                 &config,
                 active.session,
                 active.trigger_events,
+                active.mode_override,
                 anyhow::anyhow!(error.to_string()),
                 false,
                 |_| {},
@@ -3405,9 +4637,11 @@ mod windows_app {
             return;
         }
         active.trigger_events.push("trigger_stop");
-        let live_correction_tracker = Arc::clone(&active.live_streaming_correction_tracker);
-        active.live_streaming_correction_tracker.mark_stopping();
-        active.live_streaming_correction_sender.take();
+        let live_correction_sender = active.live_streaming_correction_sender.take();
+        let mut speculative_runtime_state = std::mem::take(&mut active.speculative_runtime_state);
+        let speculative_segmenter_config = active.speculative_segmenter_config.clone();
+        let existing_live_streaming_anchors = active.live_streaming_inserted_anchors.clone();
+        let mut hud_streaming_segments = std::mem::take(&mut active.hud_streaming_segments);
 
         if show_hud_text(
             hwnd,
@@ -3450,10 +4684,12 @@ mod windows_app {
                 match recording.finish() {
                     Ok(artifact) => StoppedRecordingSource::AudioFile(artifact.path),
                     Err(error) => {
-                        let _ = complete_failed_session(
+                        live_correction_tracker.cancel();
+                        let _ = complete_failed_session_with_mode_override(
                             &config,
                             active.session,
                             active.trigger_events,
+                            active.mode_override,
                             anyhow::anyhow!(error.to_string()),
                             false,
                             |_| {},
@@ -3472,10 +4708,12 @@ mod windows_app {
                 if use_streaming_speculative_asr =>
             {
                 let error = "streaming_service local ASR requires a live recording source";
-                let _ = complete_failed_session(
+                live_correction_tracker.cancel();
+                let _ = complete_failed_session_with_mode_override(
                     &config,
                     active.session,
                     active.trigger_events,
+                    active.mode_override,
                     anyhow::anyhow!(error),
                     false,
                     |_| {},
@@ -3499,17 +4737,20 @@ mod windows_app {
                 eprintln!("Talk mock speculative preview failed: {error:#}");
             }
         } else if speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::Unsupported {
+            live_correction_tracker.cancel();
             let shared = Arc::clone(&state.shared);
+            let worker_registration_shared = Arc::clone(&shared);
             let hwnd_value = hwnd as usize;
             let error_message = format!(
                 "unsupported speculative.local_asr value: {}",
                 speculative_pipeline_config.local_asr
             );
-            runtime_handle.spawn(async move {
-                let result = complete_failed_session(
+            let worker_task = runtime_handle.spawn(async move {
+                let result = complete_failed_session_with_mode_override(
                     &config,
                     active.session,
                     active.trigger_events,
+                    active.mode_override,
                     anyhow::anyhow!(error_message.clone()),
                     false,
                     |phase| unsafe {
@@ -3523,6 +4764,14 @@ mod windows_app {
                 );
 
                 if let Ok(mut shared) = shared.lock() {
+                    if !stop_worker_side_effects_allowed(
+                        shared.shutting_down,
+                        shared.worker_generation,
+                        shared.next_generation,
+                        generation,
+                    ) {
+                        return;
+                    }
                     match result {
                         Ok(report) => {
                             set_last_session(
@@ -3548,6 +4797,7 @@ mod windows_app {
                     );
                 }
             });
+            register_pending_worker_task(&worker_registration_shared, generation, worker_task);
             return;
         }
         let external_asr_command = if use_external_speculative_asr {
@@ -3571,17 +4821,34 @@ mod windows_app {
             "external-asr-final"
         };
 
+        if let Ok(mut shared) = state.shared.lock() {
+            if shared.worker_generation == Some(generation) {
+                shared.pending_stop_live_correction_tracker =
+                    Some(Arc::clone(&live_correction_tracker));
+            }
+        }
+
         let shared = Arc::clone(&state.shared);
+        let worker_registration_shared = Arc::clone(&shared);
         let correction_runtime_handle = runtime_handle.clone();
         let hwnd_value = hwnd as usize;
         let hud_hwnd_value = state.hud_hwnd as usize;
         let output_mode = config.output.mode;
         let mode_override = active.mode_override;
-        let origin_insert_target = active.origin_insert_target.clone();
+        let origin_insert_target = resolve_hotkey_origin_insert_target(
+            active.origin_insert_target.as_ref(),
+            active.release_time_origin_insert_target.as_ref(),
+        );
         let paste_shortcut_overrides = config.desktop.paste.shortcut_overrides.clone();
         let origin_insert_target_for_before_hook = origin_insert_target.clone();
         let origin_insert_target_for_report = origin_insert_target.clone();
-        let origin_insert_target_source = active.origin_insert_target_source.clone();
+        let origin_insert_target_source = if origin_insert_target != active.origin_insert_target
+            && origin_insert_target == active.release_time_origin_insert_target
+        {
+            Some("hotkey_release_time_upgrade".to_string())
+        } else {
+            active.origin_insert_target_source.clone()
+        };
         let pending_hotkey_origin_insert_target =
             active.pending_hotkey_origin_insert_target.clone();
         let release_time_origin_insert_target = active.release_time_origin_insert_target.clone();
@@ -3592,7 +4859,9 @@ mod windows_app {
         let captured_insert_target_context =
             Arc::new(Mutex::new(None::<DesktopInsertTargetContext>));
         let paste_shortcut_env_restore = Arc::new(Mutex::new(None::<Option<OsString>>));
+        let foreground_apply_lease = Arc::new(Mutex::new(None::<ForegroundApplyLease>));
         let runtime_voice_mode = mode_override.unwrap_or_else(|| config.default_voice_mode());
+        let streaming_session_id = active.session.id().to_string();
         let restore_diagnostic_for_before_hook = Arc::clone(&restore_diagnostic);
         let restore_diagnostic_for_after_hook = Arc::clone(&restore_diagnostic);
         let restored_insert_target_for_before_hook = Arc::clone(&restored_insert_target);
@@ -3606,9 +4875,137 @@ mod windows_app {
         let captured_insert_target_context_for_report = Arc::clone(&captured_insert_target_context);
         let paste_shortcut_env_restore_for_before_hook = Arc::clone(&paste_shortcut_env_restore);
         let paste_shortcut_env_restore_for_after_hook = Arc::clone(&paste_shortcut_env_restore);
+        let foreground_apply_gate_for_before_hook = foreground_apply_gate.clone();
+        let foreground_apply_gate_for_stop_dispatch = foreground_apply_gate.clone();
+        let foreground_apply_gate_for_stop_tail = foreground_apply_gate.clone();
+        let foreground_apply_lease_for_before_hook = Arc::clone(&foreground_apply_lease);
+        let foreground_apply_lease_for_after_hook = Arc::clone(&foreground_apply_lease);
         let shared_for_before_hook = Arc::clone(&shared);
-        runtime_handle.spawn(async move {
-            live_correction_tracker.wait_until_idle().await;
+        let worker_task = runtime_handle.spawn(async move {
+            let mut final_runtime_segment_id = None::<String>;
+            let stopped_source = match stopped_source {
+                StoppedRecordingSource::StreamingRecording {
+                    recording,
+                    streaming_session,
+                } => {
+                    let events_result = if let Some(streaming_session) = streaming_session {
+                        streaming_session.stop(recording).await
+                    } else {
+                        let events_result = run_local_streaming_asr_service_from_recording(
+                            &config,
+                            &streaming_session_id,
+                            &recording,
+                            None,
+                        )
+                        .await;
+                        let cancel_result = recording.cancel();
+                        if let Err(error) = cancel_result {
+                            Err(anyhow::anyhow!(error.to_string()))
+                        } else {
+                            events_result
+                        }
+                    };
+
+                    if let Ok(events) = &events_result {
+                        let mut runtime_events = Vec::new();
+                        for event in events.iter().cloned() {
+                            match speculative_runtime_state.accept_asr_event_with_segmentation(
+                                event,
+                                0,
+                                &speculative_segmenter_config,
+                            ) {
+                                Ok(events) => runtime_events.extend(events),
+                                Err(error) => {
+                                    eprintln!(
+                                        "Talk final streaming ASR event segmentation failed: {error}"
+                                    );
+                                }
+                            }
+                        }
+                        for event in &runtime_events {
+                            match event {
+                                SpeculativeRuntimeEvent::DraftUpdated { segment_id, text }
+                                | SpeculativeRuntimeEvent::LocalSegmentCommitted {
+                                    segment_id,
+                                    text,
+                                } => {
+                                    upsert_hud_streaming_segment(
+                                        &mut hud_streaming_segments,
+                                        segment_id,
+                                        text,
+                                    );
+                                    if matches!(
+                                        event,
+                                        SpeculativeRuntimeEvent::LocalSegmentCommitted { .. }
+                                    ) {
+                                        final_runtime_segment_id = Some(segment_id.clone());
+                                    }
+                                }
+                                SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids } => {
+                                    remove_hud_streaming_segments(
+                                        &mut hud_streaming_segments,
+                                        segment_ids,
+                                    );
+                                }
+                                SpeculativeRuntimeEvent::CorrectionRequested { .. } => {}
+                            }
+                        }
+                        if !runtime_events.is_empty() {
+                            if let Some(sender) = live_correction_sender.as_ref() {
+                                let _foreground_apply_lease =
+                                    foreground_apply_gate_for_stop_dispatch.acquire();
+                                if !stop_worker_side_effects_allowed_for_shared(
+                                    &shared,
+                                    generation,
+                                ) {
+                                    return;
+                                }
+                                let _ = dispatch_live_streaming_events(PendingLiveStreamingDispatch {
+                                    config: config.clone(),
+                                    pipeline_config: speculative_pipeline_config.clone(),
+                                    generation,
+                                    origin_insert_target: origin_insert_target.clone(),
+                                    existing_anchors: existing_live_streaming_anchors.clone(),
+                                    live_correction_sender: sender.clone(),
+                                    live_correction_tracker: Arc::clone(
+                                        &live_correction_tracker,
+                                    ),
+                                    events: runtime_events,
+                                    requested_mode: runtime_voice_mode,
+                                    smart_routed_mode: None,
+                                    flush_corrected_backlog: false,
+                                    latest_live_segment_guard: None,
+                                    allow_target_apply: false,
+                                    hwnd_value,
+                                    hud_hwnd_value,
+                                });
+                            }
+                        }
+                    }
+
+                    StoppedRecordingSource::StreamingEvents {
+                        events: events_result,
+                    }
+                }
+                source => source,
+            };
+
+            live_correction_tracker.mark_stopping();
+            drop(live_correction_sender);
+            let correction_policy = desktop_live_correction_worker_policy();
+            if tokio::time::timeout(
+                Duration::from_millis(correction_policy.drain_timeout_ms),
+                live_correction_tracker.wait_until_idle(),
+            )
+            .await
+            .is_err()
+            {
+                live_correction_tracker.cancel();
+                eprintln!(
+                    "Talk live correction drain exceeded {} ms; continuing with completed segments",
+                    correction_policy.drain_timeout_ms
+                );
+            }
             let tracker_snapshot = live_correction_tracker.snapshot();
             let mut live_inserted_anchors_for_stop = tracker_snapshot
                 .iter()
@@ -3624,6 +5021,18 @@ mod windows_app {
                 if !insert_final_transcript_at_stop {
                     return RuntimeInsertDirective::DryRunOnly;
                 }
+                let lease = foreground_apply_gate_for_before_hook.acquire();
+                let Ok(mut lease_slot) = foreground_apply_lease_for_before_hook.lock() else {
+                    return RuntimeInsertDirective::DryRunOnly;
+                };
+                *lease_slot = Some(lease);
+                drop(lease_slot);
+                if !stop_worker_side_effects_allowed_for_shared(
+                    &shared_for_before_hook,
+                    generation,
+                ) {
+                    return RuntimeInsertDirective::DryRunOnly;
+                }
 
                 let current_context = capture_foreground_insert_target_context(
                     hwnd_value as HWND,
@@ -3632,9 +5041,13 @@ mod windows_app {
                 if let Ok(mut slot) = captured_insert_target_context_for_before_hook.lock() {
                     *slot = current_context.clone();
                 }
+                let resolved_origin_target_for_insert = resolve_hotkey_recording_origin_enrichment(
+                    origin_insert_target_for_before_hook.as_ref(),
+                    current_context.as_ref(),
+                );
                 let output_plan = desktop_output_plan(
                     output_mode,
-                    origin_insert_target_for_before_hook.as_ref(),
+                    resolved_origin_target_for_insert.as_ref(),
                     current_context.as_ref(),
                 );
                 if let Ok(mut slot) = selected_output_strategy_for_before_hook.lock() {
@@ -3661,7 +5074,7 @@ mod windows_app {
                     });
                 }
                 unsafe {
-                    let _ = SendMessageW(
+                    let _ = PostMessageW(
                         hwnd_value as HWND,
                         CORRECTED_HUD_MESSAGE,
                         generation as usize,
@@ -3709,6 +5122,11 @@ mod windows_app {
                         }
                     }
                 }
+                if output_mode == OutputMode::ClipboardPaste
+                    && output_plan.strategy == DesktopOutputStrategy::HonorConfiguredOutput
+                {
+                    let _ = wait_for_paste_shortcut_modifier_release();
+                }
                 RuntimeInsertDirective::UseConfiguredOutput
             };
             let after_insert = move || {
@@ -3751,6 +5169,10 @@ mod windows_app {
                         }
                     }
                 }
+
+                if let Ok(mut lease_slot) = foreground_apply_lease_for_after_hook.lock() {
+                    lease_slot.take();
+                }
             };
             let phase_callback = |phase| unsafe {
                 let _ = PostMessageW(
@@ -3762,7 +5184,6 @@ mod windows_app {
             };
             let session = active.session;
             let trigger_events = active.trigger_events;
-            let streaming_session_id = session.id().to_string();
             let result = match (
                 external_asr_command,
                 use_streaming_speculative_asr,
@@ -3786,29 +5207,9 @@ mod windows_app {
                 (
                     None,
                     true,
-                    StoppedRecordingSource::StreamingRecording {
-                        recording,
-                        streaming_session,
-                    },
+                    StoppedRecordingSource::StreamingEvents { events },
                 ) => {
-                    let events_result = if let Some(streaming_session) = streaming_session {
-                        streaming_session.stop(recording).await
-                    } else {
-                        let events_result = run_local_streaming_asr_service_from_recording(
-                            &config,
-                            &streaming_session_id,
-                            &recording,
-                            None,
-                        )
-                        .await;
-                        let cancel_result = recording.cancel();
-                        if let Err(error) = cancel_result {
-                            Err(anyhow::anyhow!(error.to_string()))
-                        } else {
-                            events_result
-                        }
-                    };
-                    match events_result {
+                    match events {
                         Ok(events) => {
                             let selected_event = events
                                 .iter()
@@ -3820,9 +5221,24 @@ mod windows_app {
                                 let transcript =
                                     final_transcript_from_streaming_asr_events(&events)
                                         .unwrap_or_else(|_| selected_event.text().to_string());
-                                let mut session_transcript = desktop_streaming_stop_aggregate(
+                                let pending_segments = hud_streaming_segments
+                                    .iter()
+                                    .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
+                                    .collect::<Vec<_>>();
+                                let route_evidence = SmartRouteEvidence {
+                                    committed_streaming_segment_count:
+                                        desktop_streaming_effective_segment_count(
+                                            &tracker_snapshot,
+                                            &pending_segments,
+                                        ),
+                                };
+                                let mut session_transcript =
+                                    desktop_streaming_stop_aggregate_with_pending(
                                     &tracker_snapshot,
-                                    selected_event.segment_id(),
+                                    &pending_segments,
+                                    final_runtime_segment_id
+                                        .as_deref()
+                                        .unwrap_or(selected_event.segment_id()),
                                     selected_event.text(),
                                 );
                                 if session_transcript.trim().is_empty() {
@@ -3831,12 +5247,13 @@ mod windows_app {
                                 if streaming_stop_policy.insert_final_transcript
                                     && provider_text_processing_credentials_available(&config)
                                 {
-                                    run_voice_session_from_transcript_with_insert_hooks(
+                                    run_voice_session_from_transcript_with_route_evidence_and_insert_hooks(
                                         &config,
                                         session,
                                         trigger_events,
                                         session_transcript,
                                         mode_override,
+                                        route_evidence,
                                         FrontContext::default(),
                                         before_insert,
                                         after_insert,
@@ -3844,44 +5261,61 @@ mod windows_app {
                                     )
                                     .await
                                 } else if streaming_stop_policy.insert_final_transcript {
-                                    run_voice_session_from_local_transcript_with_insert_hooks(
+                                    run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks(
                                         &config,
                                         session,
                                         trigger_events,
                                         session_transcript,
                                         mode_override,
+                                        route_evidence,
                                         before_insert,
                                         after_insert,
                                         phase_callback,
                                     )
                                 } else {
-                                    let tail_text = desktop_streaming_stop_tail_text(
-                                        selected_event.segment_id(),
-                                        selected_event.text(),
-                                        &live_inserted_anchors_for_stop,
-                                    );
-                                    if let Some(tail_text) = tail_text {
-                                        match insert_live_streaming_segment_if_safe(
-                                            &config,
-                                            hwnd_value as HWND,
-                                            hud_hwnd_value as HWND,
-                                            origin_insert_target.as_ref(),
-                                            selected_event.segment_id(),
-                                            &tail_text,
-                                            DesktopTextLifecycleState::Corrected,
-                                        ) {
-                                            Ok(Some(anchor)) => {
-                                                live_inserted_baseline_for_stop
-                                                    .push(anchor.inserted_text.clone());
-                                                live_inserted_anchors_for_stop.push(anchor);
+                                    let reconciliation_plan =
+                                        desktop_streaming_stop_reconciliation_plan(
+                                            &tracker_snapshot,
+                                            &session_transcript,
+                                        );
+                                    match reconciliation_plan {
+                                        DesktopStreamingStopReconciliationPlan::InsertTail(
+                                            tail_text,
+                                        ) => {
+                                            let _foreground_apply_lease =
+                                                foreground_apply_gate_for_stop_tail.acquire();
+                                            if !stop_worker_side_effects_allowed_for_shared(
+                                                &shared,
+                                                generation,
+                                            ) {
+                                                return;
                                             }
-                                            Ok(None) => {
+                                            let current_context =
+                                                capture_foreground_insert_target_context(
+                                                    hwnd_value as HWND,
+                                                    hud_hwnd_value as HWND,
+                                                );
+                                            let target_still_safe = desktop_output_plan(
+                                                output_mode,
+                                                origin_insert_target.as_ref(),
+                                                current_context.as_ref(),
+                                            )
+                                            .insert_target
+                                            .is_some();
+                                            let current_target_text = current_context
+                                                .as_ref()
+                                                .and_then(capture_current_insert_target_text);
+                                            if !desktop_streaming_stop_tail_target_unchanged(
+                                                &live_inserted_baseline_for_stop,
+                                                current_target_text.as_deref(),
+                                                target_still_safe,
+                                            ) {
                                                 if let Ok(mut shared) = shared.lock() {
                                                     shared.pending_copy_popup =
                                                         Some(PendingCopyPopup {
                                                             generation,
                                                             model: desktop_copy_popup_model(
-                                                                &tail_text,
+                                                                &session_transcript,
                                                             ),
                                                         });
                                                 }
@@ -3893,17 +5327,105 @@ mod windows_app {
                                                         0,
                                                     );
                                                 }
+                                            } else {
+                                                match insert_live_streaming_segment_if_safe(
+                                                &config,
+                                                hwnd_value as HWND,
+                                                hud_hwnd_value as HWND,
+                                                origin_insert_target.as_ref(),
+                                                selected_event.segment_id(),
+                                                &tail_text,
+                                                DesktopTextLifecycleState::Corrected,
+                                                ) {
+                                                    Ok(Some(anchor)) => {
+                                                        live_inserted_baseline_for_stop
+                                                            .push(anchor.inserted_text.clone());
+                                                        live_inserted_anchors_for_stop.push(anchor);
+                                                    }
+                                                    Ok(None) => {
+                                                        if let Ok(mut shared) = shared.lock() {
+                                                            shared.pending_copy_popup =
+                                                                Some(PendingCopyPopup {
+                                                                    generation,
+                                                                    model: desktop_copy_popup_model(
+                                                                        &session_transcript,
+                                                                    ),
+                                                                });
+                                                        }
+                                                        unsafe {
+                                                            let _ = PostMessageW(
+                                                                hwnd_value as HWND,
+                                                                CORRECTION_COPY_POPUP_MESSAGE,
+                                                                generation as usize,
+                                                                0,
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        eprintln!(
+                                                            "Talk streaming stop tail insert failed: {error:#}"
+                                                        );
+                                                        if let Ok(mut shared) = shared.lock() {
+                                                            shared.pending_copy_popup =
+                                                                Some(PendingCopyPopup {
+                                                                    generation,
+                                                                    model: desktop_copy_popup_model(
+                                                                        &session_transcript,
+                                                                    ),
+                                                                });
+                                                        }
+                                                        unsafe {
+                                                            let _ = PostMessageW(
+                                                                hwnd_value as HWND,
+                                                                CORRECTION_COPY_POPUP_MESSAGE,
+                                                                generation as usize,
+                                                                0,
+                                                            );
+                                                        }
+                                                    }
+                                                }
                                             }
-                                            Err(error) => {
-                                                eprintln!(
-                                                    "Talk streaming stop tail insert failed: {error:#}"
-                                                );
+                                        }
+                                        DesktopStreamingStopReconciliationPlan::ReconcileWholeDocument {
+                                            inserted_segments,
+                                            replacement_text,
+                                        } => {
+                                            let _foreground_apply_lease =
+                                                foreground_apply_gate_for_stop_tail.acquire();
+                                            if !stop_worker_side_effects_allowed_for_shared(
+                                                &shared,
+                                                generation,
+                                            ) {
+                                                return;
+                                            }
+                                            let reconciled = match apply_document_recorrection_patch_if_current(
+                                                &shared,
+                                                generation,
+                                                hwnd_value as HWND,
+                                                hud_hwnd_value as HWND,
+                                                origin_insert_target.as_ref(),
+                                                &inserted_segments,
+                                                &replacement_text,
+                                                config.output.restore_clipboard,
+                                            ) {
+                                                Ok(reconciled) => reconciled,
+                                                Err(error) => {
+                                                    eprintln!(
+                                                        "Talk streaming stop document reconciliation failed: {error:#}"
+                                                    );
+                                                    false
+                                                }
+                                            };
+                                            if reconciled {
+                                                live_inserted_baseline_for_stop =
+                                                    vec![replacement_text];
+                                            } else {
                                                 if let Ok(mut shared) = shared.lock() {
                                                     shared.pending_copy_popup =
                                                         Some(PendingCopyPopup {
                                                             generation,
                                                             model: desktop_copy_popup_model(
-                                                                &tail_text,
+                                                                &session_transcript,
                                                             ),
                                                         });
                                                 }
@@ -3917,23 +5439,26 @@ mod windows_app {
                                                 }
                                             }
                                         }
+                                        DesktopStreamingStopReconciliationPlan::NoAction => {}
                                     }
-                                    run_voice_session_from_local_transcript_with_insert_hooks(
+                                    run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks(
                                         &config,
                                         session,
                                         trigger_events,
                                         session_transcript,
                                         mode_override,
+                                        route_evidence,
                                         before_insert,
                                         after_insert,
                                         phase_callback,
                                     )
                                 }
                             } else {
-                                complete_failed_session(
+                                complete_failed_session_with_mode_override(
                                     &config,
                                     session,
                                     trigger_events,
+                                    mode_override,
                                     anyhow::anyhow!(
                                         "external streaming ASR command produced no events"
                                     ),
@@ -3942,10 +5467,11 @@ mod windows_app {
                                 )
                             }
                         }
-                        Err(error) => complete_failed_session(
+                        Err(error) => complete_failed_session_with_mode_override(
                             &config,
                             session,
                             trigger_events,
+                            mode_override,
                             error,
                             false,
                             phase_callback,
@@ -3979,10 +5505,11 @@ mod windows_app {
                         let _ = streaming_session.cancel().await;
                     }
                     let _ = recording.cancel();
-                    complete_failed_session(
+                    complete_failed_session_with_mode_override(
                         &config,
                         session,
                         trigger_events,
+                        mode_override,
                         anyhow::anyhow!(
                             "streaming recording source was selected for a non-streaming ASR route"
                         ),
@@ -3990,10 +5517,25 @@ mod windows_app {
                         phase_callback,
                     )
                 }
-                (_, true, StoppedRecordingSource::AudioFile(_)) => complete_failed_session(
+                (_, _, StoppedRecordingSource::StreamingEvents { .. }) => {
+                    complete_failed_session_with_mode_override(
+                        &config,
+                        session,
+                        trigger_events,
+                        mode_override,
+                        anyhow::anyhow!(
+                            "streaming ASR events were received for a non-streaming ASR route"
+                        ),
+                        false,
+                        phase_callback,
+                    )
+                }
+                (_, true, StoppedRecordingSource::AudioFile(_)) =>
+                    complete_failed_session_with_mode_override(
                     &config,
                     session,
                     trigger_events,
+                    mode_override,
                     anyhow::anyhow!("streaming_service local ASR requires a live recording source"),
                     false,
                     phase_callback,
@@ -4002,6 +5544,14 @@ mod windows_app {
 
             let mut correction_job = None;
             if let Ok(mut shared) = shared.lock() {
+                if !stop_worker_side_effects_allowed(
+                    shared.shutting_down,
+                    shared.worker_generation,
+                    shared.next_generation,
+                    generation,
+                ) {
+                    return;
+                }
                 match result {
                     Ok(report) => {
                         if report.session.status() != talk_core::SessionStatus::Completed {
@@ -4079,33 +5629,24 @@ mod windows_app {
                                 (persisted_insert_target, report.session.output_text())
                             {
                                 let local_text = output_text.to_string();
-                                match SpeculativeInsertAnchor::new(
-                                    target.window_handle,
-                                    target.focus_handle,
+                                match speculative_correction_job_for_final_document(
+                                    &config,
                                     local_asr_correction_segment_id,
-                                    local_text.clone(),
-                                    0,
+                                    local_text,
+                                    report.requested_mode,
+                                    report.smart_routed_mode,
+                                    origin_insert_target.as_ref(),
+                                    target,
+                                    live_inserted_baseline_for_stop.clone(),
+                                    report.log_path.clone(),
+                                    generation,
+                                    hwnd_value,
+                                    hud_hwnd_value,
                                 ) {
-                                    Ok(anchor) => {
-                                        correction_job = Some(SpeculativeCloudCorrectionJob {
-                                            config: config.clone(),
-                                            segment_id: local_asr_correction_segment_id.to_string(),
-                                            transcript: local_text.clone(),
-                                            context_before: None,
-                                            mode_override,
-                                            anchor: Some(anchor),
-                                            full_document_inserted_segments:
-                                                live_inserted_baseline_for_stop.clone(),
-                                            latest_live_segment_guard: None,
-                                            generation,
-                                            started_at: Instant::now(),
-                                            hwnd_value,
-                                            hud_hwnd_value,
-                                        });
-                                    }
+                                    Ok(job) => correction_job = Some(job),
                                     Err(error) => {
                                         eprintln!(
-                                            "Talk speculative correction anchor skipped: {error}"
+                                            "Talk final document correction job skipped: {error}"
                                         );
                                     }
                                 }
@@ -4156,6 +5697,7 @@ mod windows_app {
                 );
             }
         });
+        register_pending_worker_task(&worker_registration_shared, generation, worker_task);
     }
 
     fn apply_runtime_phase(hwnd: HWND, phase: RuntimePhase, generation: u64) {
@@ -4196,6 +5738,14 @@ mod windows_app {
             if shared.worker_generation != Some(generation) {
                 return;
             }
+            if shared
+                .pending_worker_task
+                .as_ref()
+                .is_some_and(|(task_generation, _)| *task_generation == generation)
+            {
+                shared.pending_worker_task.take();
+            }
+            shared.pending_stop_live_correction_tracker.take();
             shared.worker_generation = None;
             shared.shell_state = shared.shell_state.complete();
             shared.current_phase = None;
@@ -4271,26 +5821,131 @@ mod windows_app {
         }
     }
 
-    fn handle_streaming_corrected_hud(hwnd: HWND, generation: u64) {
+    fn drain_active_live_correction_backlog(hwnd: HWND, generation: u64) {
         let state = match unsafe { get_window_state_mut(hwnd) } {
             Ok(state) => state,
             Err(_) => return,
         };
-        let should_refresh = state
-            .shared
-            .lock()
-            .ok()
-            .and_then(|shared| {
-                shared
-                    .active_recording
-                    .as_ref()
-                    .map(|active| active.generation == generation)
-            })
-            .unwrap_or(false);
-        if should_refresh && !state.hud_hwnd.is_null() {
-            unsafe {
-                InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+        let (config, origin_insert_target, tracker, requested_mode, smart_routed_mode, gate) = {
+            let mut shared = match state.shared.lock() {
+                Ok(shared) => shared,
+                Err(_) => return,
+            };
+            let Some(config) = shared.config.clone() else {
+                return;
+            };
+            let gate = shared.foreground_apply_gate.clone();
+            let Some(active) = shared
+                .active_recording
+                .as_mut()
+                .filter(|active| active.generation == generation)
+            else {
+                return;
+            };
+            let requested_mode = active
+                .mode_override
+                .unwrap_or_else(|| config.default_voice_mode());
+            if requested_mode == VoiceMode::Smart && active.live_smart_routed_mode.is_none() {
+                let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
+                let pending_segments = active
+                    .hud_streaming_segments
+                    .iter()
+                    .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
+                    .collect::<Vec<_>>();
+                let transcript_parts =
+                    desktop_streaming_hud_transcript_parts(&tracker_snapshot, &pending_segments);
+                if !transcript_parts.corrected_prefix.trim().is_empty() {
+                    let transcript = format!(
+                        "{}{}",
+                        transcript_parts.corrected_prefix, transcript_parts.pre_recognized_tail
+                    );
+                    active.live_smart_routed_mode = live_smart_route_for_corrected_transcript(
+                        requested_mode,
+                        active.live_smart_routed_mode,
+                        &transcript,
+                        desktop_streaming_effective_segment_count(
+                            &tracker_snapshot,
+                            &pending_segments,
+                        ),
+                    );
+                }
             }
+            (
+                config,
+                active.origin_insert_target.clone(),
+                Arc::clone(&active.live_streaming_correction_tracker),
+                requested_mode,
+                active.live_smart_routed_mode,
+                gate,
+            )
+        };
+        if !desktop_live_correction_target_apply_allowed(requested_mode, smart_routed_mode) {
+            return;
+        }
+
+        let _foreground_apply_lease = gate.acquire();
+        if !correction_foreground_side_effects_allowed_for_shared(&state.shared, generation) {
+            return;
+        }
+        let anchors = insert_live_streaming_corrected_backlog_if_safe(
+            &config,
+            hwnd,
+            state.hud_hwnd,
+            origin_insert_target.as_ref(),
+            &tracker,
+        );
+        for anchor in anchors {
+            mirror_live_streaming_inserted_anchor(&state.shared, generation, anchor);
+        }
+    }
+
+    fn handle_streaming_corrected_hud(hwnd: HWND, generation: u64) {
+        drain_active_live_correction_backlog(hwnd, generation);
+        let state = match unsafe { get_window_state_mut(hwnd) } {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let transcript_parts = state.shared.lock().ok().and_then(|shared| {
+            shared
+                .active_recording
+                .as_ref()
+                .filter(|active| active.generation == generation)
+                .map(active_recording_hud_transcript_parts)
+        });
+        let Some(transcript_parts) = transcript_parts else {
+            return;
+        };
+
+        let updated_model = overlay_ui_state().lock().ok().and_then(|mut overlay| {
+            let corrected_prefix = (!transcript_parts.corrected_prefix.trim().is_empty())
+                .then(|| transcript_parts.corrected_prefix.clone());
+            let partial_tail = (!transcript_parts.pre_recognized_tail.trim().is_empty())
+                .then(|| transcript_parts.pre_recognized_tail.clone());
+            let transcript_changed = overlay.hud_streaming_corrected_prefix != corrected_prefix
+                || overlay.hud_streaming_partial_tail != partial_tail;
+            overlay.hud_streaming_corrected_prefix = corrected_prefix;
+            overlay.hud_streaming_partial_tail = partial_tail;
+            if transcript_changed && !overlay.hud_streaming_scroll_user_scrolled {
+                overlay.hud_streaming_scroll_line_offset = usize::MAX;
+            }
+
+            let (display_text, lifecycle) =
+                listening_hud_transcript_text_and_lifecycle(&transcript_parts);
+            let meter_bins = overlay.hud_meter_bins;
+            let hud_model = overlay.hud_model.as_mut()?;
+            if hud_model.visual_state != DesktopHudVisualState::Listening {
+                return None;
+            }
+            *hud_model = desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
+                meter_bins,
+                display_text.as_deref(),
+                lifecycle,
+            );
+            Some(hud_model.clone())
+        });
+
+        if let Some(updated_model) = updated_model {
+            let _ = show_hud_model(hwnd, updated_model, None);
         }
     }
 
@@ -4302,7 +5957,15 @@ mod windows_app {
             };
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
             match shared.pending_copy_popup.take() {
-                Some(popup) if popup.generation == generation => Some(popup),
+                Some(popup)
+                    if popup.generation == generation
+                        && desktop_document_recorrection_generation_is_current(
+                            shared.next_generation,
+                            generation,
+                        ) =>
+                {
+                    Some(popup)
+                }
                 Some(other) => {
                     shared.pending_copy_popup = Some(other);
                     None
@@ -4724,6 +6387,16 @@ mod windows_app {
             corner_radius: metrics.corner_radius,
         };
         let visual_state = model.visual_state;
+        let listening_layout = (visual_state == DesktopHudVisualState::Listening)
+            .then(|| {
+                desktop_listening_hud_partial_text_layout(
+                    metrics.width,
+                    metrics.height,
+                    dpi,
+                    model.detail.as_deref(),
+                )
+            })
+            .flatten();
         unsafe {
             KillTimer(hwnd, TIMER_HIDE_HUD);
             if matches!(visual_state, DesktopHudVisualState::Listening) {
@@ -4760,13 +6433,31 @@ mod windows_app {
             );
             if visual_state != DesktopHudVisualState::Listening || !was_listening {
                 overlay.hud_meter_bins = [0.0; 9];
-                overlay.hud_streaming_partial_text = None;
-                overlay.hud_streaming_corrected_text = None;
+                overlay.hud_streaming_corrected_prefix = None;
+                overlay.hud_streaming_partial_tail = None;
+                overlay.hud_streaming_partial_layout = None;
+                overlay.hud_streaming_scroll_line_offset = 0;
+                overlay.hud_streaming_scroll_dragging = false;
+                overlay.hud_streaming_scroll_user_scrolled = false;
             }
             if visual_state != DesktopHudVisualState::Thinking || !was_thinking {
                 overlay.hud_thinking_pulse_tick = 0;
             }
             overlay.hud_geometry = Some(next_geometry);
+            if visual_state == DesktopHudVisualState::Listening {
+                let reconciled_scroll_state = listening_layout.as_ref().map(|layout| {
+                    desktop_listening_hud_reconcile_scroll_state(
+                        overlay.hud_streaming_scroll_line_offset,
+                        desktop_listening_hud_scroll_max_offset(layout),
+                        overlay.hud_streaming_scroll_user_scrolled,
+                    )
+                });
+                overlay.hud_streaming_partial_layout = listening_layout;
+                if let Some((next_offset, next_user_scrolled)) = reconciled_scroll_state {
+                    overlay.hud_streaming_scroll_line_offset = next_offset;
+                    overlay.hud_streaming_scroll_user_scrolled = next_user_scrolled;
+                }
+            }
             overlay.hud_model = Some(model);
             plan
         } else {
@@ -4806,9 +6497,174 @@ mod windows_app {
         show_hud_model(hwnd, desktop_hud_view_model_for_text(text), auto_hide_ms)
     }
 
+    fn dispatch_live_streaming_events(
+        dispatch: PendingLiveStreamingDispatch,
+    ) -> Vec<SpeculativeInsertAnchor> {
+        let mut known_anchors = dispatch.existing_anchors;
+        let mut newly_inserted_anchors = Vec::<SpeculativeInsertAnchor>::new();
+        let mut correction_jobs = Vec::<SpeculativeCloudCorrectionJob>::new();
+        let mut rejected_local_fallback = false;
+
+        for event in &dispatch.events {
+            match event {
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text } => {
+                    if known_anchors.contains_key(segment_id) {
+                        continue;
+                    }
+                    match insert_live_streaming_segment_if_safe(
+                        &dispatch.config,
+                        dispatch.hwnd_value as HWND,
+                        dispatch.hud_hwnd_value as HWND,
+                        dispatch.origin_insert_target.as_ref(),
+                        segment_id,
+                        text,
+                        DesktopTextLifecycleState::PreRecognized,
+                    ) {
+                        Ok(Some(anchor)) => {
+                            known_anchors.insert(segment_id.clone(), anchor.clone());
+                            newly_inserted_anchors.push(anchor);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            eprintln!("Talk live local segment insert failed: {error:#}");
+                        }
+                    }
+                }
+                SpeculativeRuntimeEvent::CorrectionRequested { segment_id, .. } => {
+                    let allow_target_apply = dispatch.allow_target_apply
+                        && desktop_live_correction_target_apply_allowed(
+                            dispatch.requested_mode,
+                            dispatch.smart_routed_mode,
+                        );
+                    if let Some(job) = speculative_correction_job_for_live_segment(
+                        &dispatch.config,
+                        &dispatch.pipeline_config,
+                        event,
+                        dispatch.requested_mode,
+                        known_anchors.get(segment_id),
+                        dispatch.origin_insert_target.as_ref(),
+                        dispatch.latest_live_segment_guard,
+                        allow_target_apply,
+                        dispatch.generation,
+                        dispatch.hwnd_value,
+                        dispatch.hud_hwnd_value,
+                    ) {
+                        correction_jobs.push(job);
+                    }
+                }
+                SpeculativeRuntimeEvent::DraftUpdated { .. }
+                | SpeculativeRuntimeEvent::LocalSegmentsInvalidated { .. } => {}
+            }
+        }
+
+        for job in correction_jobs {
+            let segment_id = job.segment_id.clone();
+            if !dispatch.live_correction_tracker.register_job(
+                &segment_id,
+                &job.transcript,
+                known_anchors.get(&segment_id).cloned(),
+            ) {
+                continue;
+            }
+            if let Err(error) = dispatch.live_correction_sender.try_send(job) {
+                let (outcome, rejected_job) = match error {
+                    tokio::sync::mpsc::error::TrySendError::Full(job) => ("queue_full", job),
+                    tokio::sync::mpsc::error::TrySendError::Closed(job) => ("queue_closed", job),
+                };
+                dispatch.live_correction_tracker.record_result(
+                    &segment_id,
+                    rejected_job.transcript.as_str(),
+                    rejected_job.anchor.clone(),
+                );
+                dispatch
+                    .live_correction_tracker
+                    .complete_job(&segment_id, None, None);
+                rejected_local_fallback = true;
+                if dispatch.live_correction_tracker.should_show_live_feedback() {
+                    queue_live_streaming_corrected_hud(
+                        dispatch.hwnd_value as HWND,
+                        dispatch.generation,
+                        rejected_job.transcript.as_str(),
+                    );
+                }
+                eprintln!(
+                    "{}",
+                    desktop_live_correction_timing_log(
+                        &segment_id,
+                        rejected_job.started_at.elapsed().as_millis(),
+                        0,
+                        0,
+                        rejected_job.started_at.elapsed().as_millis(),
+                        outcome,
+                    )
+                );
+            }
+        }
+
+        if live_correction_backlog_drain_allowed(
+            dispatch.allow_target_apply,
+            dispatch.flush_corrected_backlog,
+            rejected_local_fallback,
+            dispatch.requested_mode,
+            dispatch.smart_routed_mode,
+        ) {
+            for anchor in insert_live_streaming_corrected_backlog_if_safe(
+                &dispatch.config,
+                dispatch.hwnd_value as HWND,
+                dispatch.hud_hwnd_value as HWND,
+                dispatch.origin_insert_target.as_ref(),
+                &dispatch.live_correction_tracker,
+            ) {
+                known_anchors.insert(anchor.segment_id.clone(), anchor.clone());
+                newly_inserted_anchors.push(anchor);
+            }
+            if !newly_inserted_anchors.is_empty() {
+                queue_live_streaming_corrected_hud(
+                    dispatch.hwnd_value as HWND,
+                    dispatch.generation,
+                    "",
+                );
+            }
+        }
+
+        newly_inserted_anchors
+    }
+
+    fn invalidate_recording_hud_waveform(state: &WindowState) {
+        if state.hud_hwnd.is_null() {
+            return;
+        }
+        let dpi = overlay_dpi_for_window(state.hud_hwnd);
+        let waveform = overlay_ui_state().lock().ok().and_then(|overlay| {
+            overlay
+                .hud_streaming_partial_layout
+                .map(|layout| layout.waveform_rect)
+                .or_else(|| {
+                    overlay.hud_geometry.map(|geometry| {
+                        desktop_listening_hud_waveform_rect(geometry.width, geometry.height, dpi)
+                    })
+                })
+        });
+        let waveform = waveform.unwrap_or_else(|| {
+            let mut client_rect = RECT::default();
+            unsafe {
+                GetClientRect(state.hud_hwnd, &mut client_rect);
+            }
+            desktop_listening_hud_waveform_rect(
+                client_rect.right - client_rect.left,
+                client_rect.bottom - client_rect.top,
+                dpi,
+            )
+        });
+        let waveform_rect = desktop_overlay_rect_to_rect(waveform);
+        unsafe {
+            InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
+        }
+    }
+
     fn refresh_recording_hud_level(hwnd: HWND) -> Result<()> {
         let state = unsafe { get_window_state_mut(hwnd)? };
-        let (raw_waveform, latest_hud_transcript, live_dispatch) = {
+        let (raw_waveform, refreshed_hud_transcript_parts, live_dispatch, streaming_pump_error) = {
             let mut shared = state.shared.lock().expect("Talk desktop shared state");
             if shared.current_phase != Some(RuntimePhase::Recording) {
                 unsafe {
@@ -4827,6 +6683,7 @@ mod windows_app {
             };
 
             let mut pumped_asr_events = Vec::<StreamingAsrEvent>::new();
+            let mut streaming_pump_error = None::<String>;
             let raw_waveform = match &mut active.source {
                 ActiveRecordingSource::Live {
                     recording,
@@ -4841,7 +6698,9 @@ mod windows_app {
                                 pumped_asr_events = events;
                             }
                             Err(error) => {
-                                eprintln!("Talk local streaming ASR live pump failed: {error:#}");
+                                let error = error.to_string();
+                                eprintln!("Talk local streaming ASR live pump failed: {error}");
+                                streaming_pump_error = Some(error);
                             }
                         }
                     }
@@ -4902,133 +6761,117 @@ mod windows_app {
                             text,
                         );
                     }
+                    SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids } => {
+                        remove_hud_streaming_segments(
+                            &mut active.hud_streaming_segments,
+                            segment_ids,
+                        );
+                    }
                     SpeculativeRuntimeEvent::CorrectionRequested { .. } => {}
                 }
             }
 
-            let hud_transcript_changed = runtime_events.iter().any(|event| {
-                matches!(
-                    event,
-                    SpeculativeRuntimeEvent::DraftUpdated { .. }
-                        | SpeculativeRuntimeEvent::LocalSegmentCommitted { .. }
-                )
+            let transcript_changed = !runtime_events.is_empty();
+            let requested_mode = active.mode_override.unwrap_or_else(|| {
+                config
+                    .as_ref()
+                    .map(TalkConfig::default_voice_mode)
+                    .unwrap_or(VoiceMode::Smart)
+            });
+            let previous_smart_route = active.live_smart_routed_mode;
+            let refreshed_hud_transcript_parts =
+                transcript_changed.then(|| active_recording_hud_transcript_parts(active));
+            if let Some(parts) = refreshed_hud_transcript_parts.as_ref() {
+                let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
+                let pending_segments = active
+                    .hud_streaming_segments
+                    .iter()
+                    .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
+                    .collect::<Vec<_>>();
+                let transcript = format!("{}{}", parts.corrected_prefix, parts.pre_recognized_tail);
+                active.live_smart_routed_mode = live_smart_route_for_transcript(
+                    requested_mode,
+                    previous_smart_route,
+                    &transcript,
+                    desktop_streaming_effective_segment_count(&tracker_snapshot, &pending_segments),
+                );
+            }
+            let flush_corrected_backlog = previous_smart_route != Some(VoiceMode::Transcribe)
+                && active.live_smart_routed_mode == Some(VoiceMode::Transcribe);
+            let live_dispatch = config.filter(|_| transcript_changed).and_then(|config| {
+                Some(PendingLiveStreamingDispatch {
+                    pipeline_config: desktop_speculative_pipeline_config(&config),
+                    config,
+                    generation: active.generation,
+                    origin_insert_target: active.origin_insert_target.clone(),
+                    existing_anchors: active.live_streaming_inserted_anchors.clone(),
+                    live_correction_sender: active
+                        .live_streaming_correction_sender
+                        .as_ref()?
+                        .clone(),
+                    live_correction_tracker: Arc::clone(&active.live_streaming_correction_tracker),
+                    events: runtime_events,
+                    requested_mode,
+                    smart_routed_mode: active.live_smart_routed_mode,
+                    flush_corrected_backlog,
+                    latest_live_segment_guard: Some(LatestLiveSegmentGuard {
+                        generation: active.generation,
+                    }),
+                    allow_target_apply: true,
+                    hwnd_value: hwnd as usize,
+                    hud_hwnd_value: state.hud_hwnd as usize,
+                })
             });
 
-            let live_dispatch = config
-                .filter(|_| !runtime_events.is_empty())
-                .and_then(|config| {
-                    Some(PendingLiveStreamingDispatch {
-                        pipeline_config: desktop_speculative_pipeline_config(&config),
-                        config,
-                        mode_override: active.mode_override,
-                        generation: active.generation,
-                        origin_insert_target: active.origin_insert_target.clone(),
-                        existing_anchors: active.live_streaming_inserted_anchors.clone(),
-                        live_correction_sender: active
-                            .live_streaming_correction_sender
-                            .as_ref()?
-                            .clone(),
-                        live_correction_tracker: Arc::clone(
-                            &active.live_streaming_correction_tracker,
-                        ),
-                        events: runtime_events,
-                        hwnd_value: hwnd as usize,
-                        hud_hwnd_value: state.hud_hwnd as usize,
-                    })
-                });
-
-            let latest_hud_transcript = hud_transcript_changed
-                .then(|| hud_streaming_transcript_from_segments(&active.hud_streaming_segments))
-                .flatten();
-
-            (raw_waveform, latest_hud_transcript, live_dispatch)
+            (
+                raw_waveform,
+                refreshed_hud_transcript_parts,
+                live_dispatch,
+                streaming_pump_error,
+            )
         };
+        if let Some(error) = streaming_pump_error {
+            let hud_transcript_parts = refreshed_hud_transcript_parts
+                .clone()
+                .unwrap_or_else(cached_hud_streaming_transcript_parts);
+            let copy_text = format!(
+                "{}{}",
+                hud_transcript_parts.corrected_prefix, hud_transcript_parts.pre_recognized_tail
+            );
+            return fail_active_recording(hwnd, state, error, Some(copy_text));
+        }
 
         if let Some(dispatch) = live_dispatch {
-            let mut known_anchors = dispatch.existing_anchors;
-            let mut newly_inserted_anchors = Vec::<SpeculativeInsertAnchor>::new();
-            let mut correction_jobs = Vec::<SpeculativeCloudCorrectionJob>::new();
-
-            for event in &dispatch.events {
-                match event {
-                    SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text } => {
-                        if known_anchors.contains_key(segment_id) {
-                            continue;
-                        }
-                        match insert_live_streaming_segment_if_safe(
-                            &dispatch.config,
-                            dispatch.hwnd_value as HWND,
-                            dispatch.hud_hwnd_value as HWND,
-                            dispatch.origin_insert_target.as_ref(),
-                            segment_id,
-                            text,
-                            DesktopTextLifecycleState::PreRecognized,
-                        ) {
-                            Ok(Some(anchor)) => {
-                                known_anchors.insert(segment_id.clone(), anchor.clone());
-                                newly_inserted_anchors.push(anchor);
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                eprintln!("Talk live local segment insert failed: {error:#}");
-                            }
-                        }
-                    }
-                    SpeculativeRuntimeEvent::CorrectionRequested { segment_id, .. } => {
-                        if let Some(job) = speculative_correction_job_for_live_segment(
-                            &dispatch.config,
-                            &dispatch.pipeline_config,
-                            event,
-                            known_anchors.get(segment_id),
-                            dispatch.mode_override,
-                            dispatch.generation,
-                            dispatch.hwnd_value,
-                            dispatch.hud_hwnd_value,
-                        ) {
-                            correction_jobs.push(job);
-                        }
-                    }
-                    SpeculativeRuntimeEvent::DraftUpdated { .. } => {}
-                }
-            }
-
-            if !newly_inserted_anchors.is_empty() {
-                if let Ok(mut shared) = state.shared.lock() {
-                    if let Some(active) = shared.active_recording.as_mut() {
-                        if active.generation == dispatch.generation {
-                            for anchor in newly_inserted_anchors {
-                                if !active
-                                    .live_streaming_inserted_segment_ids
-                                    .iter()
-                                    .any(|segment_id| segment_id == &anchor.segment_id)
-                                {
-                                    active
+            let generation = dispatch.generation;
+            let foreground_apply_gate = state
+                .shared
+                .lock()
+                .ok()
+                .map(|shared| shared.foreground_apply_gate.clone());
+            if let Some(foreground_apply_gate) = foreground_apply_gate {
+                let _foreground_apply_lease = foreground_apply_gate.acquire();
+                let newly_inserted_anchors = dispatch_live_streaming_events(dispatch);
+                if !newly_inserted_anchors.is_empty() {
+                    if let Ok(mut shared) = state.shared.lock() {
+                        if let Some(active) = shared.active_recording.as_mut() {
+                            if active.generation == generation {
+                                for anchor in newly_inserted_anchors {
+                                    if !active
                                         .live_streaming_inserted_segment_ids
-                                        .push(anchor.segment_id.clone());
+                                        .iter()
+                                        .any(|segment_id| segment_id == &anchor.segment_id)
+                                    {
+                                        active
+                                            .live_streaming_inserted_segment_ids
+                                            .push(anchor.segment_id.clone());
+                                    }
+                                    active
+                                        .live_streaming_inserted_anchors
+                                        .insert(anchor.segment_id.clone(), anchor);
                                 }
-                                active
-                                    .live_streaming_inserted_anchors
-                                    .insert(anchor.segment_id.clone(), anchor);
                             }
                         }
                     }
-                }
-            }
-
-            for job in correction_jobs {
-                let segment_id = job.segment_id.clone();
-                if !dispatch.live_correction_tracker.register_job(
-                    &segment_id,
-                    &job.transcript,
-                    known_anchors.get(&segment_id).cloned(),
-                ) {
-                    continue;
-                }
-                if dispatch.live_correction_sender.send(job).is_err() {
-                    dispatch
-                        .live_correction_tracker
-                        .complete_job(&segment_id, None, None);
-                    eprintln!("Talk live correction queue is no longer available");
                 }
             }
         }
@@ -5045,102 +6888,148 @@ mod windows_app {
                 .clamp(0.0, 1.0);
             }
             overlay.hud_meter_bins = next_bins;
-            if let Some(partial_text) = latest_hud_transcript {
-                overlay.hud_streaming_partial_text = Some(partial_text);
-                overlay.hud_streaming_corrected_text = None;
-            }
-            let (display_text, lifecycle) =
-                if let Some(corrected_text) = overlay.hud_streaming_corrected_text.clone() {
-                    (Some(corrected_text), DesktopTextLifecycleState::Corrected)
-                } else {
-                    (
-                        overlay.hud_streaming_partial_text.clone(),
-                        DesktopTextLifecycleState::PreRecognized,
-                    )
-                };
-            if let Some(hud_model) = overlay.hud_model.as_mut() {
-                if hud_model.visual_state == DesktopHudVisualState::Listening {
-                    let previous_detail = hud_model.detail.clone();
-                    let previous_lifecycle = hud_model.detail_lifecycle;
+            let is_listening = overlay
+                .hud_model
+                .as_ref()
+                .is_some_and(|model| model.visual_state == DesktopHudVisualState::Listening);
+            if !is_listening {
+                None
+            } else if let Some(hud_transcript_parts) = refreshed_hud_transcript_parts.as_ref() {
+                let corrected_prefix = (!hud_transcript_parts.corrected_prefix.trim().is_empty())
+                    .then_some(hud_transcript_parts.corrected_prefix.as_str());
+                let partial_tail = (!hud_transcript_parts.pre_recognized_tail.trim().is_empty())
+                    .then_some(hud_transcript_parts.pre_recognized_tail.as_str());
+                let transcript_changed = overlay.hud_streaming_corrected_prefix.as_deref()
+                    != corrected_prefix
+                    || overlay.hud_streaming_partial_tail.as_deref() != partial_tail;
+                if transcript_changed {
+                    overlay.hud_streaming_corrected_prefix = corrected_prefix.map(str::to_string);
+                    overlay.hud_streaming_partial_tail = partial_tail.map(str::to_string);
+                    if !overlay.hud_streaming_scroll_user_scrolled {
+                        overlay.hud_streaming_scroll_line_offset = usize::MAX;
+                    }
+                    let (display_text, lifecycle) =
+                        listening_hud_transcript_text_and_lifecycle(hud_transcript_parts);
+                    let Some(hud_model) = overlay.hud_model.as_mut() else {
+                        return Ok(());
+                    };
                     *hud_model =
                         desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle(
                             next_bins,
                             display_text.as_deref(),
                             lifecycle,
                         );
-                    Some((
-                        hud_model.clone(),
-                        hud_model.detail != previous_detail
-                            || hud_model.detail_lifecycle != previous_lifecycle,
-                    ))
+                    Some(RecordingHudRefreshUpdate::Text(hud_model.clone()))
                 } else {
-                    None
+                    let Some(hud_model) = overlay.hud_model.as_mut() else {
+                        return Ok(());
+                    };
+                    hud_model.meter = Some(desktop_hud_audio_meter_model_for_waveform(next_bins));
+                    Some(RecordingHudRefreshUpdate::WaveformOnly)
                 }
             } else {
-                None
+                let Some(hud_model) = overlay.hud_model.as_mut() else {
+                    return Ok(());
+                };
+                hud_model.meter = Some(desktop_hud_audio_meter_model_for_waveform(next_bins));
+                Some(RecordingHudRefreshUpdate::WaveformOnly)
             }
         } else {
             None
         };
 
-        if let Some((updated_hud_model, text_changed)) = updated_hud_state {
-            if state.hud_hwnd.is_null() {
-                return Ok(());
-            }
-            let dpi = overlay_dpi_for_window(state.hud_hwnd);
-            let metrics = scale_hud_metrics_for_dpi(
-                desktop_hud_metrics_for_view_model(&updated_hud_model),
-                dpi,
-            );
-            let (screen_width, screen_height) = current_screen_size();
-            let x = ((screen_width - metrics.width).max(0)) / 2;
-            let y = (screen_height - metrics.height - metrics.bottom_margin).max(0);
-            let next_geometry = DesktopHudGeometry {
-                x,
-                y,
-                width: metrics.width,
-                height: metrics.height,
-                corner_radius: metrics.corner_radius,
-            };
-            let geometry_plan = if let Ok(mut overlay) = overlay_ui_state().lock() {
-                let plan = desktop_hud_geometry_update_plan(overlay.hud_geometry, next_geometry);
-                overlay.hud_geometry = Some(next_geometry);
-                plan
-            } else {
-                desktop_hud_geometry_update_plan(None, next_geometry)
-            };
-            let waveform = desktop_listening_hud_waveform_rect(metrics.width, metrics.height, dpi);
-            let waveform_rect = RECT {
-                left: waveform.left,
-                top: waveform.top,
-                right: waveform.right,
-                bottom: waveform.bottom,
-            };
-            unsafe {
-                if geometry_plan.reposition {
-                    SetWindowPos(
-                        state.hud_hwnd,
-                        (-1isize) as HWND,
-                        x,
-                        y,
-                        metrics.width,
-                        metrics.height,
-                        SWP_NOACTIVATE,
-                    );
-                }
-                if geometry_plan.reshape {
-                    apply_rounded_window_region(
-                        state.hud_hwnd,
-                        metrics.width,
-                        metrics.height,
-                        metrics.corner_radius,
-                    );
-                }
-                if text_changed || geometry_plan.reposition {
-                    InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+        if matches!(
+            updated_hud_state,
+            Some(RecordingHudRefreshUpdate::WaveformOnly)
+        ) {
+            invalidate_recording_hud_waveform(state);
+            return Ok(());
+        }
+        let Some(RecordingHudRefreshUpdate::Text(updated_hud_model)) = updated_hud_state else {
+            return Ok(());
+        };
+        let text_changed = true;
+        if state.hud_hwnd.is_null() {
+            return Ok(());
+        }
+        let dpi = overlay_dpi_for_window(state.hud_hwnd);
+        let metrics =
+            scale_hud_metrics_for_dpi(desktop_hud_metrics_for_view_model(&updated_hud_model), dpi);
+        let (screen_width, screen_height) = current_screen_size();
+        let x = ((screen_width - metrics.width).max(0)) / 2;
+        let y = (screen_height - metrics.height - metrics.bottom_margin).max(0);
+        let next_geometry = DesktopHudGeometry {
+            x,
+            y,
+            width: metrics.width,
+            height: metrics.height,
+            corner_radius: metrics.corner_radius,
+        };
+        let geometry_plan = if let Ok(mut overlay) = overlay_ui_state().lock() {
+            let plan = desktop_hud_geometry_update_plan(overlay.hud_geometry, next_geometry);
+            overlay.hud_geometry = Some(next_geometry);
+            if desktop_listening_hud_requires_text_layout(
+                text_changed,
+                plan.reposition || plan.reshape,
+                false,
+            ) {
+                if let Some(partial_layout) = desktop_listening_hud_partial_text_layout(
+                    metrics.width,
+                    metrics.height,
+                    dpi,
+                    updated_hud_model.detail.as_deref(),
+                ) {
+                    overlay.hud_streaming_partial_layout = Some(partial_layout);
+                    let max_offset = desktop_listening_hud_scroll_max_offset(&partial_layout);
+                    let (next_offset, next_user_scrolled) =
+                        desktop_listening_hud_reconcile_scroll_state(
+                            overlay.hud_streaming_scroll_line_offset,
+                            max_offset,
+                            overlay.hud_streaming_scroll_user_scrolled,
+                        );
+                    overlay.hud_streaming_scroll_line_offset = next_offset;
+                    overlay.hud_streaming_scroll_user_scrolled = next_user_scrolled;
                 } else {
-                    InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
+                    overlay.hud_streaming_partial_layout = None;
+                    overlay.hud_streaming_scroll_line_offset = 0;
+                    overlay.hud_streaming_scroll_user_scrolled = false;
                 }
+            }
+            plan
+        } else {
+            desktop_hud_geometry_update_plan(None, next_geometry)
+        };
+        let waveform = desktop_listening_hud_waveform_rect(metrics.width, metrics.height, dpi);
+        let waveform_rect = RECT {
+            left: waveform.left,
+            top: waveform.top,
+            right: waveform.right,
+            bottom: waveform.bottom,
+        };
+        unsafe {
+            if geometry_plan.reposition {
+                SetWindowPos(
+                    state.hud_hwnd,
+                    (-1isize) as HWND,
+                    x,
+                    y,
+                    metrics.width,
+                    metrics.height,
+                    SWP_NOACTIVATE,
+                );
+            }
+            if geometry_plan.reshape {
+                apply_rounded_window_region(
+                    state.hud_hwnd,
+                    metrics.width,
+                    metrics.height,
+                    metrics.corner_radius,
+                );
+            }
+            if text_changed || geometry_plan.reposition {
+                InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+            } else {
+                InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
             }
         }
         Ok(())
@@ -5303,7 +7192,9 @@ mod windows_app {
             .ok()?;
 
         let mut candidates = Vec::new();
-        if automation_ui_element_looks_editable(&window_element) {
+        if window_element.has_keyboard_focus().ok() == Some(true)
+            && automation_ui_element_looks_editable(&window_element)
+        {
             candidates.push(window_element.clone());
         }
 
@@ -5313,7 +7204,8 @@ mod windows_app {
             .depth(32)
             .timeout(0)
             .filter_fn(Box::new(|element: &UIElement| {
-                Ok(automation_ui_element_looks_editable(element))
+                Ok(element.has_keyboard_focus().ok() == Some(true)
+                    && automation_ui_element_looks_editable(element))
             }))
             .find_all()
         {
@@ -5834,12 +7726,168 @@ mod windows_app {
                     overlay.hud_model = None;
                     overlay.hud_geometry = None;
                     overlay.hud_meter_bins = [0.0; 9];
+                    overlay.hud_streaming_corrected_prefix = None;
+                    overlay.hud_streaming_partial_tail = None;
+                    overlay.hud_streaming_partial_layout = None;
+                    overlay.hud_streaming_scroll_line_offset = 0;
+                    overlay.hud_streaming_scroll_dragging = false;
+                    overlay.hud_streaming_scroll_user_scrolled = false;
                     overlay.hud_thinking_pulse_tick = 0;
                 }
                 ShowWindow(state.hud_hwnd, SW_HIDE);
             }
         }
         Ok(())
+    }
+
+    fn listening_hud_partial_layout_and_transcript(
+        hud_hwnd: HWND,
+    ) -> Option<(DesktopListeningHudPartialTextLayout, String, String, usize)> {
+        let mut rect = RECT::default();
+        unsafe {
+            GetClientRect(hud_hwnd, &mut rect);
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        let dpi = overlay_dpi_for_window(hud_hwnd);
+        let overlay = overlay_ui_state().lock().ok()?;
+        let model = overlay.hud_model.as_ref()?;
+        if model.visual_state != DesktopHudVisualState::Listening {
+            return None;
+        }
+
+        let corrected_prefix = overlay
+            .hud_streaming_corrected_prefix
+            .clone()
+            .unwrap_or_default();
+        let partial_tail = overlay
+            .hud_streaming_partial_tail
+            .clone()
+            .or_else(|| model.detail.clone())
+            .unwrap_or_default();
+        let combined = format!("{corrected_prefix}{partial_tail}");
+        let layout = overlay.hud_streaming_partial_layout.or_else(|| {
+            desktop_listening_hud_partial_text_layout(width, height, dpi, Some(&combined))
+        })?;
+        let scroll_offset = overlay
+            .hud_streaming_scroll_line_offset
+            .min(desktop_listening_hud_scroll_max_offset(&layout));
+        Some((layout, corrected_prefix, partial_tail, scroll_offset))
+    }
+
+    fn update_listening_hud_scroll_from_pointer(
+        hud_hwnd: HWND,
+        point: POINT,
+        require_hit_test: bool,
+    ) -> bool {
+        let Some((layout, _, _, _)) = listening_hud_partial_layout_and_transcript(hud_hwnd) else {
+            return false;
+        };
+        let dpi = overlay_dpi_for_window(hud_hwnd);
+        let Some(scrollbar_hit_rect) = desktop_listening_hud_scrollbar_hit_rect(&layout, dpi)
+        else {
+            return false;
+        };
+        if require_hit_test && !scrollbar_hit_rect.contains(point.x, point.y) {
+            return false;
+        }
+
+        let next_offset =
+            desktop_listening_hud_scroll_line_offset_for_pointer(&layout, dpi, point.y);
+        let changed = if let Ok(mut overlay) = overlay_ui_state().lock() {
+            let max_offset = desktop_listening_hud_scroll_max_offset(&layout);
+            overlay.hud_streaming_scroll_user_scrolled =
+                !desktop_listening_hud_auto_follow_for_scroll(next_offset, max_offset);
+            if overlay.hud_streaming_scroll_line_offset != next_offset {
+                overlay.hud_streaming_scroll_line_offset = next_offset;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if changed {
+            unsafe {
+                InvalidateRect(hud_hwnd, ptr::null(), 0);
+            }
+        }
+        true
+    }
+
+    fn wheel_delta_from_wparam(wparam: WPARAM) -> i16 {
+        ((wparam >> 16) & 0xFFFF) as u16 as i16
+    }
+
+    fn handle_listening_hud_mouse_wheel(hud_hwnd: HWND, wheel_delta: i16) {
+        let Some((layout, _, _, current_offset)) =
+            listening_hud_partial_layout_and_transcript(hud_hwnd)
+        else {
+            return;
+        };
+        let max_offset = desktop_listening_hud_scroll_max_offset(&layout);
+        let next_offset = desktop_listening_hud_scroll_line_offset_for_wheel(
+            current_offset,
+            max_offset,
+            wheel_delta,
+        );
+        let changed = if let Ok(mut overlay) = overlay_ui_state().lock() {
+            overlay.hud_streaming_scroll_user_scrolled =
+                !desktop_listening_hud_auto_follow_for_scroll(next_offset, max_offset);
+            if overlay.hud_streaming_scroll_line_offset != next_offset {
+                overlay.hud_streaming_scroll_line_offset = next_offset;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if changed {
+            unsafe {
+                InvalidateRect(hud_hwnd, ptr::null(), 0);
+            }
+        }
+    }
+
+    fn handle_listening_hud_mouse_down(hud_hwnd: HWND, point: POINT) {
+        if update_listening_hud_scroll_from_pointer(hud_hwnd, point, true) {
+            if let Ok(mut overlay) = overlay_ui_state().lock() {
+                overlay.hud_streaming_scroll_dragging = true;
+            }
+            unsafe {
+                SetCapture(hud_hwnd);
+            }
+        }
+    }
+
+    fn handle_listening_hud_mouse_move(hud_hwnd: HWND, point: POINT) {
+        if overlay_ui_state()
+            .lock()
+            .ok()
+            .is_some_and(|overlay| overlay.hud_streaming_scroll_dragging)
+        {
+            let _ = update_listening_hud_scroll_from_pointer(hud_hwnd, point, false);
+        }
+    }
+
+    fn handle_listening_hud_mouse_up(hud_hwnd: HWND, point: POINT) {
+        let was_dragging = if let Ok(mut overlay) = overlay_ui_state().lock() {
+            let dragging = overlay.hud_streaming_scroll_dragging;
+            overlay.hud_streaming_scroll_dragging = false;
+            dragging
+        } else {
+            false
+        };
+        if was_dragging {
+            let _ = update_listening_hud_scroll_from_pointer(hud_hwnd, point, false);
+            unsafe {
+                ReleaseCapture();
+            }
+            return;
+        }
+
+        handle_listening_hud_click(hud_hwnd, point);
     }
 
     fn handle_listening_hud_click(hud_hwnd: HWND, point: POINT) {
@@ -6110,7 +8158,12 @@ mod windows_app {
         let _ = update_pending_hotkey_origin_insert_target(hwnd, context);
     }
 
-    fn spawn_hotkey_origin_enrichment(hwnd: HWND, hud_hwnd: HWND, generation: u64) {
+    fn spawn_hotkey_origin_enrichment(
+        hwnd: HWND,
+        hud_hwnd: HWND,
+        generation: u64,
+        shared: Arc<Mutex<SharedState>>,
+    ) {
         let hwnd_value = hwnd as usize;
         let hud_hwnd_value = hud_hwnd as usize;
         thread::spawn(move || {
@@ -6121,10 +8174,10 @@ mod windows_app {
                     hwnd_value as HWND,
                     hud_hwnd_value as HWND,
                 );
-                let should_stop = unsafe { get_window_state_mut(hwnd_value as HWND) }
+                let should_stop = shared
+                    .lock()
                     .ok()
-                    .and_then(|state| {
-                        let mut shared = state.shared.lock().ok()?;
+                    .and_then(|mut shared| {
                         let active = shared.active_recording.as_mut()?;
                         if active.generation != generation {
                             return Some(true);
@@ -6138,6 +8191,14 @@ mod windows_app {
                             active.origin_insert_target = enriched_origin;
                             active.origin_insert_target_source =
                                 Some(HOTKEY_ORIGIN_ENRICH_SOURCE.to_string());
+                            unsafe {
+                                let _ = PostMessageW(
+                                    hwnd_value as HWND,
+                                    STREAMING_CORRECTED_HUD_MESSAGE,
+                                    generation as usize,
+                                    0,
+                                );
+                            }
                             return Some(true);
                         }
 
@@ -6280,6 +8341,9 @@ mod windows_app {
     }
 
     fn spawn_timeout_watcher(hwnd: HWND, generation: u64, max_recording_seconds: u64) {
+        if max_recording_seconds == 0 {
+            return;
+        }
         let hwnd_value = hwnd as usize;
         thread::spawn(move || {
             let hwnd = hwnd_value as HWND;
@@ -6299,9 +8363,12 @@ mod windows_app {
         let hwnd_value = hwnd as usize;
         thread::spawn(move || {
             let hwnd = hwnd_value as HWND;
-            let deadline = Instant::now() + Duration::from_secs(max_recording_seconds);
+            let deadline = (max_recording_seconds > 0)
+                .then(|| Instant::now() + Duration::from_secs(max_recording_seconds));
             loop {
-                if !hotkey.is_pressed() || Instant::now() >= deadline {
+                if !hotkey.is_pressed()
+                    || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                {
                     unsafe {
                         let _ = PostMessageW(hwnd, STOP_MESSAGE, generation as usize, 0);
                     }
@@ -6359,6 +8426,13 @@ mod windows_app {
 
     fn point_in_rect(point: POINT, rect: RECT) -> bool {
         point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
+    }
+
+    fn rects_intersect(left: RECT, right: RECT) -> bool {
+        left.left < right.right
+            && left.right > right.left
+            && left.top < right.bottom
+            && left.bottom > right.top
     }
 
     fn copy_popup_hovered_control_for_point(
@@ -6716,6 +8790,75 @@ mod windows_app {
         }
     }
 
+    unsafe fn draw_listening_hud_transcript(
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        dpi: u32,
+        text_rect: RECT,
+        layout: &DesktopListeningHudPartialTextLayout,
+        corrected_prefix: &str,
+        partial_tail: &str,
+        scroll_line_offset: usize,
+    ) {
+        let visible_lines = desktop_listening_hud_visible_lines(
+            corrected_prefix,
+            partial_tail,
+            layout,
+            scroll_line_offset,
+        );
+        if visible_lines.is_empty() {
+            return;
+        }
+
+        let transcript_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
+        let old_transcript_font = SelectObject(hdc, transcript_font as _);
+        let line_height = scale_desktop_overlay_length(17, dpi).max(12);
+        let unit_width = desktop_listening_hud_text_unit_width(dpi);
+        let mut line_top = text_rect.top;
+
+        for line in visible_lines {
+            let run_widths = line
+                .runs
+                .iter()
+                .map(|run| {
+                    let measured_width = measure_overlay_text_size(hdc, &run.text).cx;
+                    if measured_width > 0 {
+                        measured_width
+                    } else {
+                        (display_text_units(&run.text) as i32 * unit_width).max(1)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let line_width = run_widths.iter().sum::<i32>().max(1);
+            let mut current_x = desktop_listening_hud_line_origin(
+                DesktopOverlayRect {
+                    left: text_rect.left,
+                    top: text_rect.top,
+                    right: text_rect.right,
+                    bottom: text_rect.bottom,
+                },
+                line_width,
+            );
+
+            for (run, run_width) in line.runs.into_iter().zip(run_widths) {
+                let color = match run.lifecycle {
+                    DesktopTextLifecycleState::Corrected => rgb(245, 247, 250),
+                    DesktopTextLifecycleState::PreRecognized => rgb(245, 190, 72),
+                    DesktopTextLifecycleState::AudioWave => terminal_text_soft_color(),
+                };
+                SetTextColor(hdc, color);
+                let wide = to_wide(&run.text);
+                let text_len = wide.len().saturating_sub(1) as i32;
+                let _ = TextOutW(hdc, current_x, line_top, wide.as_ptr(), text_len);
+                current_x += run_width;
+            }
+
+            line_top += line_height;
+        }
+
+        let _ = SelectObject(hdc, old_transcript_font);
+        DeleteObject(transcript_font as _);
+    }
+
     fn desktop_hud_view_model_for_text(text: &str) -> DesktopHudViewModel {
         if text == hud_message_for_phase(RuntimePhase::Recording) {
             return desktop_hud_view_model_for_phase(RuntimePhase::Recording);
@@ -7041,22 +9184,83 @@ mod windows_app {
 
         let mut rect = RECT::default();
         GetClientRect(hwnd, &mut rect);
-        let (model, thinking_pulse_tick) = overlay_ui_state()
-            .lock()
-            .ok()
-            .map(|overlay| {
-                (
-                    overlay.hud_model.clone().unwrap_or_else(|| {
-                        desktop_hud_view_model_for_phase(RuntimePhase::Recording)
-                    }),
-                    overlay.hud_thinking_pulse_tick,
-                )
-            })
-            .unwrap_or_else(|| (desktop_hud_view_model_for_phase(RuntimePhase::Recording), 0));
-
         let dpi = overlay_dpi_for_window(hwnd);
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
+        let (
+            model,
+            thinking_pulse_tick,
+            corrected_prefix,
+            partial_tail,
+            scroll_line_offset,
+            cached_partial_layout,
+            paint_text_region,
+        ) = overlay_ui_state()
+            .lock()
+            .ok()
+            .map(|overlay| {
+                let cached_partial_layout = overlay.hud_streaming_partial_layout;
+                let paint_text_region = cached_partial_layout
+                    .map(|layout| {
+                        rects_intersect(
+                            paint.rcPaint,
+                            desktop_overlay_rect_to_rect(layout.text_rect),
+                        )
+                    })
+                    .unwrap_or(true);
+                let source_model = overlay
+                    .hud_model
+                    .clone()
+                    .unwrap_or_else(|| desktop_hud_view_model_for_phase(RuntimePhase::Recording));
+                let model = if source_model.visual_state == DesktopHudVisualState::Listening
+                    && !paint_text_region
+                {
+                    DesktopHudViewModel {
+                        visual_state: source_model.visual_state,
+                        title: source_model.title.clone(),
+                        detail: None,
+                        detail_lifecycle: source_model.detail_lifecycle,
+                        meter: source_model.meter.clone(),
+                        progress_percent: source_model.progress_percent,
+                    }
+                } else {
+                    source_model
+                };
+                (
+                    model,
+                    overlay.hud_thinking_pulse_tick,
+                    if paint_text_region {
+                        overlay
+                            .hud_streaming_corrected_prefix
+                            .clone()
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    if paint_text_region {
+                        overlay
+                            .hud_streaming_partial_tail
+                            .clone()
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    overlay.hud_streaming_scroll_line_offset,
+                    cached_partial_layout,
+                    paint_text_region,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    desktop_hud_view_model_for_phase(RuntimePhase::Recording),
+                    0,
+                    String::new(),
+                    String::new(),
+                    0,
+                    None,
+                    true,
+                )
+            });
         let buffer = if width > 0 && height > 0 {
             let memory_dc = CreateCompatibleDC(window_hdc);
             if memory_dc.is_null() {
@@ -7114,7 +9318,9 @@ mod windows_app {
 
             let cancel_rect = desktop_listening_hud_cancel_button_rect(width, height, dpi);
             let confirm_rect = desktop_listening_hud_complete_button_rect(width, height, dpi);
-            let mut waveform_rect = desktop_listening_hud_waveform_rect(width, height, dpi);
+            let mut waveform_rect = cached_partial_layout
+                .map(|layout| layout.waveform_rect)
+                .unwrap_or_else(|| desktop_listening_hud_waveform_rect(width, height, dpi));
 
             let cancel_brush = CreateSolidBrush(listening_cancel_fill_color());
             let cancel_pen = CreatePen(PS_SOLID, 1, listening_cancel_border_color());
@@ -7178,39 +9384,39 @@ mod windows_app {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
 
-            if let Some(partial_text) = model.detail.as_deref() {
-                if let Some(partial_layout) = desktop_listening_hud_partial_text_layout(
-                    width,
-                    height,
-                    dpi,
-                    Some(partial_text),
-                ) {
-                    let partial_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
-                    let old_partial_font = SelectObject(hdc, partial_font as _);
-                    let partial_text_color = match desktop_hud_detail_lifecycle(&model) {
-                        Some(DesktopTextLifecycleState::Corrected) => rgb(245, 247, 250),
-                        _ => rgb(245, 190, 72),
-                    };
-                    SetTextColor(hdc, partial_text_color);
-                    let mut partial_rect = RECT {
-                        left: partial_layout.text_rect.left,
-                        top: partial_layout.text_rect.top,
-                        right: partial_layout.text_rect.right,
-                        bottom: partial_layout.text_rect.bottom,
-                    };
-                    let draw_flags = if partial_layout.wraps_text {
-                        DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX
-                    } else {
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX
-                    };
-                    let visible_partial_text =
-                        desktop_listening_hud_visible_partial_text(partial_text, &partial_layout);
-                    DrawTextW(
+            let use_fallback_partial =
+                corrected_prefix.trim().is_empty() && partial_tail.trim().is_empty();
+            let partial_text = if use_fallback_partial {
+                model
+                    .detail
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            } else {
+                format!("{}{}", corrected_prefix, partial_tail)
+            };
+            if paint_text_region && !partial_text.trim().is_empty() {
+                if let Some(partial_layout) = cached_partial_layout.or_else(|| {
+                    desktop_listening_hud_partial_text_layout(
+                        width,
+                        height,
+                        dpi,
+                        Some(&partial_text),
+                    )
+                }) {
+                    draw_listening_hud_transcript(
                         hdc,
-                        to_wide(&visible_partial_text).as_ptr(),
-                        -1,
-                        &mut partial_rect,
-                        draw_flags,
+                        dpi,
+                        desktop_overlay_rect_to_rect(partial_layout.text_rect),
+                        &partial_layout,
+                        &corrected_prefix,
+                        if use_fallback_partial {
+                            partial_text.as_str()
+                        } else {
+                            partial_tail.as_str()
+                        },
+                        scroll_line_offset,
                     );
                     if let Some(scrollbar_rect) = partial_layout.scrollbar_rect {
                         let track_brush = CreateSolidBrush(listening_shell_border_color());
@@ -7227,27 +9433,27 @@ mod windows_app {
                         );
                         let _ = SelectObject(hdc, old_brush);
 
-                        let thumb_height = scale_desktop_overlay_length(18, dpi)
-                            .max(8)
-                            .min(scrollbar_rect.bottom - scrollbar_rect.top);
-                        let thumb_top = scrollbar_rect.bottom - thumb_height;
-                        let old_brush = SelectObject(hdc, thumb_brush as _);
-                        RoundRect(
-                            hdc,
-                            scrollbar_rect.left,
-                            thumb_top,
-                            scrollbar_rect.right,
-                            scrollbar_rect.bottom,
-                            0,
-                            0,
-                        );
-                        let _ = SelectObject(hdc, old_brush);
+                        if let Some(thumb_rect) = desktop_listening_hud_scrollbar_thumb_rect(
+                            &partial_layout,
+                            dpi,
+                            scroll_line_offset,
+                        ) {
+                            let old_brush = SelectObject(hdc, thumb_brush as _);
+                            RoundRect(
+                                hdc,
+                                thumb_rect.left,
+                                thumb_rect.top,
+                                thumb_rect.right,
+                                thumb_rect.bottom,
+                                0,
+                                0,
+                            );
+                            let _ = SelectObject(hdc, old_brush);
+                        }
                         DeleteObject(track_brush as _);
                         DeleteObject(thumb_brush as _);
                     }
                     waveform_rect = partial_layout.waveform_rect;
-                    let _ = SelectObject(hdc, old_partial_font);
-                    DeleteObject(partial_font as _);
                 }
             }
 
@@ -7454,7 +9660,22 @@ mod windows_app {
         DeleteObject(badge_font as _);
         DeleteObject(icon_font as _);
         if let Some((memory_dc, memory_bitmap, old_bitmap)) = buffer {
-            BitBlt(window_hdc, 0, 0, width, height, memory_dc, 0, 0, SRCCOPY);
+            let paint_rect = paint.rcPaint;
+            let paint_width = (paint_rect.right - paint_rect.left).max(0);
+            let paint_height = (paint_rect.bottom - paint_rect.top).max(0);
+            if paint_width > 0 && paint_height > 0 {
+                BitBlt(
+                    window_hdc,
+                    paint_rect.left,
+                    paint_rect.top,
+                    paint_width,
+                    paint_height,
+                    memory_dc,
+                    paint_rect.left,
+                    paint_rect.top,
+                    SRCCOPY,
+                );
+            }
             let _ = SelectObject(memory_dc, old_bitmap);
             DeleteObject(memory_bitmap as _);
             DeleteDC(memory_dc);
@@ -8071,6 +10292,702 @@ mod windows_app {
             1
         } else {
             CallNextHookEx(ptr::null_mut(), code, wparam, lparam)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn copy_popup_edit_style_exposes_native_vertical_scrolling() {
+            let style = copy_popup_edit_control_style();
+            assert_ne!(style & ES_MULTILINE as u32, 0);
+            assert_ne!(style & ES_AUTOVSCROLL as u32, 0);
+            assert_ne!(
+                style & windows_sys::Win32::UI::WindowsAndMessaging::WS_VSCROLL,
+                0
+            );
+        }
+
+        #[test]
+        fn remove_hud_streaming_segments_drops_only_named_ids_preserving_order() {
+            let mut segments = vec![
+                ("seg-1".to_string(), "第一句。".to_string()),
+                ("seg-1#2".to_string(), "第二句。".to_string()),
+                ("seg-1#3".to_string(), "第三句。".to_string()),
+            ];
+
+            remove_hud_streaming_segments(&mut segments, &["seg-1#2".to_string()]);
+
+            assert_eq!(
+                segments,
+                vec![
+                    ("seg-1".to_string(), "第一句。".to_string()),
+                    ("seg-1#3".to_string(), "第三句。".to_string()),
+                ]
+            );
+        }
+
+        #[test]
+        fn remove_hud_streaming_segments_ignores_empty_id_list() {
+            let mut segments = vec![("seg-1".to_string(), "第一句。".to_string())];
+
+            remove_hud_streaming_segments(&mut segments, &[]);
+
+            assert_eq!(
+                segments,
+                vec![("seg-1".to_string(), "第一句。".to_string())]
+            );
+        }
+
+        #[test]
+        fn copy_popup_edit_background_is_opaque_for_native_scrolling() {
+            assert_eq!(
+                copy_popup_edit_background_mode(),
+                windows_sys::Win32::Graphics::Gdi::OPAQUE as i32
+            );
+        }
+
+        #[test]
+        fn live_smart_route_update_waits_for_corrected_plain_transcription() {
+            let long_transcript = "这是一段需要完整保留的转录内容。".repeat(12);
+            assert_eq!(
+                live_smart_route_for_transcript(VoiceMode::Smart, None, &long_transcript, 4,),
+                Some(VoiceMode::Transcribe)
+            );
+            assert_eq!(
+                live_smart_route_for_transcript(VoiceMode::Smart, None, "今天下午开会。", 1),
+                None
+            );
+            assert_eq!(
+                live_smart_route_for_corrected_transcript(
+                    VoiceMode::Smart,
+                    None,
+                    "今天下午开会。",
+                    1,
+                ),
+                Some(VoiceMode::Transcribe)
+            );
+            assert_eq!(
+                live_smart_route_for_corrected_transcript(VoiceMode::Smart, None, "打开记事本", 1,),
+                None
+            );
+            assert_eq!(
+                live_smart_route_for_corrected_transcript(VoiceMode::Smart, None, "帮我。", 1,),
+                None
+            );
+            assert_eq!(
+                live_smart_route_for_corrected_transcript(
+                    VoiceMode::Smart,
+                    None,
+                    "帮我写一封邮件。",
+                    2,
+                ),
+                None
+            );
+            assert_eq!(
+                live_smart_route_for_transcript(VoiceMode::Command, None, &long_transcript, 4,),
+                None
+            );
+        }
+
+        #[test]
+        fn queued_smart_job_can_apply_after_live_route_locks_to_transcribe() {
+            assert!(live_correction_job_target_apply_allowed(
+                false,
+                true,
+                VoiceMode::Smart,
+                Some(VoiceMode::Transcribe),
+            ));
+            assert!(!live_correction_job_target_apply_allowed(
+                false,
+                true,
+                VoiceMode::Smart,
+                None,
+            ));
+            assert!(!live_correction_job_target_apply_allowed(
+                false,
+                false,
+                VoiceMode::Smart,
+                Some(VoiceMode::Transcribe),
+            ));
+            assert!(live_correction_job_target_apply_allowed(
+                true,
+                true,
+                VoiceMode::Transcribe,
+                None,
+            ));
+            assert!(!live_correction_job_target_apply_allowed(
+                false,
+                true,
+                VoiceMode::Command,
+                None,
+            ));
+        }
+
+        #[test]
+        fn live_correction_backlog_drain_requires_dispatch_target_permission() {
+            assert!(!live_correction_backlog_drain_allowed(
+                false,
+                true,
+                false,
+                VoiceMode::Transcribe,
+                None,
+            ));
+            assert!(live_correction_backlog_drain_allowed(
+                true,
+                true,
+                false,
+                VoiceMode::Transcribe,
+                None,
+            ));
+            assert!(!live_correction_backlog_drain_allowed(
+                true,
+                true,
+                false,
+                VoiceMode::Command,
+                None,
+            ));
+        }
+
+        #[tokio::test]
+        async fn live_correction_apply_waits_for_registered_predecessors() {
+            let tracker = Arc::new(LiveCorrectionTracker::new(1));
+            assert!(tracker.register_job("seg-1", "first", None));
+            assert!(tracker.register_job("seg-2", "second", None));
+
+            let waiting_tracker = Arc::clone(&tracker);
+            let mut waiter =
+                tokio::spawn(async move { waiting_tracker.wait_until_apply_turn("seg-2").await });
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err());
+
+            tracker.complete_job("seg-1", None, None);
+            assert!(tokio::time::timeout(Duration::from_millis(200), waiter)
+                .await
+                .expect("apply waiter should be released")
+                .expect("apply waiter task should complete"));
+        }
+
+        #[tokio::test]
+        async fn live_correction_cancel_releases_order_waiters_without_allowing_apply() {
+            let tracker = Arc::new(LiveCorrectionTracker::new(1));
+            assert!(tracker.register_job("seg-1", "first", None));
+            assert!(tracker.register_job("seg-2", "second", None));
+
+            let waiting_tracker = Arc::clone(&tracker);
+            let waiter =
+                tokio::spawn(async move { waiting_tracker.wait_until_apply_turn("seg-2").await });
+            tracker.cancel();
+
+            assert!(!tokio::time::timeout(Duration::from_millis(200), waiter)
+                .await
+                .expect("cancelled waiter should be released")
+                .expect("cancelled waiter task should complete"));
+        }
+
+        #[test]
+        fn live_correction_cancel_waits_for_inflight_apply_and_blocks_later_apply() {
+            let tracker = Arc::new(LiveCorrectionTracker::new(1));
+            assert!(tracker.register_job("seg-1", "first", None));
+            let (apply_started_tx, apply_started_rx) = std::sync::mpsc::channel();
+            let (release_apply_tx, release_apply_rx) = std::sync::mpsc::channel();
+
+            let apply_tracker = Arc::clone(&tracker);
+            let apply_thread = std::thread::spawn(move || {
+                let _lease = apply_tracker
+                    .acquire_apply_lease("seg-1")
+                    .expect("registered live correction should acquire an apply lease");
+                apply_started_tx.send(()).expect("announce apply start");
+                release_apply_rx.recv().expect("release apply lease");
+            });
+            apply_started_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("apply lease should be acquired");
+
+            let cancel_tracker = Arc::clone(&tracker);
+            let (cancel_started_tx, cancel_started_rx) = std::sync::mpsc::channel();
+            let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
+            let cancel_thread = std::thread::spawn(move || {
+                cancel_started_tx.send(()).expect("announce cancel start");
+                cancel_tracker.cancel();
+                cancelled_tx.send(()).expect("announce cancellation");
+            });
+            cancel_started_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("cancel should start while the apply lease is held");
+            assert!(cancelled_rx
+                .recv_timeout(Duration::from_millis(20))
+                .is_err());
+
+            release_apply_tx.send(()).expect("finish in-flight apply");
+            apply_thread.join().expect("apply thread should finish");
+            cancelled_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("cancel should finish after the apply lease is released");
+            cancel_thread.join().expect("cancel thread should finish");
+            assert!(tracker.acquire_apply_lease("seg-1").is_none());
+        }
+
+        #[test]
+        fn configured_or_installed_local_asr_can_run_while_default_model_downloads() {
+            assert!(local_asr_bootstrap_allows_packaged_daemon(
+                &LocalAsrBootstrapStatus::Downloading,
+                true,
+                false,
+            ));
+            assert!(local_asr_bootstrap_allows_packaged_daemon(
+                &LocalAsrBootstrapStatus::Downloading,
+                false,
+                true,
+            ));
+            assert!(!local_asr_bootstrap_allows_packaged_daemon(
+                &LocalAsrBootstrapStatus::Downloading,
+                false,
+                false,
+            ));
+            assert!(local_asr_bootstrap_allows_packaged_daemon(
+                &LocalAsrBootstrapStatus::FallbackCloud("download failed".to_string()),
+                false,
+                true,
+            ));
+            assert!(local_asr_bootstrap_allows_packaged_daemon(
+                &LocalAsrBootstrapStatus::Ready,
+                false,
+                false,
+            ));
+        }
+
+        #[test]
+        fn paste_shortcut_modifier_release_wait_finishes_immediately_when_no_modifier_is_pressed() {
+            let mut samples = vec![PasteShortcutModifierKeyState::default()].into_iter();
+            let outcome = wait_for_paste_shortcut_modifier_release_with_sampler(
+                Duration::from_millis(50),
+                Duration::from_millis(1),
+                || samples.next().unwrap_or_default(),
+            );
+
+            assert!(outcome.cleared);
+            assert_eq!(outcome.poll_count, 1);
+            assert_eq!(
+                outcome.initial_state,
+                PasteShortcutModifierKeyState::default()
+            );
+            assert_eq!(
+                outcome.final_state,
+                PasteShortcutModifierKeyState::default()
+            );
+        }
+
+        #[test]
+        fn paste_shortcut_modifier_release_wait_polls_until_modifiers_clear() {
+            let mut samples = vec![
+                PasteShortcutModifierKeyState {
+                    control: true,
+                    alt: true,
+                    shift: false,
+                },
+                PasteShortcutModifierKeyState {
+                    control: false,
+                    alt: true,
+                    shift: false,
+                },
+                PasteShortcutModifierKeyState::default(),
+            ]
+            .into_iter();
+            let outcome = wait_for_paste_shortcut_modifier_release_with_sampler(
+                Duration::from_millis(50),
+                Duration::from_millis(1),
+                || samples.next().unwrap_or_default(),
+            );
+
+            assert!(outcome.cleared);
+            assert_eq!(outcome.poll_count, 3);
+            assert_eq!(
+                outcome.initial_state,
+                PasteShortcutModifierKeyState {
+                    control: true,
+                    alt: true,
+                    shift: false,
+                }
+            );
+            assert_eq!(
+                outcome.final_state,
+                PasteShortcutModifierKeyState::default()
+            );
+        }
+
+        #[test]
+        fn paste_shortcut_modifier_release_wait_times_out_when_alt_stays_pressed() {
+            let mut samples = vec![
+                PasteShortcutModifierKeyState {
+                    control: false,
+                    alt: true,
+                    shift: false,
+                },
+                PasteShortcutModifierKeyState {
+                    control: false,
+                    alt: true,
+                    shift: false,
+                },
+                PasteShortcutModifierKeyState {
+                    control: false,
+                    alt: true,
+                    shift: false,
+                },
+            ]
+            .into_iter();
+            let outcome = wait_for_paste_shortcut_modifier_release_with_sampler(
+                Duration::from_millis(0),
+                Duration::from_millis(1),
+                || samples.next().unwrap_or_default(),
+            );
+
+            assert!(!outcome.cleared);
+            assert_eq!(outcome.poll_count, 1);
+            assert_eq!(
+                outcome.final_state,
+                PasteShortcutModifierKeyState {
+                    control: false,
+                    alt: true,
+                    shift: false,
+                }
+            );
+        }
+
+        #[tokio::test]
+        async fn final_correction_provider_wait_uses_timeout_without_live_tracker() {
+            let result = tokio::time::timeout(
+                Duration::from_millis(200),
+                wait_for_speculative_provider(
+                    None,
+                    Duration::from_millis(10),
+                    std::future::pending::<Result<String>>(),
+                ),
+            )
+            .await
+            .expect("final correction provider wait should not hang");
+
+            assert!(matches!(result, SpeculativeProviderWait::TimedOut));
+        }
+
+        #[tokio::test]
+        async fn live_correction_provider_wait_is_preempted_by_cancel() {
+            let tracker = Arc::new(LiveCorrectionTracker::new(1));
+            assert!(tracker.register_job("seg-1", "first", None));
+
+            let waiting_tracker = Arc::clone(&tracker);
+            let waiter = tokio::spawn(async move {
+                wait_for_speculative_provider(
+                    Some(waiting_tracker.as_ref()),
+                    Duration::from_secs(1),
+                    std::future::pending::<Result<String>>(),
+                )
+                .await
+            });
+            tokio::task::yield_now().await;
+            tracker.cancel();
+
+            let result = tokio::time::timeout(Duration::from_millis(200), waiter)
+                .await
+                .expect("cancelled provider wait should finish")
+                .expect("provider wait task should complete");
+            assert!(matches!(result, SpeculativeProviderWait::Cancelled));
+        }
+
+        #[test]
+        fn live_correction_local_fallback_remains_eligible_for_ordered_apply() {
+            let tracker = Arc::new(LiveCorrectionTracker::new(1));
+            assert!(tracker.register_job("seg-1", "本地文本，", None));
+
+            let job = SpeculativeCloudCorrectionJob {
+                config: correction_job_test_config(),
+                segment_id: "seg-1".to_string(),
+                transcript: "本地文本，".to_string(),
+                context_before: None,
+                processing_mode: VoiceMode::Transcribe,
+                requested_mode: VoiceMode::Transcribe,
+                origin_insert_target: None,
+                anchor: None,
+                full_document_inserted_segments: Vec::new(),
+                session_log_path: None,
+                latest_live_segment_guard: Some(LatestLiveSegmentGuard { generation: 1 }),
+                allow_target_apply: true,
+                generation: 1,
+                started_at: Instant::now(),
+                hwnd_value: 0,
+                hud_hwnd_value: 0,
+            };
+
+            let fallback = live_correction_local_fallback_output(Some(&tracker), &job)
+                .expect("live provider failure should preserve local text");
+            assert_eq!(fallback.text, "本地文本，");
+            assert!(fallback.faithful_validation.is_none());
+            assert!(tracker.can_process("seg-1"));
+            assert!(tracker.snapshot()[0].corrected_text.is_none());
+        }
+
+        #[tokio::test]
+        async fn live_and_final_corrections_share_one_permit_budget() {
+            let gate = CorrectionWorkerGate::new(1);
+            let first_permit = gate.acquire().await.expect("first correction permit");
+
+            let waiting_gate = gate.clone();
+            let mut waiter = tokio::spawn(async move { waiting_gate.acquire().await });
+            assert!(tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err());
+
+            drop(first_permit);
+            assert!(tokio::time::timeout(Duration::from_millis(200), waiter)
+                .await
+                .expect("second correction should acquire the released permit")
+                .expect("permit waiter task should complete")
+                .is_some());
+        }
+
+        #[test]
+        fn foreground_apply_gate_holds_an_owned_lease_across_the_full_transaction() {
+            let gate = ForegroundApplyGate::new();
+            let first_lease = gate.acquire();
+            let (second_started_tx, second_started_rx) = std::sync::mpsc::channel();
+            let (second_acquired_tx, second_acquired_rx) = std::sync::mpsc::channel();
+
+            let waiting_gate = gate.clone();
+            let waiter = std::thread::spawn(move || {
+                second_started_tx.send(()).expect("announce gate wait");
+                let _lease = waiting_gate.acquire();
+                second_acquired_tx.send(()).expect("announce gate acquire");
+            });
+            second_started_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("second transaction should start waiting");
+            assert!(second_acquired_rx
+                .recv_timeout(Duration::from_millis(20))
+                .is_err());
+
+            drop(first_lease);
+            second_acquired_rx
+                .recv_timeout(Duration::from_millis(200))
+                .expect("second transaction should acquire after release");
+            waiter
+                .join()
+                .expect("foreground apply waiter should finish");
+        }
+
+        fn correction_job_test_config() -> TalkConfig {
+            TalkConfig {
+                trigger: talk_core::TriggerConfig {
+                    mode: TriggerMode::Toggle,
+                    toggle_shortcut: "RightAlt".to_string(),
+                },
+                desktop: talk_core::DesktopConfig::default(),
+                audio: talk_core::AudioConfig {
+                    backend: AudioBackendMode::Silent,
+                    input_device: None,
+                    max_recording_seconds: 5,
+                    sample_rate_hz: 16_000,
+                    channels: 1,
+                    temp_dir: PathBuf::from(".runtime/talk/audio"),
+                },
+                provider: talk_core::ProviderConfig {
+                    kind: talk_core::ProviderKind::Mock,
+                    mock_transcript: Some("test transcript".to_string()),
+                    endpoint: None,
+                    audio_transcriptions_endpoint: None,
+                    chat_completions_endpoint: None,
+                    transcription_transport:
+                        talk_core::OpenAiTranscriptionTransport::AudioTranscriptions,
+                    transcription_model: None,
+                    chat_model: None,
+                    api_key: None,
+                    api_key_env: None,
+                },
+                output: talk_core::OutputConfig {
+                    mode: OutputMode::DryRun,
+                    restore_clipboard: true,
+                    clipboard_backend: ClipboardBackendMode::Fallback,
+                },
+                logging: talk_core::LoggingConfig {
+                    dir: PathBuf::from(".runtime/talk/logs"),
+                },
+                speculative: Default::default(),
+                voice_mode: VoiceMode::Smart,
+            }
+        }
+
+        #[test]
+        fn live_correction_job_construction_always_uses_transcribe() {
+            let config = correction_job_test_config();
+            let pipeline = DesktopSpeculativePipelineConfig {
+                enabled: true,
+                local_asr: "streaming_service".to_string(),
+                cloud_correction: "provider_text_processor".to_string(),
+            };
+            let event = SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id: "seg-1".to_string(),
+                local_text: "打开记事本只是示例。".to_string(),
+                context_before: String::new(),
+            };
+
+            let job = speculative_correction_job_for_live_segment(
+                &config,
+                &pipeline,
+                &event,
+                VoiceMode::Smart,
+                None,
+                None,
+                None,
+                false,
+                7,
+                0,
+                0,
+            )
+            .expect("live correction job");
+
+            assert_eq!(job.processing_mode, VoiceMode::Transcribe);
+            assert_eq!(job.requested_mode, VoiceMode::Smart);
+        }
+
+        #[test]
+        fn final_document_job_uses_resolved_mode_and_preserves_unchanged_target_text() {
+            let config = correction_job_test_config();
+            let target = ForegroundInsertTarget {
+                window_handle: 0x707,
+                focus_handle: Some(0x808),
+                primary_focus_handle: None,
+                fallback_focus_handle: None,
+                focus_capture_source: None,
+            };
+            let transcript = "第一段。第二段。第三段。".to_string();
+            let inserted_segments = vec![transcript.clone()];
+            let session_log_path = PathBuf::from(".runtime/talk/logs/session.json");
+
+            let job = speculative_correction_job_for_final_document(
+                &config,
+                "final-document",
+                transcript.clone(),
+                VoiceMode::Smart,
+                Some(VoiceMode::Document),
+                None,
+                target,
+                inserted_segments.clone(),
+                session_log_path.clone(),
+                7,
+                0,
+                0,
+            )
+            .expect("final document correction job");
+
+            assert_eq!(job.processing_mode, VoiceMode::Document);
+            assert_eq!(job.full_document_inserted_segments, inserted_segments);
+            assert_eq!(job.session_log_path, Some(session_log_path));
+            assert!(speculative_correction_unchanged_fast_path_allowed(
+                &job,
+                &transcript
+            ));
+        }
+
+        #[test]
+        fn final_document_job_still_patches_changed_text() {
+            let config = correction_job_test_config();
+            let target = ForegroundInsertTarget {
+                window_handle: 0x707,
+                focus_handle: Some(0x808),
+                primary_focus_handle: None,
+                fallback_focus_handle: None,
+                focus_capture_source: None,
+            };
+            let transcript = "第一段。第二段。第三段。".to_string();
+            let inserted_segments = vec![transcript.clone()];
+
+            let job = speculative_correction_job_for_final_document(
+                &config,
+                "final-document",
+                transcript.clone(),
+                VoiceMode::Smart,
+                Some(VoiceMode::Document),
+                None,
+                target,
+                inserted_segments,
+                PathBuf::from(".runtime/talk/logs/session.json"),
+                7,
+                0,
+                0,
+            )
+            .expect("final document correction job");
+
+            assert!(!speculative_correction_unchanged_fast_path_allowed(
+                &job,
+                "第一段。第二段。第三段！"
+            ));
+        }
+
+        #[test]
+        fn final_document_job_does_not_skip_when_live_baseline_is_partial() {
+            let config = correction_job_test_config();
+            let target = ForegroundInsertTarget {
+                window_handle: 0x707,
+                focus_handle: Some(0x808),
+                primary_focus_handle: None,
+                fallback_focus_handle: None,
+                focus_capture_source: None,
+            };
+            let transcript = "第一段。第二段。".to_string();
+
+            let job = speculative_correction_job_for_final_document(
+                &config,
+                "final-document",
+                transcript.clone(),
+                VoiceMode::Smart,
+                Some(VoiceMode::Transcribe),
+                None,
+                target,
+                vec!["第一段。".to_string()],
+                PathBuf::from(".runtime/talk/logs/session.json"),
+                7,
+                0,
+                0,
+            )
+            .expect("final document correction job");
+
+            assert!(!speculative_correction_unchanged_fast_path_allowed(
+                &job,
+                &transcript
+            ));
+        }
+
+        #[tokio::test]
+        async fn abort_pending_document_correction_cancels_task_and_clears_slot() {
+            let task = tokio::spawn(std::future::pending::<()>());
+            let mut pending = Some((7, task));
+
+            abort_pending_task(&mut pending).await;
+
+            assert!(pending.is_none());
+        }
+
+        #[test]
+        fn model_bootstrap_side_effects_are_blocked_after_shutdown() {
+            assert!(model_bootstrap_side_effects_allowed(false));
+            assert!(!model_bootstrap_side_effects_allowed(true));
+        }
+
+        #[test]
+        fn correction_foreground_side_effects_require_current_generation_and_live_window() {
+            assert!(correction_foreground_side_effects_allowed(false, 8, 7));
+            assert!(!correction_foreground_side_effects_allowed(true, 8, 7));
+            assert!(!correction_foreground_side_effects_allowed(false, 9, 7));
+        }
+
+        #[test]
+        fn stop_worker_side_effects_require_current_generation_and_live_window() {
+            assert!(stop_worker_side_effects_allowed(false, Some(7), 8, 7));
+            assert!(!stop_worker_side_effects_allowed(true, Some(7), 8, 7));
+            assert!(!stop_worker_side_effects_allowed(false, None, 8, 7));
+            assert!(!stop_worker_side_effects_allowed(false, Some(8), 9, 7));
         }
     }
 }

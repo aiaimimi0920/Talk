@@ -1242,7 +1242,9 @@ executable.
   Set `TALK_DISABLE_NATIVE_AUDIO=1` to force this native path to fail before
   any native audio side effects. For manual smoke runs,
   `TALK_NATIVE_AUDIO_SECONDS=<n>` can shorten native capture duration; the
-  value is still capped by `audio.max_recording_seconds`.
+  value is still capped by `audio.max_recording_seconds`. Set
+  `audio.max_recording_seconds = 0` to disable Talk's program-imposed maximum
+  recording length; a positive value remains an explicit safety cap.
 
 These `TALK_*` variables are the current supported names.
 

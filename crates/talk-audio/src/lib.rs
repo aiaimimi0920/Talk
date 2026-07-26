@@ -5,7 +5,10 @@ use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[cfg(windows)]
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 pub use talk_core::NativeReadinessStatus;
 use talk_core::{AudioBackendMode, TalkError};
@@ -179,6 +182,23 @@ impl RecordingPcmCursor {
     }
 }
 
+fn discard_captured_samples_before_cursor(samples: &mut Vec<f32>, cursor: &mut RecordingPcmCursor) {
+    let consumed_samples = cursor.source_sample_offset.min(samples.len());
+    if consumed_samples == 0 {
+        return;
+    }
+    samples.drain(..consumed_samples);
+    cursor.source_sample_offset -= consumed_samples;
+}
+
+fn native_input_sample_count_to_append(
+    input_sample_count: usize,
+    total_captured_samples: usize,
+    max_samples: usize,
+) -> usize {
+    input_sample_count.min(max_samples.saturating_sub(total_captured_samples))
+}
+
 enum RecordingBackend {
     Silent {
         artifact: AudioArtifact,
@@ -197,6 +217,13 @@ struct NativeWindowsRecording {
     samples: Arc<Mutex<Vec<f32>>>,
     stream_errors: Arc<Mutex<Vec<String>>>,
     stream: Option<cpal::Stream>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct NativeInputCaptureLimit {
+    max_samples: usize,
+    total_captured_samples: Arc<AtomicUsize>,
 }
 
 #[cfg(not(windows))]
@@ -425,6 +452,15 @@ impl RecordingSession {
         }
     }
 
+    /// Releases PCM that a streaming consumer has already sent. Callers must cancel, not finish,
+    /// the recording after using this destructive streaming-only operation.
+    pub fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<(), TalkError> {
+        match &self.backend {
+            RecordingBackend::Silent { .. } => Ok(()),
+            RecordingBackend::NativeWindows(recording) => recording.discard_consumed_pcm(cursor),
+        }
+    }
+
     pub fn current_level(&self) -> Result<AudioInputLevel, TalkError> {
         match &self.backend {
             RecordingBackend::Silent { .. } => Ok(AudioInputLevel {
@@ -532,6 +568,26 @@ pub fn write_captured_wav(
     source: &CapturedAudioBuffer,
     settings: WavSettings,
 ) -> Result<(), TalkError> {
+    // Lift quiet-but-valid captures toward a consistent speech level before
+    // encoding. Gain is bounded and skipped for weak captures so the provider
+    // weak-signal reject still fires (see `normalized_capture_gain`). Streaming
+    // chunks intentionally skip this: per-chunk gain would pump between chunks.
+    let normalization_gain = normalized_capture_gain(captured_audio_peak_abs(&source.samples));
+    let normalized_source;
+    let source = if normalization_gain != 1.0 {
+        normalized_source = CapturedAudioBuffer {
+            sample_rate_hz: source.sample_rate_hz,
+            channels: source.channels,
+            samples: source
+                .samples
+                .iter()
+                .map(|sample| (sample * normalization_gain).clamp(-1.0, 1.0))
+                .collect(),
+        };
+        &normalized_source
+    } else {
+        source
+    };
     let pcm_bytes = encode_captured_pcm_bytes(source, settings)?;
 
     ensure_artifact_parent_dir(artifact)?;
@@ -724,18 +780,101 @@ fn resampled_frame_count(
     })
 }
 
-fn source_frame_index_for_target(
-    target_frame_index: usize,
-    source_frames: usize,
+/// Resample a mono f32 signal to exactly `target_frames` samples using
+/// band-limited interpolation.
+///
+/// Downsampling applies a Hann-weighted moving average whose width tracks the
+/// decimation ratio, which attenuates energy above the target Nyquist
+/// frequency. Nearest-neighbour picking (the previous behaviour) instead folds
+/// that high-frequency energy back into the speech band as aliasing, degrading
+/// ASR features on any capture whose device rate is not already the target
+/// rate. Upsampling uses linear interpolation (no aliasing on upsample), and an
+/// unchanged sample rate is a bit-identical passthrough.
+fn resample_mono_to_len(
+    source_mono: &[f32],
     source_sample_rate_hz: u32,
     target_sample_rate_hz: u32,
-) -> Result<usize, TalkError> {
-    let source_frame_index = (target_frame_index as u128 * u128::from(source_sample_rate_hz))
-        / u128::from(target_sample_rate_hz);
-    let source_frame_index = usize::try_from(source_frame_index).map_err(|_| {
-        TalkError::Audio("captured audio is too large to resample on this platform".to_string())
-    })?;
-    Ok(source_frame_index.min(source_frames.saturating_sub(1)))
+    target_frames: usize,
+) -> Vec<f32> {
+    if source_mono.is_empty() || target_frames == 0 {
+        return Vec::new();
+    }
+    if source_sample_rate_hz == target_sample_rate_hz && source_mono.len() == target_frames {
+        return source_mono.to_vec();
+    }
+
+    let last_index = source_mono.len() - 1;
+    let step = f64::from(source_sample_rate_hz) / f64::from(target_sample_rate_hz);
+    let mut resampled = Vec::with_capacity(target_frames);
+
+    if target_sample_rate_hz >= source_sample_rate_hz {
+        // Upsample / same-rate: linear interpolation between adjacent samples.
+        for target_index in 0..target_frames {
+            let source_position = target_index as f64 * step;
+            let lower = source_position.floor() as usize;
+            if lower >= last_index {
+                resampled.push(source_mono[last_index]);
+                continue;
+            }
+            let frac = (source_position - lower as f64) as f32;
+            resampled.push(source_mono[lower] * (1.0 - frac) + source_mono[lower + 1] * frac);
+        }
+        return resampled;
+    }
+
+    // Downsample: Hann-weighted moving average around each fractional source
+    // position. The window radius scales with the decimation ratio so the
+    // effective low-pass cutoff sits near the target Nyquist frequency.
+    let radius = step.ceil().max(1.0);
+    let window = radius + 1.0;
+    for target_index in 0..target_frames {
+        let center = target_index as f64 * step;
+        let first = (center - radius).floor() as isize;
+        let last = (center + radius).ceil() as isize;
+        let mut weighted_sum = 0.0_f64;
+        let mut weight_total = 0.0_f64;
+        for tap in first..=last {
+            let distance = (tap as f64 - center).abs();
+            if distance >= window {
+                continue;
+            }
+            let weight = 0.5 * (1.0 + (std::f64::consts::PI * distance / window).cos());
+            let index = tap.clamp(0, last_index as isize) as usize;
+            weighted_sum += f64::from(source_mono[index]) * weight;
+            weight_total += weight;
+        }
+        let sample = if weight_total > 0.0 {
+            (weighted_sum / weight_total) as f32
+        } else {
+            source_mono[center.round().clamp(0.0, last_index as f64) as usize]
+        };
+        resampled.push(sample);
+    }
+    resampled
+}
+
+/// Peak below which capture gain is left untouched. This sits at the provider
+/// weak-signal reject threshold so genuinely weak captures stay weak (and keep
+/// being rejected upstream) rather than being amplified up to speech level.
+const CAPTURE_NORMALIZE_MIN_PEAK: f32 = 0.05;
+/// Target peak that quiet-but-valid captures are lifted toward.
+const CAPTURE_NORMALIZE_TARGET_PEAK: f32 = 0.9;
+/// Upper bound on applied gain, so the noise floor of a quiet capture is not
+/// amplified without limit.
+const CAPTURE_NORMALIZE_MAX_GAIN: f32 = 4.0;
+
+/// Gain that lifts a quiet-but-valid capture toward the target peak, bounded so
+/// weak captures and the noise floor are preserved. Returns `1.0` (no change)
+/// when the signal is silent/weak (`< CAPTURE_NORMALIZE_MIN_PEAK`) or already
+/// hot (`>= CAPTURE_NORMALIZE_TARGET_PEAK`).
+fn normalized_capture_gain(peak: f32) -> f32 {
+    if !peak.is_finite()
+        || peak < CAPTURE_NORMALIZE_MIN_PEAK
+        || peak >= CAPTURE_NORMALIZE_TARGET_PEAK
+    {
+        return 1.0;
+    }
+    (CAPTURE_NORMALIZE_TARGET_PEAK / peak).min(CAPTURE_NORMALIZE_MAX_GAIN)
 }
 
 fn downmix_source_frame_to_mono(source: &CapturedAudioBuffer, source_frame_index: usize) -> f32 {
@@ -867,15 +1006,17 @@ fn encode_captured_pcm_bytes(
         target_frames * usize::from(settings.channels) * std::mem::size_of::<i16>(),
     );
 
-    for target_frame_index in 0..target_frames {
-        let source_frame_index = source_frame_index_for_target(
-            target_frame_index,
-            source_frames,
-            source.sample_rate_hz,
-            settings.sample_rate_hz,
-        )?;
-        let mono_sample = downmix_source_frame_to_mono(source, source_frame_index);
+    let source_mono: Vec<f32> = (0..source_frames)
+        .map(|source_frame_index| downmix_source_frame_to_mono(source, source_frame_index))
+        .collect();
+    let resampled_mono = resample_mono_to_len(
+        &source_mono,
+        source.sample_rate_hz,
+        settings.sample_rate_hz,
+        target_frames,
+    );
 
+    for mono_sample in resampled_mono {
         for _ in 0..settings.channels {
             bytes.extend_from_slice(&float_sample_to_i16(mono_sample).to_le_bytes());
         }
@@ -893,8 +1034,12 @@ fn drain_silent_pcm_chunk(
     if cursor.source_sample_offset >= samples {
         return Ok(None);
     }
-    let remaining_samples = samples - cursor.source_sample_offset;
-    cursor.source_sample_offset = samples;
+    let remaining_samples = (samples - cursor.source_sample_offset).min(
+        streaming_pcm_chunk_sample_count(settings.sample_rate_hz, settings.channels),
+    );
+    cursor.source_sample_offset = cursor
+        .source_sample_offset
+        .saturating_add(remaining_samples);
     let sequence = cursor.next_sequence();
     Ok(Some(RecordingPcmChunk {
         sequence,
@@ -902,6 +1047,20 @@ fn drain_silent_pcm_chunk(
         channels: settings.channels,
         bytes: vec![0; remaining_samples * std::mem::size_of::<i16>()],
     }))
+}
+
+const STREAMING_PCM_CHUNK_DURATION_MS: usize = 80;
+
+fn streaming_pcm_chunk_sample_count(sample_rate_hz: u32, channels: u16) -> usize {
+    let channels = usize::from(channels).max(1);
+    ((usize::try_from(sample_rate_hz)
+        .unwrap_or(usize::MAX)
+        .saturating_mul(channels)
+        .saturating_mul(STREAMING_PCM_CHUNK_DURATION_MS)
+        / 1_000)
+        / channels)
+        .max(1)
+        .saturating_mul(channels)
 }
 
 fn validate_probe_capture_seconds(capture_seconds: u64) -> Result<(), TalkError> {
@@ -1093,6 +1252,15 @@ fn silent_audio_signal_summary(
 
 #[cfg(windows)]
 impl NativeWindowsRecording {
+    fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<(), TalkError> {
+        let mut samples = self
+            .samples
+            .lock()
+            .map_err(|_| native_windows_audio_error("captured sample buffer lock was poisoned"))?;
+        discard_captured_samples_before_cursor(&mut samples, cursor);
+        Ok(())
+    }
+
     fn drain_pcm_chunk(
         &self,
         cursor: &mut RecordingPcmCursor,
@@ -1112,8 +1280,13 @@ impl NativeWindowsRecording {
             return Ok(None);
         }
         let start = cursor.source_sample_offset - (cursor.source_sample_offset % channel_count);
-        let chunk_samples = samples[start..aligned_available].to_vec();
-        cursor.source_sample_offset = aligned_available;
+        let max_chunk_samples =
+            streaming_pcm_chunk_sample_count(self.sample_rate_hz, self.channels);
+        let end = start
+            .saturating_add(max_chunk_samples)
+            .min(aligned_available);
+        let chunk_samples = samples[start..end].to_vec();
+        cursor.source_sample_offset = end;
         drop(samples);
 
         let source = CapturedAudioBuffer {
@@ -1232,6 +1405,12 @@ impl NativeWindowsRecording {
 
 #[cfg(not(windows))]
 impl NativeWindowsRecording {
+    fn discard_consumed_pcm(&self, _cursor: &mut RecordingPcmCursor) -> Result<(), TalkError> {
+        Err(native_windows_audio_error(
+            "native_windows audio backend is only available on Windows",
+        ))
+    }
+
     fn drain_pcm_chunk(
         &self,
         _cursor: &mut RecordingPcmCursor,
@@ -1392,43 +1571,76 @@ fn play_wav_impl(_request: &AudioPlaybackRequest) -> Result<(), TalkError> {
     ))
 }
 
-#[cfg(windows)]
-fn native_windows_recording_duration(request: &AudioCaptureRequest) -> Result<Duration, TalkError> {
-    let requested_seconds = match std::env::var_os("TALK_NATIVE_AUDIO_SECONDS") {
-        Some(raw) => {
-            let raw = raw.to_string_lossy();
-            let seconds = raw.trim().parse::<u64>().map_err(|error| {
-                native_windows_audio_error(format!(
-                    "TALK_NATIVE_AUDIO_SECONDS must be a positive integer: {error}"
-                ))
-            })?;
-            if seconds == 0 {
-                return Err(native_windows_audio_error(
-                    "TALK_NATIVE_AUDIO_SECONDS must be greater than 0",
-                ));
-            }
-            seconds.min(request.max_recording_seconds)
-        }
-        None => request.max_recording_seconds,
-    };
-    if requested_seconds == 0 {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeRecordingLimit {
+    Unlimited,
+    Seconds(u64),
+}
+
+fn resolve_native_recording_limit(
+    configured_max_seconds: u64,
+    override_seconds: Option<u64>,
+) -> Result<NativeRecordingLimit, TalkError> {
+    if override_seconds == Some(0) {
         return Err(native_windows_audio_error(
-            "max_recording_seconds must be greater than 0",
+            "TALK_NATIVE_AUDIO_SECONDS must be greater than 0",
         ));
     }
-    Ok(Duration::from_secs(requested_seconds))
+
+    Ok(match (configured_max_seconds, override_seconds) {
+        (0, None) => NativeRecordingLimit::Unlimited,
+        (0, Some(seconds)) => NativeRecordingLimit::Seconds(seconds),
+        (configured_max_seconds, None) => NativeRecordingLimit::Seconds(configured_max_seconds),
+        (configured_max_seconds, Some(seconds)) => {
+            NativeRecordingLimit::Seconds(seconds.min(configured_max_seconds))
+        }
+    })
+}
+
+#[cfg(windows)]
+fn native_windows_recording_limit(
+    request: &AudioCaptureRequest,
+) -> Result<NativeRecordingLimit, TalkError> {
+    let override_seconds = std::env::var_os("TALK_NATIVE_AUDIO_SECONDS")
+        .map(|raw| {
+            raw.to_string_lossy()
+                .trim()
+                .parse::<u64>()
+                .map_err(|error| {
+                    native_windows_audio_error(format!(
+                        "TALK_NATIVE_AUDIO_SECONDS must be a positive integer: {error}"
+                    ))
+                })
+        })
+        .transpose()?;
+    resolve_native_recording_limit(request.max_recording_seconds, override_seconds)
+}
+
+fn resolved_native_capture_sample_limit(
+    sample_rate_hz: u32,
+    channels: u16,
+    recording_limit: NativeRecordingLimit,
+) -> Result<usize, TalkError> {
+    let NativeRecordingLimit::Seconds(recording_seconds) = recording_limit else {
+        return Ok(usize::MAX);
+    };
+
+    let frames = u128::from(sample_rate_hz) * u128::from(recording_seconds);
+    let samples = frames * u128::from(channels);
+    usize::try_from(samples)
+        .map_err(|_| native_windows_audio_error("requested native recording duration is too large"))
 }
 
 #[cfg(windows)]
 fn max_native_capture_samples(
     config: &cpal::StreamConfig,
-    recording_duration: Duration,
+    recording_limit: NativeRecordingLimit,
 ) -> Result<usize, TalkError> {
-    let frames =
-        u128::from(u32::from(config.sample_rate)) * u128::from(recording_duration.as_secs());
-    let samples = frames * u128::from(config.channels);
-    usize::try_from(samples)
-        .map_err(|_| native_windows_audio_error("requested native recording duration is too large"))
+    resolved_native_capture_sample_limit(
+        config.sample_rate.into(),
+        config.channels,
+        recording_limit,
+    )
 }
 
 #[cfg(windows)]
@@ -1436,7 +1648,7 @@ fn start_native_windows_recording(
     request: &AudioCaptureRequest,
     artifact: AudioArtifact,
 ) -> Result<NativeWindowsRecording, TalkError> {
-    let recording_duration = native_windows_recording_duration(request)?;
+    let recording_limit = native_windows_recording_limit(request)?;
     let host = cpal::default_host();
     let (device, device_name) =
         resolve_native_windows_input_device(&host, request.input_device.as_deref())
@@ -1447,18 +1659,22 @@ fn start_native_windows_recording(
     })?;
     let sample_format = supported_config.sample_format();
     let config: cpal::StreamConfig = supported_config.into();
-    let max_samples = max_native_capture_samples(&config, recording_duration)?;
+    let max_samples = max_native_capture_samples(&config, recording_limit)?;
 
     let samples = Arc::new(Mutex::new(Vec::<f32>::with_capacity(
         max_samples.min(1_000_000),
     )));
+    let sample_limit = NativeInputCaptureLimit {
+        max_samples,
+        total_captured_samples: Arc::new(AtomicUsize::new(0)),
+    };
     let stream_errors = Arc::new(Mutex::new(Vec::<String>::new()));
     let stream = build_native_input_stream(
         &device,
         &config,
         sample_format,
         Arc::clone(&samples),
-        max_samples,
+        sample_limit,
         Arc::clone(&stream_errors),
     )?;
 
@@ -1642,7 +1858,7 @@ fn build_native_input_stream(
     config: &cpal::StreamConfig,
     sample_format: cpal::SampleFormat,
     samples: Arc<Mutex<Vec<f32>>>,
-    max_samples: usize,
+    sample_limit: NativeInputCaptureLimit,
     stream_errors: Arc<Mutex<Vec<String>>>,
 ) -> Result<cpal::Stream, TalkError> {
     match sample_format {
@@ -1650,84 +1866,84 @@ fn build_native_input_stream(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::I16 => build_native_input_stream_for_sample::<i16>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::I24 => build_native_input_stream_for_sample::<cpal::I24>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::I32 => build_native_input_stream_for_sample::<i32>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::I64 => build_native_input_stream_for_sample::<i64>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::U8 => build_native_input_stream_for_sample::<u8>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::U16 => build_native_input_stream_for_sample::<u16>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::U24 => build_native_input_stream_for_sample::<cpal::U24>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::U32 => build_native_input_stream_for_sample::<u32>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::U64 => build_native_input_stream_for_sample::<u64>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::F32 => build_native_input_stream_for_sample::<f32>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit.clone(),
             stream_errors,
         ),
         cpal::SampleFormat::F64 => build_native_input_stream_for_sample::<f64>(
             device,
             config,
             samples,
-            max_samples,
+            sample_limit,
             stream_errors,
         ),
         cpal::SampleFormat::DsdU8 | cpal::SampleFormat::DsdU16 | cpal::SampleFormat::DsdU32 => Err(
@@ -1744,7 +1960,7 @@ fn build_native_input_stream_for_sample<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     samples: Arc<Mutex<Vec<f32>>>,
-    max_samples: usize,
+    sample_limit: NativeInputCaptureLimit,
     stream_errors: Arc<Mutex<Vec<String>>>,
 ) -> Result<cpal::Stream, TalkError>
 where
@@ -1754,7 +1970,7 @@ where
     device
         .build_input_stream(
             config,
-            move |data: &[T], _| append_native_input_samples(data, &samples, max_samples),
+            move |data: &[T], _| append_native_input_samples(data, &samples, &sample_limit),
             move |error| {
                 if let Ok(mut errors) = stream_errors.lock() {
                     errors.push(error.to_string());
@@ -1768,24 +1984,35 @@ where
 }
 
 #[cfg(windows)]
-fn append_native_input_samples<T>(input: &[T], samples: &Arc<Mutex<Vec<f32>>>, max_samples: usize)
-where
+fn append_native_input_samples<T>(
+    input: &[T],
+    samples: &Arc<Mutex<Vec<f32>>>,
+    sample_limit: &NativeInputCaptureLimit,
+) where
     T: cpal::Sample,
     f32: cpal::FromSample<T>,
 {
     let Ok(mut samples) = samples.try_lock() else {
         return;
     };
-    let remaining = max_samples.saturating_sub(samples.len());
-    if remaining == 0 {
+    let total_captured_samples = sample_limit.total_captured_samples.load(Ordering::Relaxed);
+    let append_count = native_input_sample_count_to_append(
+        input.len(),
+        total_captured_samples,
+        sample_limit.max_samples,
+    );
+    if append_count == 0 {
         return;
     }
     samples.extend(
         input
             .iter()
-            .take(remaining)
+            .take(append_count)
             .map(|sample| f32::from_sample(*sample)),
     );
+    sample_limit
+        .total_captured_samples
+        .fetch_add(append_count, Ordering::Relaxed);
 }
 
 #[cfg(windows)]
@@ -2081,10 +2308,80 @@ fn native_windows_audio_error(message: impl Into<String>) -> TalkError {
 #[cfg(test)]
 mod tests {
     use super::{
-        captured_audio_peak_abs, render_output_playback_samples,
+        captured_audio_peak_abs, captured_audio_rms, discard_captured_samples_before_cursor,
+        native_input_sample_count_to_append, normalized_capture_gain,
+        render_output_playback_samples, resample_mono_to_len, resampled_frame_count,
+        resolve_native_recording_limit, resolved_native_capture_sample_limit,
         select_native_windows_input_device_name, select_native_windows_output_device_name,
-        CapturedAudioBuffer,
+        streaming_pcm_chunk_sample_count, CapturedAudioBuffer, NativeRecordingLimit,
+        RecordingPcmCursor,
     };
+
+    #[test]
+    fn zero_configured_recording_seconds_resolves_to_unlimited_capture() {
+        let limit = resolve_native_recording_limit(0, None)
+            .expect("zero configured max should disable the recording limit");
+
+        assert_eq!(limit, NativeRecordingLimit::Unlimited);
+    }
+
+    #[test]
+    fn native_recording_seconds_override_can_bound_an_unlimited_capture() {
+        let limit = resolve_native_recording_limit(0, Some(45))
+            .expect("positive override should bound an unlimited capture");
+
+        assert_eq!(limit, NativeRecordingLimit::Seconds(45));
+    }
+
+    #[test]
+    fn rejects_zero_native_recording_seconds_override() {
+        let error = resolve_native_recording_limit(0, Some(0))
+            .expect_err("zero override must not silently change override semantics");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TALK_NATIVE_AUDIO_SECONDS must be greater than 0"),
+            "error={error}"
+        );
+    }
+
+    #[test]
+    fn unlimited_native_capture_has_no_sample_count_cutoff() {
+        let max_samples =
+            resolved_native_capture_sample_limit(48_000, 2, NativeRecordingLimit::Unlimited)
+                .expect("unlimited capture should resolve without arithmetic failure");
+
+        assert_eq!(max_samples, usize::MAX);
+    }
+
+    #[test]
+    fn discarding_consumed_samples_releases_prefix_and_rebases_cursor() {
+        let mut samples = vec![0.1, 0.2, 0.3, 0.4, 0.5];
+        let mut cursor = RecordingPcmCursor {
+            source_sample_offset: 3,
+            next_sequence: 7,
+        };
+
+        discard_captured_samples_before_cursor(&mut samples, &mut cursor);
+
+        assert_eq!(samples, vec![0.4, 0.5]);
+        assert_eq!(cursor.source_sample_offset, 0);
+        assert_eq!(cursor.next_sequence, 7);
+    }
+
+    #[test]
+    fn native_capture_limit_uses_total_samples_after_streaming_buffer_compaction() {
+        assert_eq!(native_input_sample_count_to_append(4, 3, 5), 2);
+        assert_eq!(native_input_sample_count_to_append(4, 5, 5), 0);
+        assert_eq!(native_input_sample_count_to_append(4, 3, usize::MAX), 4);
+    }
+
+    #[test]
+    fn streaming_pcm_chunks_are_bounded_to_eighty_milliseconds() {
+        assert_eq!(streaming_pcm_chunk_sample_count(16_000, 1), 1_280);
+        assert_eq!(streaming_pcm_chunk_sample_count(48_000, 2), 7_680);
+    }
 
     #[test]
     fn selects_requested_native_input_device_by_case_insensitive_exact_match() {
@@ -2217,5 +2514,124 @@ mod tests {
         let peak = captured_audio_peak_abs(&[0.0, -0.25, 0.5, -0.1]);
 
         assert_eq!(peak, 0.5);
+    }
+
+    fn resample_to_target_rate(
+        source_mono: &[f32],
+        source_sample_rate_hz: u32,
+        target_sample_rate_hz: u32,
+    ) -> Vec<f32> {
+        let target_frames = resampled_frame_count(
+            source_mono.len(),
+            source_sample_rate_hz,
+            target_sample_rate_hz,
+        )
+        .expect("resampled frame count");
+        resample_mono_to_len(
+            source_mono,
+            source_sample_rate_hz,
+            target_sample_rate_hz,
+            target_frames,
+        )
+    }
+
+    #[test]
+    fn resample_downsample_attenuates_energy_above_target_nyquist() {
+        // A 12 kHz tone at 48 kHz is above the 8 kHz Nyquist of 16 kHz. Nearest
+        // neighbour decimation folds it back to a strong 4 kHz alias; the
+        // band-limited resampler must attenuate it toward silence instead.
+        let source: Vec<f32> = (0..4_800)
+            .map(|index| {
+                (0.8 * (2.0 * std::f64::consts::PI * 12_000.0 * index as f64 / 48_000.0).sin())
+                    as f32
+            })
+            .collect();
+
+        let resampled = resample_to_target_rate(&source, 48_000, 16_000);
+
+        assert_eq!(resampled.len(), source.len() / 3);
+        let output_rms = captured_audio_rms(&resampled);
+        assert!(
+            output_rms < 0.3,
+            "above-Nyquist tone must be attenuated, got rms {output_rms}"
+        );
+    }
+
+    #[test]
+    fn resample_preserves_low_frequency_tone_amplitude() {
+        // A 1 kHz tone is well within the 16 kHz passband and must survive
+        // downsampling with most of its amplitude intact.
+        let source: Vec<f32> = (0..4_800)
+            .map(|index| {
+                (0.8 * (2.0 * std::f64::consts::PI * 1_000.0 * index as f64 / 48_000.0).sin())
+                    as f32
+            })
+            .collect();
+
+        let resampled = resample_to_target_rate(&source, 48_000, 16_000);
+
+        let output_peak = captured_audio_peak_abs(&resampled);
+        assert!(
+            output_peak > 0.6,
+            "in-band tone must be preserved, got peak {output_peak}"
+        );
+    }
+
+    #[test]
+    fn resample_non_integer_ratio_matches_frame_count_and_is_finite() {
+        let source: Vec<f32> = (0..441).map(|index| (index as f32 / 441.0) - 0.5).collect();
+
+        let resampled = resample_to_target_rate(&source, 44_100, 16_000);
+
+        assert_eq!(resampled.len(), 160);
+        assert!(resampled.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn resample_same_rate_is_bit_identical_passthrough() {
+        let source = vec![0.0, 0.9, -0.9, 0.42, -0.17, 0.5];
+
+        let resampled = resample_to_target_rate(&source, 16_000, 16_000);
+
+        assert_eq!(resampled, source);
+    }
+
+    #[test]
+    fn resample_upsample_uses_linear_interpolation() {
+        let source = vec![0.0, 1.0];
+
+        let resampled = resample_mono_to_len(&source, 8_000, 16_000, 4);
+
+        assert_eq!(resampled.len(), 4);
+        assert!((resampled[0] - 0.0).abs() < 1e-6);
+        assert!((resampled[1] - 0.5).abs() < 1e-6);
+        assert!((resampled[2] - 1.0).abs() < 1e-6);
+        assert!((resampled[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn normalized_capture_gain_lifts_quiet_valid_signal() {
+        let gain = normalized_capture_gain(0.3);
+
+        assert!((gain - 3.0).abs() < 1e-6, "gain={gain}");
+    }
+
+    #[test]
+    fn normalized_capture_gain_preserves_weak_signal_below_reject_threshold() {
+        assert_eq!(normalized_capture_gain(0.03), 1.0);
+        assert_eq!(normalized_capture_gain(0.049), 1.0);
+    }
+
+    #[test]
+    fn normalized_capture_gain_is_noop_for_hot_signal() {
+        assert_eq!(normalized_capture_gain(0.9), 1.0);
+        assert_eq!(normalized_capture_gain(0.99), 1.0);
+    }
+
+    #[test]
+    fn normalized_capture_gain_respects_max_gain_cap() {
+        let gain = normalized_capture_gain(0.1);
+
+        assert!((gain - 4.0).abs() < 1e-6, "gain={gain}");
     }
 }

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$CorpusManifest,
-    [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [string]$ModelRoot,
     [string]$OutputRoot,
     [string]$AsrBenchExe,
@@ -615,7 +615,7 @@ function Invoke-TalkAsrCorpusBenchmark {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,

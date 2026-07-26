@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$CorpusManifest,
-    [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [string]$ModelRoot,
     [string]$OutputRoot,
     [string]$AsrBenchExe,
@@ -21,7 +21,7 @@ param(
     [string]$EvidenceStatusJson,
     [string]$ConfigPath,
     [int]$MinSamples = 3,
-    [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [switch]$AllowMissingCloudBaseline,
     [switch]$AllowSyntheticSampleIds,
     [switch]$SkipApply,
@@ -235,7 +235,7 @@ function New-TalkAsrDefaultModelWorkflowPlan {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,
@@ -303,7 +303,7 @@ function Invoke-TalkAsrDefaultModelWorkflow {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,
@@ -323,7 +323,7 @@ function Invoke-TalkAsrDefaultModelWorkflow {
         [string]$EvidenceStatusJson,
         [string]$ConfigPath,
         [int]$MinSamples = 3,
-        [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [switch]$AllowMissingCloudBaseline,
         [switch]$AllowSyntheticSampleIds,
         [switch]$SkipApply,

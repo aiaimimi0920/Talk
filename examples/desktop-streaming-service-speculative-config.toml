@@ -64,3 +64,12 @@ final_timeout_ms = 7000
 # num_threads = 2
 # sample_rate_hz = 16000
 # decoding_method = "greedy_search"
+# # Endpointing is on by default; set explicitly to override.
+# enable_endpoint = true
+# # Optional biasing. `hotwords_words` is a plain vocabulary list (one phrase per
+# # line, `#` comments, optional trailing `:score`); it is rendered into a sherpa
+# # hotwords file at launch. Configuring any hotwords source upgrades decoding to
+# # modified_beam_search automatically (sherpa biasing only applies under beam
+# # search). Advanced users can instead point `hotwords_file` at a pre-tokenized
+# # file directly.
+# hotwords_words = ".runtime/models/sherpa-onnx/talk-hotwords.txt"

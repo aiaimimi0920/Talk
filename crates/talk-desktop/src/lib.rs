@@ -6,9 +6,9 @@ pub use model_bootstrap::{
     resolve_talk_data_root, validate_installed_model, ModelSpec,
 };
 pub use product_payload::{
-    build_embedded_runtime_payload, extract_embedded_runtime_payload,
-    parse_embedded_runtime_payload, EmbeddedRuntimePayload, EmbeddedRuntimePayloadFile,
-    EmbeddedRuntimePayloadSource,
+    build_embedded_runtime_payload, embedded_runtime_payload_is_appended,
+    extract_embedded_runtime_payload, parse_embedded_runtime_payload, EmbeddedRuntimePayload,
+    EmbeddedRuntimePayloadFile, EmbeddedRuntimePayloadSource,
 };
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,9 @@ pub const TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV: &str = "TALK_DESKTOP_INSERT_TAR
 pub const TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV: &str = "TALK_DESKTOP_INSERT_TARGET_FOCUS";
 pub const TALK_DESKTOP_DEFAULT_CONFIG_FILE_NAME: &str = "talk.toml";
 pub const TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME: &str = "talk-local-asr-sherpa.exe";
+const TALK_DEFAULT_MULTILINGUAL_ZIPFORMER_MODEL_ID: &str =
+    "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10";
+const TALK_LEGACY_ZH_EN_ZIPFORMER_MODEL_ID: &str = "zipformer-zh-en-punct-int8-480ms";
 const DESKTOP_LISTENING_LOCAL_DETECTION_PLACEHOLDER: &str = "...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1654,6 +1657,14 @@ pub enum DesktopDocumentRecorrectionDecision {
     ShowInTalkGuiOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopFailureCleanupPlan {
+    pub stop_recording_timer: bool,
+    pub hide_hud: bool,
+    pub show_copy_popup: bool,
+    pub persistence_failed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopSpeculativePipelineConfig {
     pub enabled: bool,
@@ -1675,6 +1686,54 @@ pub enum DesktopLiveCorrectionEligibility {
     DropDuplicate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLiveCorrectionAnchorPolicy {
+    PatchAndRecord,
+    RecordOnly,
+    Ignore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLiveCorrectionPresentation {
+    None,
+    RefreshHud,
+    ShowCopyPopup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopLiveCorrectionWorkerPolicy {
+    pub queue_capacity: usize,
+    pub max_concurrency: usize,
+    pub drain_timeout_ms: u64,
+    pub provider_timeout_ms: u64,
+}
+
+pub fn desktop_live_correction_worker_policy() -> DesktopLiveCorrectionWorkerPolicy {
+    DesktopLiveCorrectionWorkerPolicy {
+        queue_capacity: 32,
+        max_concurrency: 3,
+        drain_timeout_ms: 5_000,
+        provider_timeout_ms: 5_000,
+    }
+}
+
+pub fn desktop_live_clipboard_settle_delay_ms() -> u64 {
+    60
+}
+
+pub fn desktop_live_correction_timing_log(
+    segment_id: &str,
+    queue_wait_ms: u128,
+    provider_ms: u128,
+    apply_ms: u128,
+    total_ms: u128,
+    outcome: &str,
+) -> String {
+    format!(
+        "Talk correction timing segment={segment_id} queue_wait_ms={queue_wait_ms} provider_ms={provider_ms} apply_ms={apply_ms} total_ms={total_ms} outcome={outcome}"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopLiveCorrectionSegment {
     pub segment_id: String,
@@ -1683,14 +1742,112 @@ pub struct DesktopLiveCorrectionSegment {
     pub insert_anchor: Option<SpeculativeInsertAnchor>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopLiveCorrectionBacklogItem {
+    pub segment_id: String,
+    pub corrected_text: String,
+}
+
+pub fn desktop_live_correction_target_apply_allowed(
+    requested_mode: VoiceMode,
+    smart_routed_mode: Option<VoiceMode>,
+) -> bool {
+    match canonical_desktop_voice_mode(requested_mode) {
+        VoiceMode::Transcribe => true,
+        VoiceMode::Smart => smart_routed_mode
+            .map(canonical_desktop_voice_mode)
+            .is_some_and(|mode| mode == VoiceMode::Transcribe),
+        _ => false,
+    }
+}
+
+pub fn desktop_live_smart_route_lock(
+    current_lock: Option<VoiceMode>,
+    candidate_mode: VoiceMode,
+    long_form_evidence: bool,
+) -> Option<VoiceMode> {
+    current_lock.or_else(|| {
+        (long_form_evidence
+            && canonical_desktop_voice_mode(candidate_mode) == VoiceMode::Transcribe)
+            .then_some(VoiceMode::Transcribe)
+    })
+}
+
+pub fn desktop_live_smart_transcribe_evidence(
+    candidate_mode: VoiceMode,
+    long_form_evidence: bool,
+    transcribe_fallback: bool,
+) -> bool {
+    canonical_desktop_voice_mode(candidate_mode) == VoiceMode::Transcribe
+        && (long_form_evidence || transcribe_fallback)
+}
+
+pub fn desktop_live_correction_backlog(
+    segments: &[DesktopLiveCorrectionSegment],
+) -> Vec<DesktopLiveCorrectionBacklogItem> {
+    segments
+        .iter()
+        .filter(|segment| segment.insert_anchor.is_none())
+        .filter_map(|segment| {
+            let corrected_text = segment.corrected_text.as_deref()?;
+            (!corrected_text.trim().is_empty()).then(|| DesktopLiveCorrectionBacklogItem {
+                segment_id: segment.segment_id.clone(),
+                corrected_text: corrected_text.to_string(),
+            })
+        })
+        .collect()
+}
+
+pub fn desktop_live_correction_ordered_backlog(
+    segments: &[DesktopLiveCorrectionSegment],
+) -> Vec<DesktopLiveCorrectionBacklogItem> {
+    let mut backlog = Vec::new();
+    let mut started_unanchored_backlog = false;
+    for segment in segments {
+        if segment.insert_anchor.is_some() {
+            if started_unanchored_backlog {
+                break;
+            }
+            continue;
+        }
+        let Some(corrected_text) = segment.corrected_text.as_deref() else {
+            break;
+        };
+        if corrected_text.trim().is_empty() {
+            continue;
+        }
+        started_unanchored_backlog = true;
+        backlog.push(DesktopLiveCorrectionBacklogItem {
+            segment_id: segment.segment_id.clone(),
+            corrected_text: corrected_text.to_string(),
+        });
+    }
+    backlog
+}
+
+pub fn desktop_correction_text_with_local_boundary(
+    local_text: &str,
+    corrected_text: &str,
+) -> String {
+    let leading_boundary = local_text
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect::<String>();
+    if leading_boundary.is_empty() {
+        corrected_text.to_string()
+    } else {
+        format!("{leading_boundary}{}", corrected_text.trim_start())
+    }
+}
+
 pub fn desktop_live_correction_aggregate(segments: &[DesktopLiveCorrectionSegment]) -> String {
     segments
         .iter()
-        .map(|segment| {
-            segment
-                .corrected_text
-                .as_deref()
-                .unwrap_or(segment.local_text.as_str())
+        .map(|segment| match segment.corrected_text.as_deref() {
+            Some(corrected_text) => {
+                desktop_correction_text_with_local_boundary(&segment.local_text, corrected_text)
+            }
+            None => segment.local_text.clone(),
         })
         .collect::<String>()
 }
@@ -1720,7 +1877,12 @@ pub fn desktop_live_correction_context_before(
     let context = segments
         .iter()
         .take_while(|segment| segment.segment_id != current_segment_id)
-        .filter_map(|segment| segment.corrected_text.as_deref())
+        .map(|segment| {
+            segment
+                .corrected_text
+                .as_deref()
+                .unwrap_or(segment.local_text.as_str())
+        })
         .collect::<String>();
     let char_count = context.chars().count();
     if char_count <= max_chars {
@@ -1728,6 +1890,118 @@ pub fn desktop_live_correction_context_before(
     } else {
         context.chars().skip(char_count - max_chars).collect()
     }
+}
+
+pub fn desktop_streaming_hud_transcript_parts(
+    corrected_segments: &[DesktopLiveCorrectionSegment],
+    pending_segments: &[(&str, &str)],
+) -> DesktopStreamingHudTranscriptParts {
+    let mut corrected_prefix = String::new();
+    let mut pre_recognized_tail = String::new();
+    let mut tail_started = false;
+
+    for segment in desktop_streaming_effective_segments(corrected_segments, pending_segments) {
+        if !tail_started && segment.corrected {
+            corrected_prefix.push_str(&segment.display_text);
+            continue;
+        }
+        tail_started = true;
+        pre_recognized_tail.push_str(&segment.display_text);
+    }
+
+    DesktopStreamingHudTranscriptParts {
+        corrected_prefix,
+        pre_recognized_tail,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopEffectiveStreamingSegment {
+    segment_id: String,
+    source_id: String,
+    local_text: String,
+    display_text: String,
+    corrected: bool,
+}
+
+fn desktop_streaming_effective_segments(
+    corrected_segments: &[DesktopLiveCorrectionSegment],
+    pending_segments: &[(&str, &str)],
+) -> Vec<DesktopEffectiveStreamingSegment> {
+    let mut effective = Vec::new();
+    for segment in corrected_segments {
+        let latest_pending_text =
+            pending_segments
+                .iter()
+                .rev()
+                .find_map(|(pending_segment_id, pending_text)| {
+                    (*pending_segment_id == segment.segment_id)
+                        .then_some(*pending_text)
+                        .filter(|text| !text.trim().is_empty())
+                });
+        let corrected_text = segment
+            .corrected_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty());
+        let local_text = latest_pending_text
+            .filter(|_| corrected_text.is_none())
+            .unwrap_or(segment.local_text.as_str());
+        let display_text = corrected_text
+            .map(|text| desktop_correction_text_with_local_boundary(&segment.local_text, text))
+            .unwrap_or_else(|| local_text.to_string());
+        if display_text.trim().is_empty() {
+            continue;
+        }
+        effective.push(DesktopEffectiveStreamingSegment {
+            segment_id: segment.segment_id.clone(),
+            source_id: desktop_streaming_source_segment_id(&segment.segment_id).to_string(),
+            local_text: local_text.to_string(),
+            display_text,
+            corrected: corrected_text.is_some(),
+        });
+    }
+
+    for (index, (pending_segment_id, pending_text)) in pending_segments.iter().enumerate() {
+        if pending_text.trim().is_empty()
+            || corrected_segments
+                .iter()
+                .any(|segment| segment.segment_id == *pending_segment_id)
+            || pending_segments[index + 1..]
+                .iter()
+                .any(|(later_segment_id, _)| later_segment_id == pending_segment_id)
+        {
+            continue;
+        }
+        effective.push(DesktopEffectiveStreamingSegment {
+            segment_id: (*pending_segment_id).to_string(),
+            source_id: desktop_streaming_source_segment_id(pending_segment_id).to_string(),
+            local_text: (*pending_text).to_string(),
+            display_text: (*pending_text).to_string(),
+            corrected: false,
+        });
+    }
+
+    effective
+}
+
+fn desktop_streaming_source_segment_id(segment_id: &str) -> &str {
+    segment_id
+        .rsplit_once('#')
+        .filter(|(_, suffix)| suffix.parse::<usize>().is_ok())
+        .map(|(source_id, _)| source_id)
+        .unwrap_or(segment_id)
+}
+
+pub fn desktop_streaming_effective_segment_count(
+    corrected_segments: &[DesktopLiveCorrectionSegment],
+    pending_segments: &[(&str, &str)],
+) -> usize {
+    desktop_streaming_effective_segments(corrected_segments, pending_segments).len()
+}
+
+pub fn desktop_streaming_segment_cache_text(text: &str) -> Option<&str> {
+    let text = text.trim_end();
+    (!text.trim().is_empty()).then_some(text)
 }
 
 pub fn desktop_live_correction_eligibility(
@@ -1741,6 +2015,39 @@ pub fn desktop_live_correction_eligibility(
         DesktopLiveCorrectionEligibility::DropDuplicate
     } else {
         DesktopLiveCorrectionEligibility::Process
+    }
+}
+
+pub fn desktop_live_correction_presentation(
+    has_live_tracker: bool,
+    live_feedback_enabled: bool,
+    target_patched: bool,
+) -> DesktopLiveCorrectionPresentation {
+    if has_live_tracker {
+        return if live_feedback_enabled {
+            DesktopLiveCorrectionPresentation::RefreshHud
+        } else {
+            DesktopLiveCorrectionPresentation::None
+        };
+    }
+
+    if target_patched {
+        DesktopLiveCorrectionPresentation::None
+    } else {
+        DesktopLiveCorrectionPresentation::ShowCopyPopup
+    }
+}
+
+pub fn desktop_live_correction_anchor_policy(
+    has_live_tracker: bool,
+    patch_allowed: bool,
+) -> DesktopLiveCorrectionAnchorPolicy {
+    if patch_allowed {
+        DesktopLiveCorrectionAnchorPolicy::PatchAndRecord
+    } else if has_live_tracker {
+        DesktopLiveCorrectionAnchorPolicy::RecordOnly
+    } else {
+        DesktopLiveCorrectionAnchorPolicy::Ignore
     }
 }
 
@@ -1770,6 +2077,16 @@ pub enum DesktopLiveStreamingLocalSegmentPlan {
 pub struct DesktopStreamingStopPolicy {
     pub insert_final_transcript: bool,
     pub allow_final_correction_job: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopStreamingStopReconciliationPlan {
+    NoAction,
+    InsertTail(String),
+    ReconcileWholeDocument {
+        inserted_segments: Vec<String>,
+        replacement_text: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1956,11 +2273,30 @@ pub enum DesktopListeningHudAction {
 pub struct DesktopListeningHudPartialTextLayout {
     pub text_rect: DesktopOverlayRect,
     pub waveform_rect: DesktopOverlayRect,
-    pub line_count: u8,
+    pub raw_line_count: usize,
+    pub line_count: usize,
+    pub units_per_line: usize,
     pub wraps_text: bool,
     pub scrolls_text: bool,
     pub scrollbar_rect: Option<DesktopOverlayRect>,
     pub visible_text_units: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopListeningHudVisibleLineRun {
+    pub text: String,
+    pub lifecycle: DesktopTextLifecycleState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopListeningHudVisibleLine {
+    pub runs: Vec<DesktopListeningHudVisibleLineRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopStreamingHudTranscriptParts {
+    pub corrected_prefix: String,
+    pub pre_recognized_tail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2421,6 +2757,25 @@ pub fn desktop_document_recorrection_session_decision(
     )
 }
 
+pub fn desktop_document_recorrection_generation_is_current(
+    next_generation: u64,
+    generation: u64,
+) -> bool {
+    generation.checked_add(1) == Some(next_generation)
+}
+
+pub fn desktop_failure_cleanup_plan(
+    session_log_persisted: bool,
+    copy_text_available: bool,
+) -> DesktopFailureCleanupPlan {
+    DesktopFailureCleanupPlan {
+        stop_recording_timer: true,
+        hide_hud: true,
+        show_copy_popup: copy_text_available,
+        persistence_failed: !session_log_persisted,
+    }
+}
+
 pub fn desktop_speculative_pipeline_enabled(config: &DesktopSpeculativePipelineConfig) -> bool {
     config.enabled && !config.local_asr.trim().is_empty()
 }
@@ -2444,6 +2799,10 @@ pub fn recording_stop_watcher_policy(
     trigger_mode: TriggerMode,
     max_recording_seconds: u64,
 ) -> DesktopRecordingStopWatcherPolicy {
+    if max_recording_seconds == 0 {
+        return DesktopRecordingStopWatcherPolicy::ManualOnly;
+    }
+
     match trigger_mode {
         TriggerMode::Toggle => DesktopRecordingStopWatcherPolicy::ManualOnly,
         TriggerMode::PushToTalk => {
@@ -2460,6 +2819,20 @@ pub fn desktop_speculative_cloud_correction_enabled(
             .cloud_correction
             .trim()
             .eq_ignore_ascii_case("provider_text_processor")
+}
+
+pub fn desktop_live_correction_processing_mode() -> VoiceMode {
+    VoiceMode::Transcribe
+}
+
+pub fn desktop_final_correction_processing_mode(
+    requested_mode: VoiceMode,
+    smart_routed_mode: Option<VoiceMode>,
+) -> VoiceMode {
+    match requested_mode {
+        VoiceMode::Smart => smart_routed_mode.unwrap_or(VoiceMode::Transcribe),
+        explicit_mode => explicit_mode,
+    }
 }
 
 pub fn desktop_speculative_correction_job_model(
@@ -2540,6 +2913,12 @@ pub fn live_streaming_segment_plan_for_lifecycle(
             text: text.clone(),
         };
     }
+    if output_mode == OutputMode::ClipboardPaste && origin_target.is_none() {
+        return DesktopLiveStreamingLocalSegmentPlan::DeferToStop {
+            segment_id: segment_id.clone(),
+            text: text.clone(),
+        };
+    }
 
     let output_plan = desktop_output_plan(output_mode, origin_target, current_target);
     match (output_plan.strategy, output_plan.insert_target) {
@@ -2576,46 +2955,152 @@ pub fn desktop_streaming_stop_aggregate(
     final_segment_id: &str,
     final_text: &str,
 ) -> String {
-    let aggregate = desktop_live_correction_aggregate(segments);
-    let Some(segment) = segments
-        .iter()
-        .find(|segment| segment.segment_id == final_segment_id)
-    else {
-        return if final_text.trim().is_empty() {
-            aggregate
-        } else {
-            format!("{aggregate}{}", final_text.trim())
-        };
-    };
+    desktop_streaming_stop_aggregate_with_pending(segments, &[], final_segment_id, final_text)
+}
 
-    let committed_text = segment
-        .corrected_text
-        .as_deref()
-        .unwrap_or(segment.local_text.as_str())
-        .trim();
-    let local_text = segment.local_text.trim();
-    let final_text = final_text.trim();
-    if final_text.is_empty() {
+pub fn desktop_streaming_stop_aggregate_with_pending(
+    segments: &[DesktopLiveCorrectionSegment],
+    pending_segments: &[(&str, &str)],
+    final_segment_id: &str,
+    final_text: &str,
+) -> String {
+    let effective = desktop_streaming_effective_segments(segments, pending_segments);
+    let aggregate = effective
+        .iter()
+        .map(|segment| segment.display_text.as_str())
+        .collect::<String>();
+    if final_text.trim().is_empty() {
         return aggregate;
     }
-    if (!local_text.is_empty() && final_text == local_text)
-        || (!committed_text.is_empty() && final_text == committed_text)
-    {
+    let local_aggregate = effective
+        .iter()
+        .map(|segment| segment.local_text.as_str())
+        .collect::<String>();
+    if final_text == aggregate || final_text == local_aggregate {
         return aggregate;
     }
     if let Some(remainder) = final_text
-        .strip_prefix(local_text)
-        .or_else(|| final_text.strip_prefix(committed_text))
+        .strip_prefix(&aggregate)
+        .or_else(|| final_text.strip_prefix(&local_aggregate))
     {
-        let remainder = remainder.trim_start();
-        if remainder.is_empty() {
+        return if remainder.is_empty() {
             aggregate
         } else {
             format!("{aggregate}{remainder}")
-        }
-    } else {
-        aggregate
+        };
     }
+
+    let final_source_id = desktop_streaming_source_segment_id(final_segment_id);
+    let source_indices = effective
+        .iter()
+        .enumerate()
+        .filter_map(|(index, segment)| (segment.source_id == final_source_id).then_some(index))
+        .collect::<Vec<_>>();
+    if source_indices.is_empty() {
+        if aggregate.starts_with(final_text)
+            || local_aggregate.starts_with(final_text)
+            || aggregate.ends_with(final_text)
+        {
+            return aggregate;
+        }
+        return format!("{aggregate}{final_text}");
+    }
+
+    let source_local_text = source_indices
+        .iter()
+        .map(|index| effective[*index].local_text.as_str())
+        .collect::<String>();
+    let source_display_text = source_indices
+        .iter()
+        .map(|index| effective[*index].display_text.as_str())
+        .collect::<String>();
+    let exact_index = effective
+        .iter()
+        .position(|segment| segment.segment_id == final_segment_id);
+    let target_indices = if source_indices.len() > 1
+        && text_has_prefix_relationship(final_text, &source_local_text, &source_display_text)
+    {
+        source_indices
+    } else if exact_index.is_some_and(|index| {
+        text_has_prefix_relationship(
+            final_text,
+            &effective[index].local_text,
+            &effective[index].display_text,
+        )
+    }) {
+        vec![exact_index.expect("checked exact segment index")]
+    } else {
+        source_indices
+    };
+
+    let target_local_text = target_indices
+        .iter()
+        .map(|index| effective[*index].local_text.as_str())
+        .collect::<String>();
+    let target_display_text = target_indices
+        .iter()
+        .map(|index| effective[*index].display_text.as_str())
+        .collect::<String>();
+    let replacement = if final_text == target_local_text || final_text == target_display_text {
+        target_display_text
+    } else if let Some(remainder) = final_text
+        .strip_prefix(&target_display_text)
+        .or_else(|| final_text.strip_prefix(&target_local_text))
+    {
+        format!("{target_display_text}{remainder}")
+    } else if target_display_text.starts_with(final_text)
+        || target_local_text.starts_with(final_text)
+    {
+        target_display_text
+    } else {
+        final_text.to_string()
+    };
+
+    let mut result = String::new();
+    let mut replacement_inserted = false;
+    for (index, segment) in effective.iter().enumerate() {
+        if target_indices.contains(&index) {
+            if !replacement_inserted {
+                result.push_str(&replacement);
+                replacement_inserted = true;
+            }
+        } else {
+            result.push_str(&segment.display_text);
+        }
+    }
+    result
+}
+
+pub fn desktop_streaming_stop_reconciliation_plan(
+    segments: &[DesktopLiveCorrectionSegment],
+    authoritative_transcript: &str,
+) -> DesktopStreamingStopReconciliationPlan {
+    if authoritative_transcript.trim().is_empty() {
+        return DesktopStreamingStopReconciliationPlan::NoAction;
+    }
+
+    let inserted_segments = desktop_live_correction_inserted_baseline(segments);
+    let inserted_text = inserted_segments.concat();
+    if inserted_text == authoritative_transcript {
+        return DesktopStreamingStopReconciliationPlan::NoAction;
+    }
+    if let Some(remainder) = authoritative_transcript.strip_prefix(&inserted_text) {
+        return DesktopStreamingStopReconciliationPlan::InsertTail(remainder.to_string());
+    }
+
+    DesktopStreamingStopReconciliationPlan::ReconcileWholeDocument {
+        inserted_segments,
+        replacement_text: authoritative_transcript.to_string(),
+    }
+}
+
+fn text_has_prefix_relationship(final_text: &str, local_text: &str, display_text: &str) -> bool {
+    final_text == local_text
+        || final_text == display_text
+        || final_text.starts_with(local_text)
+        || final_text.starts_with(display_text)
+        || local_text.starts_with(final_text)
+        || display_text.starts_with(final_text)
 }
 
 pub fn desktop_streaming_latest_segment_allows_auto_patch(
@@ -2628,36 +3113,88 @@ pub fn desktop_streaming_latest_segment_allows_auto_patch(
             .is_some_and(|latest_segment_id| latest_segment_id == segment_id)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopStreamingStopTailDecision {
+    NoAction,
+    InsertTail(String),
+    ShowFullTranscriptPopup,
+}
+
+pub fn desktop_streaming_stop_tail_decision(
+    final_segment_id: &str,
+    final_text: &str,
+    segments: &[DesktopLiveCorrectionSegment],
+) -> DesktopStreamingStopTailDecision {
+    let final_segment_id = final_segment_id.trim();
+    if final_segment_id.is_empty() || final_text.trim().is_empty() {
+        return DesktopStreamingStopTailDecision::NoAction;
+    }
+    let matching_segments = segments
+        .iter()
+        .filter(|segment| {
+            segment.segment_id == final_segment_id
+                || segment
+                    .segment_id
+                    .strip_prefix(final_segment_id)
+                    .and_then(|suffix| suffix.strip_prefix('#'))
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                    })
+        })
+        .collect::<Vec<_>>();
+    if matching_segments.is_empty() {
+        return DesktopStreamingStopTailDecision::InsertTail(final_text.to_string());
+    }
+
+    let mut consumed_bytes = 0usize;
+    for (index, segment) in matching_segments.iter().enumerate() {
+        if segment.insert_anchor.is_none() {
+            if matching_segments[index + 1..]
+                .iter()
+                .any(|later| later.insert_anchor.is_some())
+            {
+                return DesktopStreamingStopTailDecision::ShowFullTranscriptPopup;
+            }
+            break;
+        }
+        let local_text = segment.local_text.as_str();
+        if local_text.trim().is_empty() {
+            continue;
+        }
+        let remaining = &final_text[consumed_bytes..];
+        if !remaining.starts_with(local_text) {
+            return DesktopStreamingStopTailDecision::ShowFullTranscriptPopup;
+        }
+        consumed_bytes += local_text.len();
+    }
+
+    let remainder = &final_text[consumed_bytes..];
+    if remainder.is_empty() {
+        DesktopStreamingStopTailDecision::NoAction
+    } else {
+        DesktopStreamingStopTailDecision::InsertTail(remainder.to_string())
+    }
+}
+
 pub fn desktop_streaming_stop_tail_text(
     final_segment_id: &str,
     final_text: &str,
-    inserted_anchors: &[SpeculativeInsertAnchor],
+    segments: &[DesktopLiveCorrectionSegment],
 ) -> Option<String> {
-    let final_segment_id = final_segment_id.trim();
-    let final_text = final_text.trim();
-    if final_segment_id.is_empty() || final_text.is_empty() {
-        return None;
+    match desktop_streaming_stop_tail_decision(final_segment_id, final_text, segments) {
+        DesktopStreamingStopTailDecision::InsertTail(text) => Some(text),
+        DesktopStreamingStopTailDecision::NoAction
+        | DesktopStreamingStopTailDecision::ShowFullTranscriptPopup => None,
     }
-    if inserted_anchors.is_empty() {
-        return Some(final_text.to_string());
-    }
+}
 
-    let Some(existing_anchor) = inserted_anchors
-        .iter()
-        .find(|anchor| anchor.segment_id == final_segment_id)
-    else {
-        return Some(final_text.to_string());
-    };
-
-    let remainder = final_text
-        .strip_prefix(existing_anchor.inserted_text.as_str())
-        .unwrap_or("")
-        .trim();
-    if remainder.is_empty() {
-        None
-    } else {
-        Some(remainder.to_string())
-    }
+pub fn desktop_streaming_stop_tail_target_unchanged(
+    inserted_segments: &[String],
+    current_target_text: Option<&str>,
+    target_still_safe: bool,
+) -> bool {
+    target_still_safe
+        && current_target_text.is_some_and(|current| current == inserted_segments.concat())
 }
 
 pub fn desktop_speculative_replacement_selection_count(text: &str) -> usize {
@@ -2854,7 +3391,8 @@ fn desktop_listening_hud_metrics(partial_text: Option<&str>) -> DesktopHudMetric
     let height = if line_count <= 1 {
         BASE_HEIGHT
     } else {
-        (BASE_HEIGHT + ((i32::from(line_count) - 1) * EXTRA_LINE_HEIGHT_PX)).min(MAX_HEIGHT)
+        (BASE_HEIGHT + ((i32::try_from(line_count).unwrap_or(i32::MAX) - 1) * EXTRA_LINE_HEIGHT_PX))
+            .min(MAX_HEIGHT)
     };
 
     DesktopHudMetrics {
@@ -2866,44 +3404,134 @@ fn desktop_listening_hud_metrics(partial_text: Option<&str>) -> DesktopHudMetric
 }
 
 fn desktop_display_text_units(text: &str) -> usize {
-    text.trim()
-        .chars()
-        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
-        .sum()
+    text.trim().chars().map(desktop_display_char_units).sum()
+}
+
+fn desktop_display_char_units(character: char) -> usize {
+    if character.is_ascii() {
+        1
+    } else {
+        2
+    }
+}
+
+fn desktop_append_wrapped_line_run(
+    runs: &mut Vec<DesktopListeningHudVisibleLineRun>,
+    lifecycle: DesktopTextLifecycleState,
+    character: char,
+) {
+    if let Some(existing) = runs.last_mut().filter(|run| run.lifecycle == lifecycle) {
+        existing.text.push(character);
+    } else {
+        runs.push(DesktopListeningHudVisibleLineRun {
+            text: character.to_string(),
+            lifecycle,
+        });
+    }
+}
+
+fn desktop_wrap_display_runs(
+    source_runs: &[(DesktopTextLifecycleState, &str)],
+    units_per_line: usize,
+) -> Vec<DesktopListeningHudVisibleLine> {
+    if units_per_line == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::<DesktopListeningHudVisibleLine>::new();
+    let mut current_runs = Vec::<DesktopListeningHudVisibleLineRun>::new();
+    let mut current_units = 0usize;
+
+    for (lifecycle, text) in source_runs {
+        for character in text.chars() {
+            if character == '\n' {
+                if !current_runs.is_empty() {
+                    lines.push(DesktopListeningHudVisibleLine {
+                        runs: std::mem::take(&mut current_runs),
+                    });
+                }
+                current_units = 0;
+                continue;
+            }
+
+            let character_units = desktop_display_char_units(character);
+            if current_units > 0 && current_units + character_units > units_per_line {
+                lines.push(DesktopListeningHudVisibleLine {
+                    runs: std::mem::take(&mut current_runs),
+                });
+                current_units = 0;
+            }
+
+            desktop_append_wrapped_line_run(&mut current_runs, *lifecycle, character);
+            current_units += character_units;
+        }
+    }
+
+    if !current_runs.is_empty() {
+        lines.push(DesktopListeningHudVisibleLine { runs: current_runs });
+    }
+
+    lines
+}
+
+fn desktop_wrap_display_text_lines(text: &str, units_per_line: usize) -> Vec<String> {
+    desktop_wrap_display_runs(
+        &[(DesktopTextLifecycleState::PreRecognized, text)],
+        units_per_line,
+    )
+    .into_iter()
+    .map(|line| line.runs.into_iter().map(|run| run.text).collect())
+    .collect()
+}
+
+pub fn desktop_listening_hud_text_unit_width(dpi: u32) -> i32 {
+    scale_desktop_overlay_length(5, dpi).max(3)
 }
 
 fn desktop_listening_hud_partial_line_count(
     partial_text: Option<&str>,
     width: i32,
     dpi: u32,
-) -> (u8, u8, usize) {
-    const MAX_VISIBLE_LINES: u8 = 8;
+) -> (usize, usize, usize) {
+    const MAX_VISIBLE_LINES: usize = 8;
 
     let Some(text) = partial_text.map(str::trim).filter(|text| !text.is_empty()) else {
         return (0, 0, 0);
     };
     let waveform_rect = desktop_listening_hud_waveform_rect(width, 52, dpi);
     let text_width = (waveform_rect.right - waveform_rect.left).max(1);
-    let unit_width = scale_desktop_overlay_length(7, dpi).max(4);
+    let unit_width = desktop_listening_hud_text_unit_width(dpi);
     let units_per_line = (text_width / unit_width).max(8) as usize;
-    let units = desktop_display_text_units(text);
-    let raw_line_count = units.div_ceil(units_per_line).clamp(1, 64) as u8;
+    let raw_line_count = desktop_wrap_display_text_lines(text, units_per_line)
+        .len()
+        .max(1);
     let visible_line_count = raw_line_count.min(MAX_VISIBLE_LINES);
-    (
-        raw_line_count,
-        visible_line_count,
-        units_per_line * usize::from(visible_line_count),
-    )
+    (raw_line_count, visible_line_count, units_per_line)
 }
 
 fn desktop_listening_hud_visible_partial_line_count(
     partial_text: Option<&str>,
     width: i32,
     dpi: u32,
-) -> u8 {
+) -> usize {
     let (_, visible_line_count, _) =
         desktop_listening_hud_partial_line_count(partial_text, width, dpi);
     visible_line_count
+}
+
+fn desktop_listening_hud_scroll_thumb_height(
+    layout: &DesktopListeningHudPartialTextLayout,
+    dpi: u32,
+) -> i32 {
+    let Some(scrollbar_rect) = layout.scrollbar_rect else {
+        return 0;
+    };
+    let track_height = (scrollbar_rect.bottom - scrollbar_rect.top).max(1);
+    let visible_lines = layout.line_count.max(1) as i32;
+    let total_lines = layout.raw_line_count.max(layout.line_count).max(1) as i32;
+    ((track_height * visible_lines) / total_lines)
+        .max(scale_desktop_overlay_length(18, dpi).max(8))
+        .min(track_height)
 }
 
 pub fn desktop_overlay_scale_factor_for_dpi(dpi: u32) -> f32 {
@@ -3226,13 +3854,20 @@ pub fn desktop_listening_hud_waveform_rect(
     }
 }
 
+pub fn desktop_listening_hud_line_origin(
+    text_rect: DesktopOverlayRect,
+    measured_width: i32,
+) -> i32 {
+    text_rect.left + ((text_rect.right - text_rect.left - measured_width.max(0)).max(0) / 2)
+}
+
 pub fn desktop_listening_hud_partial_text_layout(
     width: i32,
     height: i32,
     dpi: u32,
     partial_text: Option<&str>,
 ) -> Option<DesktopListeningHudPartialTextLayout> {
-    let (raw_line_count, line_count, visible_text_units) =
+    let (raw_line_count, line_count, units_per_line) =
         desktop_listening_hud_partial_line_count(partial_text, width, dpi);
     if line_count == 0 {
         return None;
@@ -3240,6 +3875,7 @@ pub fn desktop_listening_hud_partial_text_layout(
 
     let mut waveform_rect = desktop_listening_hud_waveform_rect(width, height, dpi);
     let scrolls_text = raw_line_count > line_count;
+    let visible_text_units = units_per_line * line_count;
     if line_count == 1 {
         let text_rect = DesktopOverlayRect {
             left: waveform_rect.left,
@@ -3252,7 +3888,9 @@ pub fn desktop_listening_hud_partial_text_layout(
         return Some(DesktopListeningHudPartialTextLayout {
             text_rect,
             waveform_rect,
+            raw_line_count,
             line_count,
+            units_per_line,
             wraps_text: false,
             scrolls_text: false,
             scrollbar_rect: None,
@@ -3262,7 +3900,7 @@ pub fn desktop_listening_hud_partial_text_layout(
 
     let text_top = scale_desktop_overlay_length(8, dpi);
     let line_height = scale_desktop_overlay_length(17, dpi).max(12);
-    let text_bottom = text_top + (i32::from(line_count) * line_height);
+    let text_bottom = text_top + (i32::try_from(line_count).unwrap_or(i32::MAX) * line_height);
     let scrollbar_width = scale_desktop_overlay_length(3, dpi).max(2);
     let scrollbar_gap = scale_desktop_overlay_length(5, dpi).max(3);
     let scrollbar_rect = scrolls_text.then_some(DesktopOverlayRect {
@@ -3287,7 +3925,9 @@ pub fn desktop_listening_hud_partial_text_layout(
     Some(DesktopListeningHudPartialTextLayout {
         text_rect,
         waveform_rect,
+        raw_line_count,
         line_count,
+        units_per_line,
         wraps_text: true,
         scrolls_text,
         scrollbar_rect,
@@ -3295,26 +3935,180 @@ pub fn desktop_listening_hud_partial_text_layout(
     })
 }
 
+pub fn desktop_listening_hud_scroll_max_offset(
+    layout: &DesktopListeningHudPartialTextLayout,
+) -> usize {
+    layout.raw_line_count.saturating_sub(layout.line_count)
+}
+
+pub fn desktop_listening_hud_scrollbar_thumb_rect(
+    layout: &DesktopListeningHudPartialTextLayout,
+    dpi: u32,
+    scroll_line_offset: usize,
+) -> Option<DesktopOverlayRect> {
+    let scrollbar_rect = layout.scrollbar_rect?;
+    let track_height = (scrollbar_rect.bottom - scrollbar_rect.top).max(1);
+    let thumb_height = desktop_listening_hud_scroll_thumb_height(layout, dpi);
+    let max_offset = desktop_listening_hud_scroll_max_offset(layout) as i32;
+    let travel_height = (track_height - thumb_height).max(0);
+    let clamped_offset =
+        scroll_line_offset.min(desktop_listening_hud_scroll_max_offset(layout)) as i32;
+    let thumb_top = if max_offset == 0 {
+        scrollbar_rect.top
+    } else {
+        scrollbar_rect.top + ((travel_height * clamped_offset) / max_offset)
+    };
+
+    Some(DesktopOverlayRect {
+        left: scrollbar_rect.left,
+        top: thumb_top,
+        right: scrollbar_rect.right,
+        bottom: thumb_top + thumb_height,
+    })
+}
+
+pub fn desktop_listening_hud_scrollbar_hit_rect(
+    layout: &DesktopListeningHudPartialTextLayout,
+    dpi: u32,
+) -> Option<DesktopOverlayRect> {
+    let scrollbar_rect = layout.scrollbar_rect?;
+    let horizontal_padding = scale_desktop_overlay_length(5, dpi).max(4);
+    Some(DesktopOverlayRect {
+        left: scrollbar_rect.left - horizontal_padding,
+        top: scrollbar_rect.top,
+        right: scrollbar_rect.right + horizontal_padding,
+        bottom: scrollbar_rect.bottom,
+    })
+}
+
+pub fn desktop_listening_hud_scroll_line_offset_for_pointer(
+    layout: &DesktopListeningHudPartialTextLayout,
+    dpi: u32,
+    pointer_y: i32,
+) -> usize {
+    let Some(scrollbar_rect) = layout.scrollbar_rect else {
+        return 0;
+    };
+    let max_offset = desktop_listening_hud_scroll_max_offset(layout);
+    if max_offset == 0 {
+        return 0;
+    }
+
+    let track_height = (scrollbar_rect.bottom - scrollbar_rect.top).max(1);
+    let thumb_height = desktop_listening_hud_scroll_thumb_height(layout, dpi);
+    let travel_height = (track_height - thumb_height).max(1);
+    let centered_top =
+        (pointer_y - scrollbar_rect.top - (thumb_height / 2)).clamp(0, travel_height);
+
+    (((u64::try_from(centered_top).unwrap_or_default() * max_offset as u64)
+        + u64::try_from(travel_height / 2).unwrap_or_default())
+        / u64::try_from(travel_height).unwrap_or(1)) as usize
+}
+
+pub fn desktop_listening_hud_scroll_line_offset_for_wheel(
+    current_offset: usize,
+    max_offset: usize,
+    wheel_delta: i16,
+) -> usize {
+    const WHEEL_DELTA: usize = 120;
+    const LINES_PER_NOTCH: usize = 3;
+
+    let current_offset = current_offset.min(max_offset);
+    if wheel_delta == 0 || max_offset == 0 {
+        return current_offset;
+    }
+
+    let notch_count = (usize::from(wheel_delta.unsigned_abs()) + WHEEL_DELTA - 1) / WHEEL_DELTA;
+    let line_count = notch_count.max(1).saturating_mul(LINES_PER_NOTCH);
+    if wheel_delta > 0 {
+        current_offset.saturating_sub(line_count)
+    } else {
+        current_offset.saturating_add(line_count).min(max_offset)
+    }
+}
+
+pub fn desktop_listening_hud_auto_follow_for_scroll(
+    scroll_line_offset: usize,
+    max_offset: usize,
+) -> bool {
+    scroll_line_offset >= max_offset
+}
+
+pub fn desktop_listening_hud_reconcile_scroll_state(
+    scroll_line_offset: usize,
+    max_offset: usize,
+    user_scrolled: bool,
+) -> (usize, bool) {
+    let next_offset = if user_scrolled {
+        scroll_line_offset.min(max_offset)
+    } else {
+        max_offset
+    };
+    let next_user_scrolled =
+        user_scrolled && !desktop_listening_hud_auto_follow_for_scroll(next_offset, max_offset);
+    (next_offset, next_user_scrolled)
+}
+
+pub fn desktop_listening_hud_requires_text_layout(
+    transcript_changed: bool,
+    geometry_changed: bool,
+    scroll_changed: bool,
+) -> bool {
+    transcript_changed || geometry_changed || scroll_changed
+}
+
+pub fn desktop_listening_hud_visible_lines(
+    corrected_prefix: &str,
+    pre_recognized_tail: &str,
+    layout: &DesktopListeningHudPartialTextLayout,
+    scroll_line_offset: usize,
+) -> Vec<DesktopListeningHudVisibleLine> {
+    let mut source_runs = Vec::<(DesktopTextLifecycleState, &str)>::new();
+    if !corrected_prefix.trim().is_empty() {
+        source_runs.push((DesktopTextLifecycleState::Corrected, corrected_prefix));
+    }
+    if !pre_recognized_tail.trim().is_empty() {
+        source_runs.push((
+            DesktopTextLifecycleState::PreRecognized,
+            pre_recognized_tail,
+        ));
+    }
+    if source_runs.is_empty() {
+        return Vec::new();
+    }
+
+    let wrapped_lines = desktop_wrap_display_runs(&source_runs, layout.units_per_line);
+    let visible_line_count = usize::from(layout.line_count.max(1));
+    let max_offset = wrapped_lines.len().saturating_sub(visible_line_count);
+    let start_index = usize::from(scroll_line_offset).min(max_offset);
+
+    wrapped_lines
+        .into_iter()
+        .skip(start_index)
+        .take(visible_line_count)
+        .collect()
+}
+
+pub fn desktop_listening_hud_visible_partial_text_with_scroll(
+    partial_text: &str,
+    layout: &DesktopListeningHudPartialTextLayout,
+    scroll_line_offset: usize,
+) -> String {
+    desktop_listening_hud_visible_lines("", partial_text, layout, scroll_line_offset)
+        .into_iter()
+        .flat_map(|line| line.runs.into_iter().map(|run| run.text))
+        .collect()
+}
+
 pub fn desktop_listening_hud_visible_partial_text(
     partial_text: &str,
     layout: &DesktopListeningHudPartialTextLayout,
 ) -> String {
-    let text = partial_text.trim();
-    if !layout.scrolls_text {
-        return text.to_string();
-    }
-
-    let mut collected = Vec::new();
-    let mut used_units = 0usize;
-    for ch in text.chars().rev() {
-        let units = if ch.is_ascii() { 1 } else { 2 };
-        if used_units + units > layout.visible_text_units {
-            break;
-        }
-        used_units += units;
-        collected.push(ch);
-    }
-    collected.iter().rev().collect()
+    desktop_listening_hud_visible_partial_text_with_scroll(
+        partial_text,
+        layout,
+        desktop_listening_hud_scroll_max_offset(layout),
+    )
 }
 
 pub fn desktop_listening_hud_action_for_point(
@@ -3507,7 +4301,16 @@ pub fn resolve_hotkey_origin_insert_target(
     pending_target: Option<&DesktopInsertTargetContext>,
     fallback_target: Option<&DesktopInsertTargetContext>,
 ) -> Option<DesktopInsertTargetContext> {
-    pending_target.cloned().or_else(|| fallback_target.cloned())
+    match (pending_target, fallback_target) {
+        (Some(pending_target), Some(fallback_target))
+            if desktop_weak_origin_upgrade_allowed(pending_target, fallback_target) =>
+        {
+            Some(fallback_target.clone())
+        }
+        (Some(pending_target), _) => Some(pending_target.clone()),
+        (None, Some(fallback_target)) => Some(fallback_target.clone()),
+        (None, None) => None,
+    }
 }
 
 pub fn resolve_pending_hotkey_origin_capture(
@@ -3515,16 +4318,12 @@ pub fn resolve_pending_hotkey_origin_capture(
     candidate_target: Option<&DesktopInsertTargetContext>,
 ) -> Option<DesktopInsertTargetContext> {
     match (existing_target, candidate_target) {
-        (Some(existing_target), Some(candidate_target)) => {
-            let existing_score = desktop_insert_target_capture_quality(existing_target);
-            let candidate_score = desktop_insert_target_capture_quality(candidate_target);
-            if candidate_score >= existing_score {
-                Some(candidate_target.clone())
-            } else {
-                Some(existing_target.clone())
-            }
+        (Some(existing_target), Some(candidate_target))
+            if desktop_weak_origin_upgrade_allowed(existing_target, candidate_target) =>
+        {
+            Some(candidate_target.clone())
         }
-        (Some(existing_target), None) => Some(existing_target.clone()),
+        (Some(existing_target), _) => Some(existing_target.clone()),
         (None, Some(candidate_target)) => Some(candidate_target.clone()),
         (None, None) => None,
     }
@@ -3545,6 +4344,14 @@ pub fn resolve_hotkey_recording_origin_enrichment(
                 return Some(existing_target.clone());
             }
 
+            if desktop_weak_origin_upgrade_allowed(existing_target, candidate_target) {
+                return Some(candidate_target.clone());
+            }
+
+            if !desktop_same_insert_control(existing_target, candidate_target) {
+                return Some(existing_target.clone());
+            }
+
             let existing_score = desktop_insert_target_capture_quality(existing_target);
             let candidate_score = desktop_insert_target_capture_quality(candidate_target);
             if candidate_score > existing_score {
@@ -3559,8 +4366,72 @@ pub fn resolve_hotkey_recording_origin_enrichment(
     }
 }
 
+fn desktop_weak_origin_upgrade_allowed(
+    existing_target: &DesktopInsertTargetContext,
+    candidate_target: &DesktopInsertTargetContext,
+) -> bool {
+    let Some(existing_foreground_target) = existing_target.target else {
+        return false;
+    };
+    let Some(candidate_foreground_target) = candidate_target.target else {
+        return false;
+    };
+    if existing_foreground_target.window_handle != candidate_foreground_target.window_handle {
+        return false;
+    }
+    let existing_has_strong_identity = desktop_insert_target_has_control_identity(existing_target)
+        && !desktop_insert_target_is_weak_browser_shell_target(existing_target);
+    if existing_has_strong_identity
+        || !desktop_insert_target_has_control_identity(candidate_target)
+        || !desktop_insert_target_looks_editable(Some(candidate_target))
+    {
+        return false;
+    }
+
+    desktop_insert_target_capture_quality(candidate_target)
+        > desktop_insert_target_capture_quality(existing_target)
+}
+
+fn desktop_insert_target_has_control_identity(target: &DesktopInsertTargetContext) -> bool {
+    target
+        .automation_runtime_id
+        .as_ref()
+        .is_some_and(|runtime_id| !runtime_id.is_empty())
+        || target.caret_window_handle.is_some()
+        || target.target.is_some_and(|target| {
+            target.focus_handle.is_some()
+                || target.primary_focus_handle.is_some()
+                || target.fallback_focus_handle.is_some()
+        })
+}
+
+fn desktop_insert_target_is_weak_browser_shell_target(target: &DesktopInsertTargetContext) -> bool {
+    target
+        .automation_framework_id
+        .as_deref()
+        .is_some_and(|framework_id| framework_id.eq_ignore_ascii_case("Chrome"))
+        && target
+            .automation_control_type
+            .as_deref()
+            .is_some_and(|control_type| control_type.eq_ignore_ascii_case("pane"))
+        && target
+            .automation_runtime_id
+            .as_ref()
+            .is_some_and(|runtime_id| !runtime_id.is_empty())
+        && target.caret_window_handle.is_none()
+        && target.target.is_some_and(|target| {
+            target.focus_handle.is_none()
+                && target.primary_focus_handle.is_none()
+                && target.fallback_focus_handle.is_none()
+        })
+        && target.automation_is_keyboard_focusable == Some(false)
+        && !target.automation_supports_text_pattern
+        && !target.automation_supports_value_pattern
+        && !desktop_insert_target_looks_editable(Some(target))
+}
+
 fn desktop_output_insert_target_for_clipboard_paste(
-    _origin_target: Option<&DesktopInsertTargetContext>,
+    origin_target: Option<&DesktopInsertTargetContext>,
     current_target: Option<&DesktopInsertTargetContext>,
 ) -> Option<ForegroundInsertTarget> {
     let current_target = current_target?;
@@ -3570,7 +4441,19 @@ fn desktop_output_insert_target_for_clipboard_paste(
     }
 
     if desktop_insert_target_looks_editable(Some(current_target)) {
-        return Some(current_foreground_target);
+        let Some(origin_target) = origin_target else {
+            return None;
+        };
+        let Some(origin_foreground_target) = origin_target.target else {
+            return None;
+        };
+
+        if origin_foreground_target.window_handle != current_foreground_target.window_handle {
+            return None;
+        }
+        if desktop_same_insert_control(origin_target, current_target) {
+            return Some(current_foreground_target);
+        }
     }
 
     None
@@ -3646,6 +4529,18 @@ fn desktop_same_insert_control_via_runtime_id(
         }
         _ => false,
     }
+}
+
+fn desktop_same_insert_control(
+    origin_target: &DesktopInsertTargetContext,
+    current_target: &DesktopInsertTargetContext,
+) -> bool {
+    if origin_target.automation_runtime_id.is_some()
+        && current_target.automation_runtime_id.is_some()
+    {
+        return desktop_same_insert_control_via_runtime_id(origin_target, current_target);
+    }
+    desktop_same_insert_control_via_handles(origin_target, current_target)
 }
 
 pub fn desktop_insert_target_restore_requested(
@@ -4184,6 +5079,26 @@ pub fn desktop_product_local_asr_daemon_launch_plan_with_config(
         auto_local_daemon = desktop_auto_local_asr_daemon_config(model_root);
         auto_local_daemon.as_ref()
     };
+    // Materialize a user hotwords vocabulary list into a sherpa hotwords file
+    // once, before building the daemon args. Explicit hotwords_file wins.
+    let hotwords_resolved_daemon;
+    let local_daemon = match local_daemon {
+        Some(local_daemon)
+            if local_daemon.hotwords_words.is_some() && local_daemon.hotwords_file.is_none() =>
+        {
+            let words_path = local_daemon
+                .hotwords_words
+                .as_ref()
+                .expect("hotwords_words present");
+            let generated = desktop_generate_sherpa_hotwords_file(words_path, model_root)?;
+            let mut resolved = local_daemon.clone();
+            resolved.hotwords_file = Some(generated);
+            resolved.hotwords_words = None;
+            hotwords_resolved_daemon = resolved;
+            Some(&hotwords_resolved_daemon)
+        }
+        other => other,
+    };
     if let Some(local_daemon) = local_daemon {
         append_desktop_local_asr_daemon_args(&mut args, local_daemon);
     }
@@ -4208,6 +5123,10 @@ fn desktop_auto_local_asr_daemon_config(
         .or_else(|| desktop_installed_paraformer_daemon_config(&model_root))
 }
 
+pub fn desktop_product_local_asr_model_available(model_root: &Path) -> bool {
+    desktop_auto_local_asr_daemon_config(model_root).is_some()
+}
+
 pub fn desktop_effective_streaming_asr_enabled(
     configured_route: DesktopSpeculativeLocalAsrRoute,
     local_asr_ready: bool,
@@ -4218,12 +5137,36 @@ pub fn desktop_effective_streaming_asr_enabled(
 fn desktop_installed_zipformer_daemon_config(
     model_root: &Path,
 ) -> Option<SpeculativeLocalAsrDaemonConfig> {
-    let model_id = "zipformer-zh-en-punct-int8-480ms";
+    desktop_zipformer_daemon_config_for_model(
+        model_root,
+        TALK_DEFAULT_MULTILINGUAL_ZIPFORMER_MODEL_ID,
+        "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
+        "decoder-epoch-75-avg-11-chunk-16-left-128.onnx",
+        "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
+    )
+    .or_else(|| {
+        desktop_zipformer_daemon_config_for_model(
+            model_root,
+            TALK_LEGACY_ZH_EN_ZIPFORMER_MODEL_ID,
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "joiner.int8.onnx",
+        )
+    })
+}
+
+fn desktop_zipformer_daemon_config_for_model(
+    model_root: &Path,
+    model_id: &str,
+    encoder_file_name: &str,
+    decoder_file_name: &str,
+    joiner_file_name: &str,
+) -> Option<SpeculativeLocalAsrDaemonConfig> {
     let model_dir = model_root.join(model_id);
     let tokens = model_dir.join("tokens.txt");
-    let encoder = model_dir.join("encoder.int8.onnx");
-    let decoder = model_dir.join("decoder.onnx");
-    let joiner = model_dir.join("joiner.int8.onnx");
+    let encoder = model_dir.join(encoder_file_name);
+    let decoder = model_dir.join(decoder_file_name);
+    let joiner = model_dir.join(joiner_file_name);
     if !tokens.is_file() || !encoder.is_file() || !decoder.is_file() || !joiner.is_file() {
         return None;
     }
@@ -4243,7 +5186,9 @@ fn desktop_installed_zipformer_daemon_config(
         num_threads: Some(2),
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
+        enable_endpoint: None,
         hotwords_file: None,
+        hotwords_words: None,
         rule_fsts: None,
         rule_fars: None,
     })
@@ -4276,7 +5221,9 @@ fn desktop_installed_paraformer_daemon_config(
         num_threads: Some(2),
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
+        enable_endpoint: None,
         hotwords_file: None,
+        hotwords_words: None,
         rule_fsts: None,
         rule_fars: None,
     })
@@ -4312,8 +5259,15 @@ fn append_desktop_local_asr_daemon_args(
         append_optional_desktop_daemon_arg(
             args,
             "--decoding-method",
-            config.decoding_method.as_deref(),
+            desktop_effective_decoding_method(config).as_deref(),
         );
+        if let Some(enable_endpoint) = config.enable_endpoint {
+            append_desktop_daemon_arg(
+                args,
+                "--enable-endpoint",
+                if enable_endpoint { "true" } else { "false" },
+            );
+        }
         append_optional_desktop_daemon_path_arg(
             args,
             "--hotwords-file",
@@ -4322,6 +5276,82 @@ fn append_desktop_local_asr_daemon_args(
         append_optional_desktop_daemon_path_arg(args, "--rule-fsts", config.rule_fsts.as_ref());
         append_optional_desktop_daemon_path_arg(args, "--rule-fars", config.rule_fars.as_ref());
     }
+}
+
+/// Decoding method actually passed to the sherpa daemon. A configured hotwords
+/// file upgrades greedy/unset decoding to `modified_beam_search`, because
+/// sherpa-onnx hotword biasing only takes effect under beam search — leaving it
+/// on greedy would silently ignore the user's vocabulary. Explicit
+/// `modified_beam_search` without hotwords is preserved as-is.
+fn desktop_effective_decoding_method(config: &SpeculativeLocalAsrDaemonConfig) -> Option<String> {
+    if config.hotwords_file.is_some() {
+        return Some("modified_beam_search".to_string());
+    }
+    config.decoding_method.clone()
+}
+
+/// Render a raw user vocabulary list into sherpa hotwords file lines. Blank
+/// lines and `#` comments are dropped; each remaining phrase keeps an explicit
+/// trailing `:score` when present, otherwise `default_score` is appended so the
+/// phrase is biased. Deterministic and side-effect free for testing.
+fn desktop_render_sherpa_hotwords_lines(raw_contents: &str, default_score: f32) -> Vec<String> {
+    raw_contents
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            if line.rsplit_once(':').is_some_and(|(phrase, score)| {
+                !phrase.trim().is_empty() && score.trim().parse::<f32>().is_ok()
+            }) {
+                line.to_string()
+            } else {
+                format!("{line} :{default_score}")
+            }
+        })
+        .collect()
+}
+
+/// Default biasing score applied to hotword phrases that do not carry an
+/// explicit `:score`.
+const DESKTOP_DEFAULT_HOTWORDS_SCORE: f32 = 1.5;
+/// File name of the sherpa hotwords file generated from `hotwords_words`.
+const DESKTOP_GENERATED_HOTWORDS_FILE_NAME: &str = "talk-generated-hotwords.txt";
+
+/// Render a user `hotwords_words` vocabulary file into a sherpa hotwords file
+/// under `output_dir`, returning its path. Phrases should already be in the
+/// model's modeling units; advanced users can instead point `hotwords_file`
+/// directly at a hand-authored file.
+fn desktop_generate_sherpa_hotwords_file(
+    words_path: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf, String> {
+    let raw_contents = std::fs::read_to_string(words_path).map_err(|error| {
+        format!(
+            "failed to read hotwords_words {}: {error}",
+            words_path.display()
+        )
+    })?;
+    let lines = desktop_render_sherpa_hotwords_lines(&raw_contents, DESKTOP_DEFAULT_HOTWORDS_SCORE);
+    if lines.is_empty() {
+        return Err(format!(
+            "hotwords_words {} contained no usable phrases",
+            words_path.display()
+        ));
+    }
+    std::fs::create_dir_all(output_dir).map_err(|error| {
+        format!(
+            "failed to create hotwords output dir {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    let output_path = output_dir.join(DESKTOP_GENERATED_HOTWORDS_FILE_NAME);
+    std::fs::write(&output_path, format!("{}\n", lines.join("\n"))).map_err(|error| {
+        format!(
+            "failed to write generated hotwords {}: {error}",
+            output_path.display()
+        )
+    })?;
+    Ok(output_path)
 }
 
 fn append_optional_desktop_daemon_arg(args: &mut Vec<String>, flag: &str, value: Option<&str>) {

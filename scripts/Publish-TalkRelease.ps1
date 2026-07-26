@@ -38,6 +38,11 @@ if (-not (Test-Path -LiteralPath $summaryValidatorScriptPath)) {
     throw "Missing Talk release summary validator script: $summaryValidatorScriptPath"
 }
 . $summaryValidatorScriptPath
+$productValidatorScriptPath = Join-Path $PSScriptRoot 'Test-TalkProductRelease.ps1'
+if (-not (Test-Path -LiteralPath $productValidatorScriptPath)) {
+    throw "Missing Talk product release validator script: $productValidatorScriptPath"
+}
+. $productValidatorScriptPath
 $SmokeRoot = $requestedSmokeRoot
 
 function Get-TalkRepoRoot {
@@ -261,7 +266,8 @@ ask_shortcut = "RightAlt+Space"
 backend = "native_windows"
 # Optional: pin a specific Windows input endpoint instead of the current default device.
 # input_device = "Virtual Mic"
-max_recording_seconds = 300
+# 0 disables the program-imposed maximum recording length.
+max_recording_seconds = 0
 sample_rate_hz = 16000
 channels = 1
 temp_dir = ".runtime/talk-desktop/audio"
@@ -291,18 +297,18 @@ idle_timeout_ms = 3000
 final_timeout_ms = 7000
 
 # Talk downloads and verifies the evidence-selected Zipformer model on first
-# startup under %LOCALAPPDATA%\\Talk\\models\\sherpa-onnx when it is missing.
+# startup under %LOCALAPPDATA%\Talk\models\sherpa-onnx when it is missing.
 # The local worker payload is embedded in Talk.exe and extracted automatically.
 # Optional: uncomment this block to override the model auto-discovery paths.
 #
 # [speculative.streaming_service.local_daemon]
 # mode = "sherpa-online"
 # model_family = "transducer"
-# model = "zipformer-zh-en-punct-int8-480ms"
-# tokens = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/tokens.txt"
-# encoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/encoder.int8.onnx"
-# decoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/decoder.onnx"
-# joiner = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/joiner.int8.onnx"
+# model = "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"
+# tokens = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\tokens.txt"
+# encoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
+# decoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\decoder-epoch-75-avg-11-chunk-16-left-128.onnx"
+# joiner = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
 # provider = "cpu"
 # num_threads = 2
 # sample_rate_hz = 16000
@@ -648,6 +654,75 @@ function Write-TalkNativeReadinessConfig {
     $configText = New-TalkNativeReadinessConfigContent -SessionRoot $SessionRoot
     Write-Utf8NoBomText -Path $configPath -Content ($configText + [Environment]::NewLine)
     $configPath
+}
+
+function New-TalkReleaseReadmeText {
+    param([Parameter(Mandatory = $true)][string]$VersionId)
+
+    $readmeLines = @(
+        '# Talk Desktop Release'
+        ''
+        ('Version: {0}' -f $VersionId)
+        ''
+        '## Files'
+        ''
+        '- `talk-desktop.exe`: desktop voice input application.'
+        '- `talk-desktop.toml`: default desktop configuration.'
+        '- `Start-TalkDesktop.ps1`: direct launcher with API key and microphone helpers.'
+        '- `Invoke-TalkDesktopLiveHotkeyProbe.ps1`: automated live hotkey validation helper.'
+        '- `checksums.sha256`: release file hashes in `path  sha256` format.'
+        ''
+        '## Configure provider key'
+        ''
+        'For a normal unpacked test, set the provider key in this PowerShell session:'
+        ''
+        '```powershell'
+        '$env:TALK_PROVIDER_API_KEY = ''your-provider-key'''
+        '```'
+        ''
+        'If this bundle was published with a packaged key, `talk-desktop.toml` may already contain `api_key` and this environment variable is optional.'
+        ''
+        '## Launch the desktop app'
+        ''
+        'From the extracted release directory:'
+        ''
+        '```powershell'
+        '.\Start-TalkDesktop.ps1 -ReleaseDir . -InputDevice ''麦克风'''
+        '```'
+        ''
+        'Use `-ListInputDevices` if you need to inspect available microphone names before launching.'
+        ''
+        '## Validate the hotkey transcription and insertion path'
+        ''
+        'The fastest operator validation uses the live hotkey probe. It creates a temporary text target, starts Talk, presses the configured toggle hotkey once to start recording, waits, presses it again to stop, then verifies that completed text lands in the target input box.'
+        ''
+        '```powershell'
+        '.\Invoke-TalkDesktopLiveHotkeyProbe.ps1 -ReleaseDir . -InputDevice ''麦克风'' -InitialDelaySeconds 3 -RecordingSeconds 6 -ExpectedText '''''
+        '```'
+        ''
+        'For deterministic package validation without recording the microphone, pass a known-good WAV file:'
+        ''
+        '```powershell'
+        '.\Invoke-TalkDesktopLiveHotkeyProbe.ps1 -ReleaseDir . -AudioOverridePath ''C:\path\to\known-good.wav'' -InitialDelaySeconds 0 -RecordingSeconds 1 -ExpectedText '''''
+        '```'
+        ''
+        'The probe writes `live-hotkey-probe-summary.json` under its smoke root. Check `status`, `outputText`, `capturedText`, and `insert_outcome.method` in the session log. A successful insertion path should use `clipboard_paste`, not `dry_run`.'
+        ''
+        '## Verify file integrity'
+        ''
+        '```powershell'
+        'Get-Content .\checksums.sha256 | ForEach-Object {'
+        '    if ($_ -match ''^(.+?)\s+([0-9a-fA-F]{64})$'') {'
+        '        $path = $Matches[1]'
+        '        $expected = $Matches[2].ToLowerInvariant()'
+        '        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()'
+        '        if ($actual -ne $expected) { throw "Hash mismatch: $path" }'
+        '    }'
+        '}'
+        '```'
+    )
+
+    $readmeLines -join [Environment]::NewLine
 }
 
 function Write-TalkReleaseChecksums {
@@ -1313,10 +1388,14 @@ function New-TalkEmbeddedRuntimeExecutable {
         'sherpa-onnx-cxx-api.dll',
         'talk-local-asr-sherpa.exe'
     )
+    $expectedNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($expectedName in $expectedNames) {
+        $expectedNameSet.Add($expectedName) | Out-Null
+    }
     $normalized = @($PayloadFiles | ForEach-Object {
         $name = [string]$_.Name
         $path = [System.IO.Path]::GetFullPath([string]$_.Path)
-        if ($name -notin $expectedNames) {
+        if (-not $expectedNameSet.Contains($name)) {
             throw "Unexpected Talk product runtime payload member: $name"
         }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -1325,7 +1404,7 @@ function New-TalkEmbeddedRuntimeExecutable {
         [pscustomobject]@{ Name = $name; Path = $path }
     } | Sort-Object Name)
     $actualNames = @($normalized | Select-Object -ExpandProperty Name)
-    if (($actualNames -join '|') -ne (($expectedNames | Sort-Object) -join '|')) {
+    if (($actualNames -join '|') -cne (($expectedNames | Sort-Object) -join '|')) {
         throw "Talk product runtime payload must contain exactly: $($expectedNames -join ', ')"
     }
 
@@ -1479,6 +1558,10 @@ function Publish-TalkProductRelease {
     Write-Utf8NoBomText `
         -Path (Join-Path $destinationDir 'talk.toml') `
         -Content ($configContent.Trim() + [Environment]::NewLine)
+    $productValidation = Test-TalkProductRelease -ProductPath $destinationDir
+    if ($productValidation.EmbeddedRuntimeSha256 -cne $embedded.ArchiveSha256) {
+        throw 'Talk product validator returned an unexpected embedded runtime SHA-256'
+    }
 
     $evidenceDir = $null
     if ($EmitEvidence) {
@@ -1508,6 +1591,7 @@ function Publish-TalkProductRelease {
         DestinationDir = $destinationDir
         EvidenceDir = $evidenceDir
         EmbeddedRuntimeSha256 = $embedded.ArchiveSha256
+        ProductValidation = $productValidation
         VerificationSkipped = $SkipVerification.IsPresent
         BuildSkipped = $SkipBuild.IsPresent
         CommandRecords = $commandRecords.ToArray()
@@ -1667,6 +1751,9 @@ function Publish-TalkRelease {
     Write-Utf8NoBomText `
         -Path $desktopConfigPath `
         -Content ($desktopConfigContent.Trim() + [Environment]::NewLine)
+    Write-Utf8NoBomText `
+        -Path (Join-Path $destinationDir 'README.md') `
+        -Content ((New-TalkReleaseReadmeText -VersionId $resolvedVersionId).Trim() + [Environment]::NewLine)
     $exeRecords = @(
         New-TalkReleaseFileRecord -BasePath $destinationDir -Path (Join-Path $destinationDir 'talk-desktop.exe') -Kind 'exe' -Name 'talk-desktop.exe'
     )
@@ -1674,6 +1761,10 @@ function Publish-TalkRelease {
         [pscustomobject]@{
             kind = 'desktop-config'
             path = 'talk-desktop.toml'
+        }
+        [pscustomobject]@{
+            kind = 'release-readme'
+            path = 'README.md'
         }
         [pscustomobject]@{
             kind = 'local-asr-daemon'

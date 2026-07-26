@@ -34,6 +34,12 @@ $requestedProviderChatModel = $ProviderChatModel
 $requestedSpokenPromptText = $SpokenPromptText
 $requestedExpectedText = $ExpectedText
 
+$startScriptPath = Join-Path $PSScriptRoot 'Start-TalkDesktop.ps1'
+if (-not (Test-Path -LiteralPath $startScriptPath)) {
+    throw "Missing Talk desktop launch script: $startScriptPath"
+}
+. $startScriptPath
+
 $smokeScriptPath = Join-Path $PSScriptRoot 'Invoke-TalkDesktopReleaseSmoke.ps1'
 if (-not (Test-Path -LiteralPath $smokeScriptPath)) {
     throw "Missing Talk desktop smoke script: $smokeScriptPath"
@@ -237,6 +243,15 @@ function Write-TalkLiveAudioQwenProbeConfigFile {
     [System.IO.File]::WriteAllText($Path, ($Content.Trim() + [Environment]::NewLine), $utf8NoBom)
 }
 
+function Invoke-TalkLiveAudioQwenProbeNativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+
+    Invoke-TalkDesktopLaunchNativeCommand -FilePath $FilePath -ArgumentList $ArgumentList
+}
+
 function Convert-TalkLiveAudioQwenProbeCaptureReport {
     param([Parameter(Mandatory = $true)]$ProbeReport)
 
@@ -257,13 +272,7 @@ function Convert-TalkLiveAudioQwenProbeCaptureReport {
 function Test-TalkLiveAudioQwenProbeHasSignal {
     param($ProbeSummary)
 
-    if ($null -eq $ProbeSummary) {
-        return $false
-    }
-    if ([bool]$ProbeSummary.silent) {
-        return $false
-    }
-    return ([double]$ProbeSummary.peak -gt 0)
+    Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary $ProbeSummary
 }
 
 function New-TalkLiveAudioQwenProbeSummary {
@@ -393,6 +402,10 @@ function Invoke-TalkLiveAudioQwenProbe {
             -ProviderChatModel $ProviderChatModel)
 
     if (-not (Test-TalkLiveAudioQwenProbeHasSignal -ProbeSummary $captureProbe)) {
+        $failureReason = Get-TalkDesktopLaunchAudioProbeFailureReason `
+            -ProbeSummary $captureProbe `
+            -SilentReason 'Captured live audio was silent; provider round-trip was skipped' `
+            -WeakReason 'Captured live audio was too weak for provider transcription; provider round-trip was skipped'
         $summary = New-TalkLiveAudioQwenProbeSummary `
             -SmokeRoot $resolvedSmokeRoot `
             -CaptureProbe $captureProbe `
@@ -404,17 +417,20 @@ function Invoke-TalkLiveAudioQwenProbe {
             -ProviderConfigPath $providerConfigPath `
             -LogPath '' `
             -TalkBinaryPath $resolvedTalkBinaryPath
-        $summary | Add-Member -NotePropertyName failureReason -NotePropertyValue 'Captured live audio was silent; provider round-trip was skipped'
+        $summary | Add-Member -NotePropertyName failureReason -NotePropertyValue $failureReason
         Write-TalkLiveAudioQwenProbeSummaryFile -Path $summary.summaryPath -Summary $summary
-        throw 'Captured live audio was silent; provider round-trip was skipped'
+        throw $failureReason
     }
 
     $resolvedApiKey = Resolve-TalkLiveAudioQwenProbeApiKey -ApiKey $ApiKey -ApiKeyJsonPath $ApiKeyJsonPath
     $previousApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
     try {
         [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $resolvedApiKey, 'Process')
-        $onceOutput = & $resolvedTalkBinaryPath once --config $providerConfigPath --audio-file $captureProbe.artifactPath 2>&1
-        $onceExitCode = $LASTEXITCODE
+        $onceCommand = Invoke-TalkLiveAudioQwenProbeNativeCommand `
+            -FilePath $resolvedTalkBinaryPath `
+            -ArgumentList @('once', '--config', $providerConfigPath, '--audio-file', $captureProbe.artifactPath)
+        $onceOutput = @($onceCommand.Output)
+        $onceExitCode = [int]$onceCommand.ExitCode
     }
     finally {
         [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $previousApiKey, 'Process')

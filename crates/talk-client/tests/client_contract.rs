@@ -962,6 +962,7 @@ async fn openai_compatible_text_processor_posts_chat_completions_and_extracts_fi
         .headers
         .contains("authorization: Bearer talk-test-key"));
     assert_eq!(request_json["model"], "gpt-4o-mini");
+    assert!(request_json.get("enable_thinking").is_none());
     assert!(messages.iter().any(|message| message["role"] == "system"));
     assert!(messages.iter().any(|message| {
         message["role"] == "user"
@@ -970,6 +971,35 @@ async fn openai_compatible_text_processor_posts_chat_completions_and_extracts_fi
                 .expect("user content")
                 .contains("turn this into an answer")
     }));
+}
+
+#[tokio::test]
+async fn qwen3_text_processor_disables_thinking_for_fast_dictation_correction() {
+    let (endpoint, handle) = spawn_openai_chat_response(
+        r#"{"choices":[{"message":{"content":"今天天气很好，我们下午去公园，然后晚上回家。"}}]}"#,
+    );
+    let processor = OpenAiCompatibleTextProcessor::new(
+        endpoint,
+        "qwen3.7-plus",
+        Some("talk-test-key".to_string()),
+    );
+
+    let processed = processor
+        .process(
+            "今天天气很好 我们下午去公园然后晚上回家".to_string(),
+            VoiceMode::Dictate,
+            FrontContext::default(),
+        )
+        .await
+        .expect("qwen3 text processor should succeed");
+
+    let request = handle.join().expect("provider thread joins");
+    let request_json: serde_json::Value =
+        serde_json::from_str(&request.body).expect("chat completions body json");
+
+    assert_eq!(processed, "今天天气很好，我们下午去公园，然后晚上回家。");
+    assert_eq!(request_json["model"], "qwen3.7-plus");
+    assert_eq!(request_json["enable_thinking"], false);
 }
 
 fn spawn_text_provider_response(text: &str) -> (String, thread::JoinHandle<String>) {

@@ -9,7 +9,7 @@ param(
     [switch]$AllowSilent,
     [switch]$SkipRecording,
     [switch]$RecordOnly,
-    [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [string]$ModelRoot,
     [string]$ReportsRoot,
     [string]$AsrBenchExe,
@@ -28,7 +28,7 @@ param(
     [string]$SelectionJson,
     [string]$ConfigPath,
     [int]$MinSamples = 3,
-    [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
     [switch]$AllowMissingCloudBaseline,
     [switch]$AllowSyntheticSampleIds,
     [switch]$SkipApply,
@@ -44,6 +44,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$startScriptPath = Join-Path $PSScriptRoot 'Start-TalkDesktop.ps1'
+if (-not (Test-Path -LiteralPath $startScriptPath)) {
+    throw "Missing Talk desktop launch script: $startScriptPath"
+}
+. $startScriptPath
 
 $realMicWorkflowEntryPromptManifest = $PromptManifest
 $realMicWorkflowEntryCorpusRoot = $CorpusRoot
@@ -605,6 +611,11 @@ function New-TalkAsrRealMicDefaultWorkflowAudioProbeCheck {
         $deviceName = [string]$probeJson.audio.nativeWindows.deviceName
         $artifactPath = [string]$probeJson.audio.signal.artifactPath
         $silent = [bool]$probeJson.audio.signal.silent
+        $durationSeconds = if ($null -ne $probeJson.audio.signal.PSObject.Properties['durationSeconds']) {
+            [double]$probeJson.audio.signal.durationSeconds
+        } else {
+            [double]$Seconds
+        }
         $peak = [double]$probeJson.audio.signal.peak
         $rms = [double]$probeJson.audio.signal.rms
 
@@ -617,12 +628,23 @@ function New-TalkAsrRealMicDefaultWorkflowAudioProbeCheck {
                 -RemediationHint 'Check Windows microphone permission and the configured input device before recording the corpus.'
         }
 
-        if ($silent) {
+        $probeSummary = [pscustomobject]@{
+            durationSeconds = $durationSeconds
+            peak = $peak
+            rms = $rms
+            silent = $silent
+        }
+
+        if (-not (Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary $probeSummary)) {
+            $failureMessage = Get-TalkDesktopLaunchAudioProbeFailureReason `
+                -ProbeSummary $probeSummary `
+                -SilentReason ("microphone probe recorded silence: device={0}; peak={1}; rms={2}" -f $deviceName, $peak, $rms) `
+                -WeakReason ("microphone probe captured speech that is too weak for provider transcription: device={0}; peak={1}; rms={2}" -f $deviceName, $peak, $rms)
             return New-TalkAsrRealMicDefaultWorkflowPreflightCheck `
                 -Name 'microphone_signal' `
                 -Status 'failed' `
                 -Path $artifactPath `
-                -Message ("microphone probe recorded silence: device={0}; peak={1}; rms={2}" -f $deviceName, $peak, $rms) `
+                -Message $failureMessage `
                 -RemediationHint 'Speak during the probe, select the correct microphone, or check Windows microphone permissions before recording the corpus.'
         }
 
@@ -993,7 +1015,7 @@ function New-TalkAsrRealMicDefaultModelWorkflowPlan {
         [int]$CountdownSeconds = 3,
         [switch]$SkipRecording,
         [switch]$RecordOnly,
-        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$ReportsRoot,
         [string]$AsrBenchExe,
@@ -1089,7 +1111,7 @@ function Invoke-TalkAsrRealMicDefaultModelWorkflow {
         [switch]$AllowSilent,
         [switch]$SkipRecording,
         [switch]$RecordOnly,
-        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$ReportsRoot,
         [string]$AsrBenchExe,
@@ -1108,7 +1130,7 @@ function Invoke-TalkAsrRealMicDefaultModelWorkflow {
         [string]$SelectionJson,
         [string]$ConfigPath,
         [int]$MinSamples = 3,
-        [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
         [switch]$AllowMissingCloudBaseline,
         [switch]$AllowSyntheticSampleIds,
         [switch]$SkipApply,

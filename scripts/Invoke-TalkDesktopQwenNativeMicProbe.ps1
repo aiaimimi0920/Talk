@@ -226,6 +226,422 @@ function Resolve-TalkDesktopQwenNativeMicProbeSpeakerOutputDevice {
     $null
 }
 
+function Test-TalkDesktopQwenNativeMicProbeUsesAudioRelayVirtualRoute {
+    param(
+        [string]$InputDevice,
+        [string]$SpeakerOutputDevice
+    )
+
+    foreach ($candidate in @($InputDevice, $SpeakerOutputDevice)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -match 'AudioRelay|Virtual Mic|Virtual Speakers') {
+            return $true
+        }
+    }
+
+    $false
+}
+
+function Get-TalkDesktopQwenNativeMicProbeVirtualRouteDiagnostics {
+    param(
+        [string]$InputDevice,
+        [string]$SpeakerOutputDevice
+    )
+
+    if (-not (Test-TalkDesktopQwenNativeMicProbeUsesAudioRelayVirtualRoute `
+            -InputDevice $InputDevice `
+            -SpeakerOutputDevice $SpeakerOutputDevice)) {
+        return $null
+    }
+
+    $runningProcesses = @()
+    try {
+        $runningProcesses = @(Get-Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessName -match 'AudioRelay|audiorelay' } |
+                ForEach-Object { [string]$_.ProcessName })
+    }
+    catch {
+        $runningProcesses = @()
+    }
+
+    $installRecord = $null
+    try {
+        $installEntries = @(Get-ItemProperty `
+                'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*', `
+                'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*', `
+                'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+                -ErrorAction SilentlyContinue)
+        foreach ($entry in $installEntries) {
+            if ($null -eq $entry) {
+                continue
+            }
+            $displayNameProperty = $entry.PSObject.Properties['DisplayName']
+            if ($null -eq $displayNameProperty) {
+                continue
+            }
+            if ([string]$displayNameProperty.Value -match 'AudioRelay') {
+                $installRecord = $entry
+                break
+            }
+        }
+    }
+    catch {
+        $installRecord = $null
+    }
+
+    $displayName = ''
+    $displayVersion = ''
+    $publisher = ''
+    $installLocation = ''
+    if ($null -ne $installRecord) {
+        $displayNameProperty = $installRecord.PSObject.Properties['DisplayName']
+        if ($null -ne $displayNameProperty) {
+            $displayName = [string]$displayNameProperty.Value
+        }
+        $displayVersionProperty = $installRecord.PSObject.Properties['DisplayVersion']
+        if ($null -ne $displayVersionProperty) {
+            $displayVersion = [string]$displayVersionProperty.Value
+        }
+        $publisherProperty = $installRecord.PSObject.Properties['Publisher']
+        if ($null -ne $publisherProperty) {
+            $publisher = [string]$publisherProperty.Value
+        }
+        $installLocationProperty = $installRecord.PSObject.Properties['InstallLocation']
+        if ($null -ne $installLocationProperty) {
+            $installLocation = [string]$installLocationProperty.Value
+        }
+    }
+    $installLocationExists = $false
+    if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
+        try {
+            $installLocationExists = [bool](Test-Path -LiteralPath $installLocation)
+        }
+        catch {
+            $installLocationExists = $false
+        }
+    }
+
+    $latestLog = $null
+    $mainLog = $null
+    $logsDir = Join-Path $env:LOCALAPPDATA 'AudioRelay\Logs'
+    try {
+        if (Test-Path -LiteralPath $logsDir) {
+            $logFiles = @(Get-ChildItem -LiteralPath $logsDir -File -ErrorAction SilentlyContinue)
+            $latestLog = @($logFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1)[0]
+            $mainLog = @($logFiles | Where-Object { $_.Name -eq 'audiorelay.log' } | Select-Object -First 1)[0]
+        }
+    }
+    catch {
+        $latestLog = $null
+        $mainLog = $null
+    }
+
+    $latestLogPath = ''
+    $latestLogLastWriteTime = ''
+    if ($null -ne $latestLog) {
+        $fullNameProperty = $latestLog.PSObject.Properties['FullName']
+        if ($null -ne $fullNameProperty) {
+            $latestLogPath = [string]$fullNameProperty.Value
+        }
+        $lastWriteTimeProperty = $latestLog.PSObject.Properties['LastWriteTime']
+        if ($null -ne $lastWriteTimeProperty) {
+            $lastWriteTimeValue = $lastWriteTimeProperty.Value
+            if ($lastWriteTimeValue -is [datetime]) {
+                $latestLogLastWriteTime = $lastWriteTimeValue.ToString('yyyy-MM-dd HH:mm:ss')
+            } else {
+                $latestLogLastWriteTime = [string]$lastWriteTimeValue
+            }
+        }
+    }
+
+    $recentSessionLogPath = if ($null -ne $mainLog) {
+        [string]$mainLog.FullName
+    } else {
+        $latestLogPath
+    }
+    $recentSession = Get-TalkDesktopQwenNativeMicProbeAudioRelayRecentSessionState -LogPath $recentSessionLogPath
+    $historicalTarget = Get-TalkDesktopQwenNativeMicProbeAudioRelayHistoricalTargetState -LogPath $recentSessionLogPath
+    $configuredServerAddress = Get-TalkDesktopQwenNativeMicProbeAudioRelayConfiguredServerAddress
+    $configuredServerReachability = if (-not [string]::IsNullOrWhiteSpace($configuredServerAddress)) {
+        Get-TalkDesktopQwenNativeMicProbeAudioRelayServerAddressReachability -Address $configuredServerAddress
+    } else {
+        ''
+    }
+    $health = if (@($runningProcesses).Count -gt 0) {
+        if ($null -ne $recentSession -and (-not [bool]$recentSession.remoteConnectSeen) -and (-not [bool]$recentSession.serverConfigSeen)) {
+            'controller_idle'
+        } else {
+            'controller_present'
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($installLocation) -and -not $installLocationExists) {
+        'orphaned_install'
+    } else {
+        'controller_missing'
+    }
+
+    [pscustomobject][ordered]@{
+        routeKind = 'audio_relay'
+        requestedInputDevice = $InputDevice
+        requestedSpeakerOutputDevice = $SpeakerOutputDevice
+        runningProcessCount = @($runningProcesses).Count
+        runningProcesses = @($runningProcesses)
+        displayName = $displayName
+        displayVersion = $displayVersion
+        publisher = $publisher
+        installLocation = $installLocation
+        installLocationExists = [bool]$installLocationExists
+        latestLogPath = $latestLogPath
+        latestLogLastWriteTime = $latestLogLastWriteTime
+        recentSession = $recentSession
+        historicalTarget = $historicalTarget
+        configuredServerAddress = $configuredServerAddress
+        configuredServerReachability = $configuredServerReachability
+        health = $health
+    }
+}
+
+function Resolve-TalkDesktopQwenNativeMicProbeVirtualRouteHealth {
+    param($VirtualRouteDiagnostics)
+
+    if ($null -eq $VirtualRouteDiagnostics) {
+        return ''
+    }
+
+    $healthProperty = $VirtualRouteDiagnostics.PSObject.Properties['health']
+    if ($null -ne $healthProperty -and -not [string]::IsNullOrWhiteSpace([string]$healthProperty.Value)) {
+        return [string]$healthProperty.Value
+    }
+
+    if ([string]$VirtualRouteDiagnostics.routeKind -ne 'audio_relay') {
+        return ''
+    }
+
+    $recentSessionProperty = $VirtualRouteDiagnostics.PSObject.Properties['recentSession']
+    $recentSession = if ($null -ne $recentSessionProperty) { $recentSessionProperty.Value } else { $null }
+    $runningProcessCount = [int]($VirtualRouteDiagnostics.runningProcessCount)
+    $installLocation = [string]$VirtualRouteDiagnostics.installLocation
+    $installLocationExists = [bool]$VirtualRouteDiagnostics.installLocationExists
+
+    if ($runningProcessCount -gt 0) {
+        if ($null -ne $recentSession -and (-not [bool]$recentSession.remoteConnectSeen) -and (-not [bool]$recentSession.serverConfigSeen)) {
+            return 'controller_idle'
+        }
+        return 'controller_present'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($installLocation) -and -not $installLocationExists) {
+        return 'orphaned_install'
+    }
+    'controller_missing'
+}
+
+function Get-TalkDesktopQwenNativeMicProbeAudioRelayRecentSessionState {
+    param([string]$LogPath)
+
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path -LiteralPath $LogPath)) {
+        return $null
+    }
+
+    $lines = @(Get-Content -LiteralPath $LogPath -Encoding UTF8)
+    if ($lines.Count -eq 0) {
+        return $null
+    }
+
+    $versionPattern = '^(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[:.]'
+    $versionIndices = @()
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index] -match ($versionPattern + '\d{3} \[INFO\] Version:')) {
+            $versionIndices += $index
+        }
+    }
+    if ($versionIndices.Count -eq 0) {
+        return $null
+    }
+
+    $startIndex = $versionIndices[-1]
+    $sessionLines = @($lines[$startIndex..($lines.Count - 1)])
+    $sessionStartedAt = ''
+    if ($sessionLines[0] -match $versionPattern) {
+        $sessionStartedAt = [string]$Matches.ts
+    }
+
+    $remoteConnectSeen = $false
+    $remoteConnectTarget = ''
+    $serverConfigSeen = $false
+    foreach ($line in $sessionLines) {
+        if ($line -match 'Remotely connecting to (?<target>[0-9A-Fa-f:\.]+)') {
+            $remoteConnectSeen = $true
+            $remoteConnectTarget = ([string]$Matches.target).TrimEnd('.')
+        }
+        if ($line -match 'Received server config') {
+            $serverConfigSeen = $true
+        }
+    }
+
+    [pscustomobject][ordered]@{
+        sessionStartedAt = $sessionStartedAt
+        remoteConnectSeen = [bool]$remoteConnectSeen
+        remoteConnectTarget = $remoteConnectTarget
+        serverConfigSeen = [bool]$serverConfigSeen
+    }
+}
+
+function Get-TalkDesktopQwenNativeMicProbeAudioRelayHistoricalTargetState {
+    param([string]$LogPath)
+
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or -not (Test-Path -LiteralPath $LogPath)) {
+        return $null
+    }
+
+    $lines = @(Get-Content -LiteralPath $LogPath -Encoding UTF8)
+    if ($lines.Count -eq 0) {
+        return $null
+    }
+
+    $remoteConnectPattern = '^(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[:.]\d{3} \[INFO\] Remotely connecting to (?<target>[0-9A-Fa-f:\.]+)'
+    $lastRemoteConnectAt = ''
+    $lastRemoteConnectTarget = ''
+    foreach ($line in $lines) {
+        if ($line -match $remoteConnectPattern) {
+            $lastRemoteConnectAt = [string]$Matches.ts
+            $lastRemoteConnectTarget = ([string]$Matches.target).TrimEnd('.')
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($lastRemoteConnectTarget)) {
+        return $null
+    }
+
+    [pscustomobject][ordered]@{
+        lastRemoteConnectAt = $lastRemoteConnectAt
+        lastRemoteConnectTarget = $lastRemoteConnectTarget
+    }
+}
+
+function Get-TalkDesktopQwenNativeMicProbeAudioRelayConfiguredServerAddress {
+    $prefsPath = 'HKCU:\Software\JavaSoft\Prefs\com\azefsw\audioconnect'
+
+    try {
+        $prefs = Get-ItemProperty -Path $prefsPath -ErrorAction SilentlyContinue
+        if ($null -eq $prefs) {
+            return ''
+        }
+
+        $addressProperty = $prefs.PSObject.Properties['last_server_address']
+        if ($null -eq $addressProperty -or [string]::IsNullOrWhiteSpace([string]$addressProperty.Value)) {
+            return ''
+        }
+
+        [string]$addressProperty.Value
+    }
+    catch {
+        ''
+    }
+}
+
+function Get-TalkDesktopQwenNativeMicProbeAudioRelayServerAddressReachability {
+    param([string]$Address)
+
+    if ([string]::IsNullOrWhiteSpace($Address)) {
+        return ''
+    }
+
+    try {
+        $tcpReachable = Test-NetConnection `
+            -ComputerName $Address `
+            -Port 59100 `
+            -InformationLevel Quiet `
+            -WarningAction SilentlyContinue
+        if ([bool]$tcpReachable) {
+            return 'tcp_59100_open'
+        }
+    }
+    catch {
+    }
+
+    try {
+        $pingReachable = Test-Connection `
+            -ComputerName $Address `
+            -Count 1 `
+            -Quiet `
+            -ErrorAction SilentlyContinue
+        if ([bool]$pingReachable) {
+            return 'icmp_only'
+        }
+    }
+    catch {
+    }
+
+    'no_reply'
+}
+
+function Add-TalkDesktopQwenNativeMicProbeVirtualRouteFailureHint {
+    param(
+        [Parameter(Mandatory = $true)][string]$FailureReason,
+        $VirtualRouteDiagnostics
+    )
+
+    if ($null -eq $VirtualRouteDiagnostics) {
+        return $FailureReason
+    }
+    if ([string]$VirtualRouteDiagnostics.routeKind -ne 'audio_relay') {
+        return $FailureReason
+    }
+
+    $health = Resolve-TalkDesktopQwenNativeMicProbeVirtualRouteHealth -VirtualRouteDiagnostics $VirtualRouteDiagnostics
+    $details = New-Object System.Collections.Generic.List[string]
+    $details.Add(("processes={0}" -f [int]$VirtualRouteDiagnostics.runningProcessCount))
+    if (-not [string]::IsNullOrWhiteSpace([string]$VirtualRouteDiagnostics.installLocation) -and -not [bool]$VirtualRouteDiagnostics.installLocationExists) {
+        $details.Add(("install path missing [{0}]" -f [string]$VirtualRouteDiagnostics.installLocation))
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$VirtualRouteDiagnostics.latestLogLastWriteTime)) {
+        $details.Add(("latest log [{0}]" -f [string]$VirtualRouteDiagnostics.latestLogLastWriteTime))
+    }
+    $configuredServerAddressProperty = $VirtualRouteDiagnostics.PSObject.Properties['configuredServerAddress']
+    $configuredServerAddress = if ($null -ne $configuredServerAddressProperty) { [string]$configuredServerAddressProperty.Value } else { '' }
+    $configuredServerReachabilityProperty = $VirtualRouteDiagnostics.PSObject.Properties['configuredServerReachability']
+    $configuredServerReachability = if ($null -ne $configuredServerReachabilityProperty) { [string]$configuredServerReachabilityProperty.Value } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($configuredServerAddress)) {
+        $configuredTargetDetail = "configured target [{0}" -f $configuredServerAddress
+        if (-not [string]::IsNullOrWhiteSpace($configuredServerReachability)) {
+            $configuredTargetDetail += "; reachability={0}" -f $configuredServerReachability
+        }
+        $configuredTargetDetail += ']'
+        $details.Add($configuredTargetDetail)
+    }
+    $historicalTargetProperty = $VirtualRouteDiagnostics.PSObject.Properties['historicalTarget']
+    $historicalTarget = if ($null -ne $historicalTargetProperty) { $historicalTargetProperty.Value } else { $null }
+    if ($null -ne $historicalTarget -and -not [string]::IsNullOrWhiteSpace([string]$historicalTarget.lastRemoteConnectTarget)) {
+        $historicalTargetDetail = "last remote target [{0}" -f [string]$historicalTarget.lastRemoteConnectTarget
+        if (-not [string]::IsNullOrWhiteSpace([string]$historicalTarget.lastRemoteConnectAt)) {
+            $historicalTargetDetail += " @ {0}" -f [string]$historicalTarget.lastRemoteConnectAt
+        }
+        $historicalTargetDetail += ']'
+        $details.Add($historicalTargetDetail)
+    }
+
+    if ($details.Count -eq 0) {
+        return $FailureReason
+    }
+
+    $prefix = switch ($health) {
+        'orphaned_install' { 'AudioRelay appears orphaned' ; break }
+        'controller_idle' { 'AudioRelay is running but no active relay session was detected' ; break }
+        'controller_missing' { 'AudioRelay controller appears missing or stopped' ; break }
+        default { 'AudioRelay controller diagnostics' }
+    }
+    if ($health -eq 'controller_idle') {
+        $recentSessionProperty = $VirtualRouteDiagnostics.PSObject.Properties['recentSession']
+        $recentSession = if ($null -ne $recentSessionProperty) { $recentSessionProperty.Value } else { $null }
+        if ($null -ne $recentSession -and -not [string]::IsNullOrWhiteSpace([string]$recentSession.sessionStartedAt)) {
+            $details.Add(("session start [{0}]" -f [string]$recentSession.sessionStartedAt))
+        }
+        if ($configuredServerReachability -eq 'tcp_59100_open') {
+            $details.Add('Player tab -> Mic mode -> click server')
+        }
+    }
+
+    "{0}. {1}: {2}" -f $FailureReason.TrimEnd('.'), $prefix, ($details -join '; ')
+}
+
 function Format-TalkDesktopQwenNativeMicProbeWindowHandle {
     param([Parameter(Mandatory = $true)][System.IntPtr]$Handle)
 
@@ -342,13 +758,7 @@ function Get-TalkDesktopProbeWavSignalSummary {
 function Test-TalkDesktopAudioProbeHasSignal {
     param($ProbeSummary)
 
-    if ($null -eq $ProbeSummary) {
-        return $false
-    }
-    if ([bool]$ProbeSummary.silent) {
-        return $false
-    }
-    return ([double]$ProbeSummary.peak -gt 0)
+    Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary $ProbeSummary
 }
 
 function Invoke-TalkDesktopNativeAudioSignalProbe {
@@ -543,6 +953,69 @@ function New-TalkDesktopQwenNativeMicProbeSummary {
     }
 }
 
+function Write-TalkDesktopQwenNativeMicProbeFailureSummary {
+    param(
+        [Parameter(Mandatory = $true)][string]$SmokeRoot,
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$SpokenText,
+        [string]$ExpectedText,
+        [string]$InputDevice,
+        [Parameter(Mandatory = $true)][string]$FailureReason,
+        [string]$SpeakerWavPath,
+        [string]$SpeakerOutputDevice,
+        [string]$RecordedWavPath,
+        $RecordedWavSignal,
+        $AudioProbe,
+        $VirtualRouteDiagnostics
+    )
+
+    $resolvedRecordedWavPath = if (-not [string]::IsNullOrWhiteSpace($RecordedWavPath)) {
+        $RecordedWavPath
+    } elseif ($null -ne $AudioProbe -and -not [string]::IsNullOrWhiteSpace([string]$AudioProbe.artifactPath)) {
+        [string]$AudioProbe.artifactPath
+    } else {
+        ''
+    }
+    $resolvedRecordedWavSignal = if ($null -ne $RecordedWavSignal) {
+        $RecordedWavSignal
+    } elseif (-not [string]::IsNullOrWhiteSpace($resolvedRecordedWavPath)) {
+        Get-TalkDesktopProbeWavSignalSummary -AudioPath $resolvedRecordedWavPath
+    } else {
+        $null
+    }
+
+    $summary = New-TalkDesktopQwenNativeMicProbeSummary `
+        -SmokeRoot $SmokeRoot `
+        -Session ([pscustomobject]@{
+            status = 'failed'
+            transcript = $null
+            output_text = $null
+        }) `
+        -ConfigPath $ConfigPath `
+        -LogPath '' `
+        -BinaryPath $BinaryPath `
+        -SpokenText $SpokenText `
+        -ExpectedText $ExpectedText `
+        -InputDevice $InputDevice
+    $summary | Add-Member -NotePropertyName capturedText -NotePropertyValue ''
+    $summary | Add-Member -NotePropertyName matchedExpectedText -NotePropertyValue $false
+    $summary | Add-Member -NotePropertyName failureReason -NotePropertyValue $FailureReason
+    $summary | Add-Member -NotePropertyName speakerWavPath -NotePropertyValue $SpeakerWavPath
+    $summary | Add-Member -NotePropertyName speakerOutputDevice -NotePropertyValue ([string]$SpeakerOutputDevice)
+    $summary | Add-Member -NotePropertyName recordedWavPath -NotePropertyValue ([string]$resolvedRecordedWavPath)
+    $summary | Add-Member -NotePropertyName recordedWavSignal -NotePropertyValue $resolvedRecordedWavSignal
+    $summary | Add-Member -NotePropertyName audioProbe -NotePropertyValue $AudioProbe
+    if ($null -ne $VirtualRouteDiagnostics) {
+        $summary | Add-Member -NotePropertyName virtualRouteDiagnostics -NotePropertyValue $VirtualRouteDiagnostics
+    }
+    $summaryPath = Join-Path $SmokeRoot 'qwen-native-mic-probe-summary.json'
+    $summary | Add-Member -NotePropertyName smokeRoot -NotePropertyValue $SmokeRoot
+    $summary | Add-Member -NotePropertyName summaryPath -NotePropertyValue $summaryPath
+    Write-TalkDesktopQwenNativeMicProbeSummaryFile -Path $summaryPath -Summary $summary
+    $summary
+}
+
 function Write-TalkDesktopQwenNativeMicProbeSummaryFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -604,10 +1077,21 @@ function Invoke-TalkDesktopQwenNativeMicProbe {
         -InputDevice $InputDevice
     $resolvedReleaseDir = Resolve-TalkDesktopLaunchReleaseDir -ReleaseDir $ReleaseDir -BinaryPath $BinaryPath
     $resolvedBinaryPath = Resolve-TalkDesktopLaunchBinaryPath -BinaryPath $BinaryPath -ReleaseDir $resolvedReleaseDir
-    $resolvedTalkBinaryPath = Resolve-TalkDesktopLaunchTalkBinaryPath -ReleaseDir $resolvedReleaseDir
     $textCapturePrimer = 'talkprimerready'
     $insertTargetEnvironmentOverrides = $null
+    $virtualRouteDiagnostics = $null
+    $configPath = Join-Path $resolvedSmokeRoot 'config.toml'
+    Write-TalkDesktopQwenNativeMicProbeConfig `
+        -ConfigPath $configPath `
+        -Hotkey $Hotkey `
+        -InputDevice $InputDevice `
+        -ProviderAudioTranscriptionsEndpoint $ProviderAudioTranscriptionsEndpoint `
+        -ProviderChatCompletionsEndpoint $ProviderChatCompletionsEndpoint `
+        -ProviderTranscriptionTransport $ProviderTranscriptionTransport `
+        -ProviderTranscriptionModel $ProviderTranscriptionModel `
+        -ProviderChatModel $ProviderChatModel
     try {
+        $resolvedTalkBinaryPath = Resolve-TalkDesktopLaunchTalkBinaryPath -ReleaseDir $resolvedReleaseDir
         $target = Start-TalkTextCaptureTarget -ScenarioRoot $resolvedSmokeRoot
         $insertTargetEnvironmentOverrides =
             Get-TalkDesktopQwenNativeMicProbeInsertTargetEnvironmentOverrides -Target $target
@@ -619,17 +1103,6 @@ function Invoke-TalkDesktopQwenNativeMicProbe {
             -ChildHwnd $target.TextBoxHwnd | Out-Null
         Set-TalkTextCaptureTargetForeground -Target $target | Out-Null
 
-        $configPath = Join-Path $resolvedSmokeRoot 'config.toml'
-        Write-TalkDesktopQwenNativeMicProbeConfig `
-            -ConfigPath $configPath `
-            -Hotkey $Hotkey `
-            -InputDevice $InputDevice `
-            -ProviderAudioTranscriptionsEndpoint $ProviderAudioTranscriptionsEndpoint `
-            -ProviderChatCompletionsEndpoint $ProviderChatCompletionsEndpoint `
-            -ProviderTranscriptionTransport $ProviderTranscriptionTransport `
-            -ProviderTranscriptionModel $ProviderTranscriptionModel `
-            -ProviderChatModel $ProviderChatModel
-
         $audioProbe = Invoke-TalkDesktopNativeAudioSignalProbe `
             -BinaryPath $BinaryPath `
             -ReleaseDir $ReleaseDir `
@@ -638,32 +1111,29 @@ function Invoke-TalkDesktopQwenNativeMicProbe {
             -SpeakerOutputDevice $resolvedSpeakerOutputDevice `
             -TalkBinaryPath $resolvedTalkBinaryPath
         if (-not (Test-TalkDesktopAudioProbeHasSignal -ProbeSummary $audioProbe)) {
-            $failureReason = 'Native audio probe captured only silence; input device routing is unusable'
-            $summary = New-TalkDesktopQwenNativeMicProbeSummary `
+            $virtualRouteDiagnostics = Get-TalkDesktopQwenNativeMicProbeVirtualRouteDiagnostics `
+                -InputDevice $InputDevice `
+                -SpeakerOutputDevice $resolvedSpeakerOutputDevice
+            $baseFailureReason = Get-TalkDesktopLaunchAudioProbeFailureReason `
+                -ProbeSummary $audioProbe `
+                -SilentReason 'Native audio probe captured only silence; input device routing is unusable' `
+                -WeakReason 'Native audio probe captured speech that is too weak for provider transcription; input route level is unusable'
+            $failureReason = Add-TalkDesktopQwenNativeMicProbeVirtualRouteFailureHint `
+                -FailureReason $baseFailureReason `
+                -VirtualRouteDiagnostics $virtualRouteDiagnostics
+            Write-TalkDesktopQwenNativeMicProbeFailureSummary `
                 -SmokeRoot $resolvedSmokeRoot `
-                -Session ([pscustomobject]@{
-                    status = 'failed'
-                    transcript = $null
-                    output_text = $null
-                }) `
                 -ConfigPath $configPath `
-                -LogPath '' `
                 -BinaryPath $resolvedBinaryPath `
                 -SpokenText $PromptText `
                 -ExpectedText $ExpectedText `
-                -InputDevice $InputDevice
-            $summary | Add-Member -NotePropertyName capturedText -NotePropertyValue ''
-            $summary | Add-Member -NotePropertyName matchedExpectedText -NotePropertyValue $false
-            $summary | Add-Member -NotePropertyName failureReason -NotePropertyValue $failureReason
-            $summary | Add-Member -NotePropertyName speakerWavPath -NotePropertyValue $resolvedSpeakerWavPath
-            $summary | Add-Member -NotePropertyName speakerOutputDevice -NotePropertyValue ([string]$resolvedSpeakerOutputDevice)
-            $summary | Add-Member -NotePropertyName recordedWavPath -NotePropertyValue ([string]$audioProbe.artifactPath)
-            $summary | Add-Member -NotePropertyName recordedWavSignal -NotePropertyValue $null
-            $summary | Add-Member -NotePropertyName audioProbe -NotePropertyValue $audioProbe
-            $summaryPath = Join-Path $resolvedSmokeRoot 'qwen-native-mic-probe-summary.json'
-            $summary | Add-Member -NotePropertyName smokeRoot -NotePropertyValue $resolvedSmokeRoot
-            $summary | Add-Member -NotePropertyName summaryPath -NotePropertyValue $summaryPath
-            Write-TalkDesktopQwenNativeMicProbeSummaryFile -Path $summaryPath -Summary $summary
+                -InputDevice $InputDevice `
+                -FailureReason $failureReason `
+                -SpeakerWavPath $resolvedSpeakerWavPath `
+                -SpeakerOutputDevice $resolvedSpeakerOutputDevice `
+                -RecordedWavPath ([string]$audioProbe.artifactPath) `
+                -AudioProbe $audioProbe `
+                -VirtualRouteDiagnostics $virtualRouteDiagnostics | Out-Null
             throw $failureReason
         }
 
@@ -801,6 +1271,29 @@ function Invoke-TalkDesktopQwenNativeMicProbe {
             throw $captureFailure
         }
         $summary
+    }
+    catch {
+        $summaryPath = Join-Path $resolvedSmokeRoot 'qwen-native-mic-probe-summary.json'
+        if (-not (Test-Path -LiteralPath $summaryPath)) {
+            if ($null -eq $virtualRouteDiagnostics) {
+                $virtualRouteDiagnostics = Get-TalkDesktopQwenNativeMicProbeVirtualRouteDiagnostics `
+                    -InputDevice $InputDevice `
+                    -SpeakerOutputDevice $resolvedSpeakerOutputDevice
+            }
+            Write-TalkDesktopQwenNativeMicProbeFailureSummary `
+                -SmokeRoot $resolvedSmokeRoot `
+                -ConfigPath $configPath `
+                -BinaryPath $resolvedBinaryPath `
+                -SpokenText $PromptText `
+                -ExpectedText $ExpectedText `
+                -InputDevice $InputDevice `
+                -FailureReason $_.Exception.Message `
+                -SpeakerWavPath $resolvedSpeakerWavPath `
+                -SpeakerOutputDevice $resolvedSpeakerOutputDevice `
+                -AudioProbe $audioProbe `
+                -VirtualRouteDiagnostics $virtualRouteDiagnostics | Out-Null
+        }
+        throw
     }
     finally {
         Stop-TalkDesktopSmokeInstance -Instance $instance

@@ -98,13 +98,32 @@ fn fixture_spec(archive: &[u8]) -> ModelSpec {
 fn exposes_the_evidence_selected_zipformer_catalog_entry() {
     let spec = default_zipformer_model_spec();
 
-    assert_eq!(spec.id, "zipformer-zh-en-punct-int8-480ms");
+    assert_eq!(
+        spec.id,
+        "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"
+    );
+    assert_eq!(
+        spec.url,
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2"
+    );
+    assert_eq!(
+        spec.archive_name,
+        "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2"
+    );
     assert_eq!(
         spec.sha256,
-        "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74"
+        "28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4"
     );
     assert!(spec.url.starts_with("https://"));
-    assert_eq!(spec.required_files.len(), 4);
+    assert_eq!(
+        spec.required_files,
+        vec![
+            "tokens.txt",
+            "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
+            "decoder-epoch-75-avg-11-chunk-16-left-128.onnx",
+            "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
+        ]
+    );
 }
 
 #[test]

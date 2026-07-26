@@ -61,6 +61,42 @@ function Write-TestTalkDefaultAsrComparison {
 }
 
 Describe 'Select-TalkDefaultAsrModel' {
+    It 'recognizes the product multilingual Zipformer fingerprint without collapsing it to the legacy id' {
+        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $candidate = [pscustomobject]@{
+            Engine = "streaming_service:sherpa-onnx:$modelId"
+            Sources = @(".\reports\$modelId-short-search-001.json")
+        }
+
+        Resolve-TalkDefaultAsrCandidateModelId -Candidate $candidate | Should Be $modelId
+    }
+
+    It 'requires multilingual, legacy, and Paraformer evidence in that order by default' {
+        $expected = @(
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+            'zipformer-zh-en-punct-int8-480ms',
+            'paraformer-bilingual-zh-en'
+        )
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -eq 'RequiredLocalModelId' -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 2
+        foreach ($default in $defaults) {
+            (@($default.DefaultValue.SafeGetValue()) -join '|') | Should Be ($expected -join '|')
+        }
+    }
+
     It 'rejects synthetic smoke sample ids even when comparison metrics are otherwise present' {
         $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-synthetic-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -147,7 +183,15 @@ Describe 'Select-TalkDefaultAsrModel' {
             $status.kind | Should Be 'talk-default-asr-model-evidence-status'
             $status.ready | Should Be $false
             $status.cloudBaselinePresent | Should Be $false
-            ($status.missingLocalModelIds -contains 'zipformer-zh-en-punct-int8-480ms') | Should Be $true
+            (@($status.requiredLocalModelIds) -join '|') | Should Be (@(
+                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+                'zipformer-zh-en-punct-int8-480ms',
+                'paraformer-bilingual-zh-en'
+            ) -join '|')
+            (@($status.missingLocalModelIds) -join '|') | Should Be (@(
+                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+                'zipformer-zh-en-punct-int8-480ms'
+            ) -join '|')
             ($status.blockingReasons -join "`n") | Should Match 'cloud'
             ($status.blockingReasons -join "`n") | Should Match 'MinSamples'
             ($status.blockingReasons -join "`n") | Should Match 'synthetic'
@@ -186,6 +230,14 @@ Describe 'Select-TalkDefaultAsrModel' {
                         -ModelSizeMb 1052 `
                         -Sources @('.\reports\paraformer-bilingual-zh-en-short-search-001.json', '.\reports\paraformer-bilingual-zh-en-mixed-english-001.json', '.\reports\paraformer-bilingual-zh-en-punctuation-001.json')),
                     (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.04 `
+                        -FirstPartialMs 220 `
+                        -FinalLatencyMs 360 `
+                        -ModelSizeMb 247 `
+                        -Sources @('.\reports\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10-short-search-001.json', '.\reports\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10-mixed-english-001.json', '.\reports\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10-punctuation-001.json')),
+                    (New-TestTalkDefaultAsrCandidate `
                         -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
                         -SampleIds $sampleIds `
                         -Cer 0.03 `
@@ -211,7 +263,7 @@ Describe 'Select-TalkDefaultAsrModel' {
             $written.schemaVersion | Should Be 1
             $written.kind | Should Be 'talk-default-asr-model-selection'
             $written.selectedModelId | Should Be 'paraformer-bilingual-zh-en'
-            $written.rankedLocalCandidates.Count | Should Be 2
+            $written.rankedLocalCandidates.Count | Should Be 3
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -243,6 +295,13 @@ Describe 'Select-TalkDefaultAsrModel' {
                         -FinalLatencyMs 300 `
                         -ModelSizeMb 1052),
                     (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.04 `
+                        -FirstPartialMs 200 `
+                        -FinalLatencyMs 340 `
+                        -ModelSizeMb 247),
+                    (New-TestTalkDefaultAsrCandidate `
                         -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
                         -SampleIds $sampleIds `
                         -Cer 0.02 `
@@ -258,7 +317,8 @@ Describe 'Select-TalkDefaultAsrModel' {
 
             $selection.selectedModelId | Should Be 'zipformer-zh-en-punct-int8-480ms'
             $selection.rankedLocalCandidates[0].modelId | Should Be 'zipformer-zh-en-punct-int8-480ms'
-            $selection.rankedLocalCandidates[1].modelId | Should Be 'paraformer-bilingual-zh-en'
+            $selection.rankedLocalCandidates[1].modelId | Should Be 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+            $selection.rankedLocalCandidates[2].modelId | Should Be 'paraformer-bilingual-zh-en'
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

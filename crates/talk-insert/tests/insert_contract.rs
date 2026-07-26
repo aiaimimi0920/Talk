@@ -1,6 +1,6 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use talk_core::TalkError;
 use talk_insert::{
     probe_native_windows_clipboard_readiness, AroundPasteShortcut, AroundTextInserter,
@@ -128,6 +128,67 @@ fn clipboard_paste_inserter_writes_text_sends_paste_and_restores_original_clipbo
             "paste_shortcut",
             "restore:before clipboard"
         ]
+    );
+}
+
+#[test]
+fn clipboard_paste_inserter_keeps_inserted_success_when_restore_fails_after_paste() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let clipboard =
+        FailingRestoreClipboard::new(Some("before clipboard".to_string()), calls.clone());
+    let paste = RecordingPasteShortcut::new(calls.clone());
+    let inserter = ClipboardPasteInserter::with_settle_delay(
+        clipboard.clone(),
+        paste,
+        ClipboardRestorePolicy::RestoreOriginal,
+        Duration::ZERO,
+    );
+
+    let outcome = inserter
+        .insert_text("hello clipboard")
+        .expect("successful paste must not become a retryable failure when restore fails");
+
+    assert_eq!(
+        outcome,
+        InsertOutcome::Inserted {
+            method: InsertMethod::ClipboardPaste
+        }
+    );
+    assert_eq!(
+        clipboard.current_text(),
+        Some("hello clipboard".to_string())
+    );
+    assert_eq!(
+        recorded_calls(&calls),
+        vec![
+            "capture".to_string(),
+            "write:hello clipboard".to_string(),
+            "paste_shortcut".to_string(),
+            "restore_failed:before clipboard".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn clipboard_paste_inserter_accepts_explicit_settle_delay_without_using_default_delay() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
+    let paste = RecordingPasteShortcut::new(calls);
+    let inserter = ClipboardPasteInserter::with_settle_delay(
+        clipboard,
+        paste,
+        ClipboardRestorePolicy::RestoreOriginal,
+        Duration::ZERO,
+    );
+
+    let started_at = Instant::now();
+    inserter
+        .insert_text("hello clipboard")
+        .expect("clipboard paste insert with explicit settle delay");
+
+    assert!(
+        started_at.elapsed() < Duration::from_millis(250),
+        "explicit zero settle delay should not retain the default 500ms sleep"
     );
 }
 
@@ -668,6 +729,45 @@ fn native_windows_clipboard_readiness_reports_disabled_env_before_side_effects()
 struct RecordingClipboard {
     text: Arc<Mutex<Option<String>>>,
     calls: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Debug, Clone)]
+struct FailingRestoreClipboard {
+    inner: RecordingClipboard,
+}
+
+impl FailingRestoreClipboard {
+    fn new(text: Option<String>, calls: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            inner: RecordingClipboard::new(text, calls),
+        }
+    }
+
+    fn current_text(&self) -> Option<String> {
+        self.inner.current_text()
+    }
+}
+
+impl ClipboardBackend for FailingRestoreClipboard {
+    type Snapshot = Option<String>;
+
+    fn capture(&self) -> Result<Self::Snapshot, TalkError> {
+        self.inner.capture()
+    }
+
+    fn write_text(&self, text: &str) -> Result<(), TalkError> {
+        self.inner.write_text(text)
+    }
+
+    fn restore(&self, snapshot: Self::Snapshot) -> Result<(), TalkError> {
+        let label = snapshot.as_deref().unwrap_or("<empty>");
+        self.inner
+            .calls
+            .lock()
+            .expect("calls mutex poisoned")
+            .push(format!("restore_failed:{label}"));
+        Err(TalkError::Insert("clipboard restore failed".to_string()))
+    }
 }
 
 impl RecordingClipboard {

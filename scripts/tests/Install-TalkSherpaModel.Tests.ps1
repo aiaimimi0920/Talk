@@ -4,15 +4,45 @@ $scriptPath = Join-Path (Split-Path $here -Parent) 'Install-TalkSherpaModel.ps1'
 . $scriptPath
 
 Describe 'Install-TalkSherpaModel helpers' {
-    It 'includes a current recommended streaming Zipformer transducer model' {
+    It 'catalogs the product multilingual Zipformer as recommended while retaining the legacy model' {
+        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $archiveName = "$modelId.tar.bz2"
         $catalog = Get-TalkSherpaModelCatalog
-        $model = $catalog | Where-Object { $_.Id -eq 'zipformer-zh-en-punct-int8-480ms' } | Select-Object -First 1
+        $model = $catalog | Where-Object { $_.Id -eq $modelId } | Select-Object -First 1
+        $legacyModel = $catalog | Where-Object { $_.Id -eq 'zipformer-zh-en-punct-int8-480ms' } | Select-Object -First 1
 
         $model | Should Not Be $null
         $model.Recommended | Should Be $true
         $model.Family | Should Be 'transducer'
-        $model.ModelName | Should Be 'x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8'
-        $model.ArchiveUrl | Should Be 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2'
+        $model.ModelName | Should Be $modelId
+        $model.ArchiveName | Should Be $archiveName
+        $model.ArchiveUrl | Should Be "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archiveName"
+        $model.Sha256 | Should Be '28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4'
+        $legacyModel | Should Not Be $null
+        $legacyModel.Recommended | Should Be $false
+        @($catalog | Where-Object { $_.Recommended }).Count | Should Be 1
+    }
+
+    It 'defaults every installer entry point to the product multilingual model' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -eq 'ModelId' -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 2
+        foreach ($default in $defaults) {
+            [string]$default.DefaultValue.SafeGetValue() |
+                Should Be 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        }
     }
 
     It 'validates an extracted transducer model directory and emits a desktop config snippet' {

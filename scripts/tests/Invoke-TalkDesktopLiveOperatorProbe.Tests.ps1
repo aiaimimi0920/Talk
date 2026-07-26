@@ -49,18 +49,143 @@ Describe 'Invoke-TalkDesktopLiveOperatorProbe helpers' {
         $summary.snapshotPath | Should Be 'C:\Talk\.runtime\live-operator\text-target\snapshot.txt'
     }
 
-    It 'treats silent live-operator audio probe summaries as unusable input' {
+    It 'treats silent or provider-weak live-operator audio probe summaries as unusable input' {
         $silent = Test-TalkDesktopLiveOperatorAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0
+            rms = 0
             silent = $true
         })
+        $weak = Test-TalkDesktopLiveOperatorAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
+            peak = 0.02
+            rms = 0.001
+            silent = $false
+        })
         $audible = Test-TalkDesktopLiveOperatorAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0.2
+            rms = 0.1
             silent = $false
         })
 
         $silent | Should Be $false
+        $weak | Should Be $false
         $audible | Should Be $true
+    }
+
+    It 'builds the live-operator real-mic preflight config with a CLI-compatible recording limit for release readiness' {
+        Mock Resolve-TalkDesktopLaunchReleaseDir { 'C:\Release' }
+        Mock Resolve-TalkDesktopLaunchBinaryPath { 'C:\Release\talk-desktop.exe' }
+        Mock Resolve-TalkDesktopLaunchTalkBinaryPath { 'C:\Release\.internal\talk.exe' }
+        Mock Resolve-TalkDesktopLaunchConfigPath { 'C:\Release\talk-desktop.toml' }
+        Mock New-TalkDesktopLaunchEffectiveConfig -ParameterFilter {
+            $BaseConfigPath -eq 'C:\Release\talk-desktop.toml' -and
+            $Hotkey -eq 'Ctrl+Alt+F18' -and
+            $InputDevice -eq '麦克风' -and
+            $ForceRuntimeLaunchConfig -and
+            $CliCompatibleMaxRecordingSeconds -eq 5
+        } { 'C:\Release\talk-desktop.runtime-launch.toml' }
+        Mock Invoke-TalkDesktopLaunchReadiness {
+            [pscustomobject]@{
+                audio = [pscustomobject]@{ nativeWindows = [pscustomobject]@{} }
+                clipboard = [pscustomobject]@{ nativeWindows = [pscustomobject]@{} }
+            }
+        }
+        Mock New-TalkDesktopLaunchInputDeviceInventory {
+            [pscustomobject]@{
+                audioStatus = 'ready'
+                audioReason = ''
+                requestedInputDevice = '麦克风'
+                selectedInputDevice = '麦克风'
+                availableInputDevices = @('麦克风', 'Virtual Mic')
+            }
+        }
+        Mock Invoke-TalkDesktopLaunchAudioProbe {
+            [pscustomobject]@{
+                requestedDurationSeconds = 3
+                audio = [pscustomobject]@{
+                    configuredBackend = 'native_windows'
+                    nativeWindows = [pscustomobject]@{}
+                    signal = [pscustomobject]@{
+                        artifactPath = 'C:\Talk\.runtime\audio.wav'
+                        mimeType = 'audio/wav'
+                        sampleRateHz = 48000
+                        channels = 2
+                        durationSeconds = 3
+                        peak = 0.2
+                        rms = 0.05
+                        silent = $false
+                    }
+                }
+            }
+        }
+
+        $result = Invoke-TalkDesktopLiveOperatorAudioProbe `
+            -BinaryPath 'C:\Release\talk-desktop.exe' `
+            -ReleaseDir 'C:\Release' `
+            -Hotkey 'Ctrl+Alt+F18' `
+            -InputDevice '麦克风' `
+            -AudioProbeSeconds 3
+
+        $result.AudioProbe.selectedInputDevice | Should Be '麦克风'
+        $result.LaunchSummary.effectiveConfigPath | Should Be 'C:\Release\talk-desktop.runtime-launch.toml'
+        Assert-MockCalled New-TalkDesktopLaunchEffectiveConfig -Times 1 -Exactly
+    }
+
+    It 'fails before launching the desktop shell when preflight audio is too weak for provider transcription' {
+        $tempRoot = Join-Path $env:TEMP ('talk-live-operator-weak-preflight-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        try {
+            Mock Ensure-TalkDesktopSmokeWin32Type {}
+            Mock Start-Sleep {}
+            Mock Invoke-TalkDesktopLiveOperatorAudioProbe {
+                [pscustomobject]@{
+                    LaunchSummary = [pscustomobject]@{
+                        releaseDir = 'C:\Release'
+                        binaryPath = 'C:\Release\talk-desktop.exe'
+                        baseConfigPath = 'C:\Release\talk-desktop.toml'
+                        effectiveConfigPath = 'C:\Release\talk-desktop.runtime-launch.toml'
+                        processId = 0
+                    }
+                    AudioProbe = [pscustomobject]@{
+                        requestedInputDevice = '麦克风'
+                        selectedInputDevice = '麦克风'
+                        durationSeconds = 3
+                        peak = 0.02
+                        rms = 0.001
+                        silent = $false
+                    }
+                }
+            }
+            Mock Start-TalkTextCaptureTarget { throw 'foreground target must not start on weak preflight' }
+            Mock Start-TalkDesktop { throw 'desktop shell must not launch on weak preflight' }
+
+            {
+                Invoke-TalkDesktopLiveOperatorProbe `
+                    -BinaryPath 'C:\Release\talk-desktop.exe' `
+                    -ReleaseDir 'C:\Release' `
+                    -SmokeRoot $tempRoot `
+                    -InputDevice '麦克风' `
+                    -AudioProbeSeconds 3
+            } | Should Throw 'Live operator audio probe captured speech that is too weak for provider transcription; speak louder or fix the selected input device'
+
+            $summaryPath = Join-Path $tempRoot 'live-operator-probe-summary.json'
+            Test-Path -LiteralPath $summaryPath | Should Be $true
+
+            $summary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+            $summary.status | Should Be 'failed'
+            $summary.failureReason | Should Match 'too weak for provider transcription'
+            $summary.audioProbe.selectedInputDevice | Should Be '麦克风'
+            $summary.audioProbe.silent | Should Be $false
+            $summary.processId | Should Be 0
+
+            Assert-MockCalled Start-TalkTextCaptureTarget -Times 0 -Exactly -Scope It
+            Assert-MockCalled Start-TalkDesktop -Times 0 -Exactly -Scope It
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'waits for the completed session output text to land in the foreground target' {
@@ -173,7 +298,7 @@ Describe 'Invoke-TalkDesktopLiveOperatorProbe helpers' {
             $summary.capturedText | Should Be '测试成功'
             $summary.inputDevice | Should Be '麦克风'
             $summary.audioProbe | Should Be $null
-            Assert-MockCalled Invoke-TalkDesktopLiveOperatorAudioProbe -Times 0 -Exactly
+            Assert-MockCalled Invoke-TalkDesktopLiveOperatorAudioProbe -Times 0 -Exactly -Scope It
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -227,5 +352,12 @@ Describe 'Invoke-TalkDesktopLiveOperatorProbe helpers' {
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'describes the live operator flow as a toggle hotkey instead of press-and-hold' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+
+        $scriptText | Should Match 'Press \[\{0\}\] once to start, speak, then press it again to stop\. Waiting up to \{1\}s for a completed session\.'
+        $scriptText | Should Not Match 'Press and hold'
     }
 }

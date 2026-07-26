@@ -22,6 +22,32 @@ function New-TestTalkRealMicWorkflowSherpaModelDir {
 }
 
 Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
+    It 'uses the multilingual model first in every benchmark and required-local default collection' {
+        $expected = @(
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+            'zipformer-zh-en-punct-int8-480ms',
+            'paraformer-bilingual-zh-en'
+        )
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -in @('ModelId', 'RequiredLocalModelId') -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 5
+        foreach ($default in $defaults) {
+            (@($default.DefaultValue.SafeGetValue()) -join '|') | Should Be ($expected -join '|')
+        }
+    }
+
     It 'creates a release-side plan from prompt recording through default model selection' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-real-mic-workflow-plan-' + [guid]::NewGuid().ToString())
         $releaseDir = Join-Path $tempRoot 'release'
@@ -69,6 +95,11 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
             $plan.SelectionJson | Should Be ([System.IO.Path]::GetFullPath((Join-Path $reportsRoot 'selected-default-asr-model.json')))
             $plan.ConfigPath | Should Be ([System.IO.Path]::GetFullPath((Join-Path $releaseDir 'talk-desktop.toml')))
             $plan.CloudOpenAiCompatibleModel | Should Be 'qwen3-asr-flash'
+            (@($plan.ModelId) -join '|') | Should Be (@(
+                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+                'zipformer-zh-en-punct-int8-480ms',
+                'paraformer-bilingual-zh-en'
+            ) -join '|')
             $plan.RecorderPlan.Samples.Count | Should Be 1
             $plan.WillRecord | Should Be $true
             $plan.WillApply | Should Be $true
@@ -467,6 +498,7 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
             foreach ($leaf in @('asr-bench.exe', 'talk-local-asr-sherpa.exe', 'talk-desktop.toml')) {
                 Set-Content -LiteralPath (Join-Path $tempRoot $leaf) -Value $leaf -Encoding ASCII
             }
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
             $env:TALK_TEST_REAL_MIC_SKIP_STATUS_KEY = 'test-key'
@@ -623,6 +655,7 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
             foreach ($leaf in @('talk.exe', 'asr-bench.exe', 'talk-local-asr-sherpa.exe', 'talk-desktop.toml')) {
                 Set-Content -LiteralPath (Join-Path $tempRoot $leaf) -Value $leaf -Encoding ASCII
             }
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
 
@@ -645,6 +678,7 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
             @($preflight.Checks | Where-Object { $_.Name -eq 'prompt_manifest' -and $_.Status -eq 'ready' }).Count | Should Be 1
             @($preflight.Checks | Where-Object { $_.Name -eq 'talk_probe_exe' -and $_.Status -eq 'ready' }).Count | Should Be 1
             @($preflight.Checks | Where-Object { $_.Name -eq 'corpus_manifest' -and $_.Status -eq 'planned' }).Count | Should Be 1
+            @($preflight.Checks | Where-Object { $_.Name -eq 'model:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -and $_.Status -eq 'ready' }).Count | Should Be 1
             @($preflight.Checks | Where-Object { $_.Name -eq 'model:zipformer-zh-en-punct-int8-480ms' -and $_.Status -eq 'ready' }).Count | Should Be 1
             @($preflight.Checks | Where-Object { $_.Name -eq 'model:paraformer-bilingual-zh-en' -and $_.Status -eq 'ready' }).Count | Should Be 1
             @($preflight.Checks | Where-Object { $_.Name -eq 'cloud_baseline_api_key' -and $_.Status -eq 'ready' }).Count | Should Be 1
@@ -711,15 +745,19 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
             @($preflight.Checks | Where-Object { $_.Name -eq 'cloud_baseline_api_key' -and $_.Status -eq 'missing' }).Count | Should Be 1
 
             $resolvedModelRoot = [System.IO.Path]::GetFullPath((Join-Path $tempRoot 'missing-models'))
+            $expectedMultilingualInstall = ".\Install-TalkSherpaModel.ps1 -ModelId sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10 -DestinationRoot '$resolvedModelRoot'"
             $expectedZipformerInstall = ".\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms -DestinationRoot '$resolvedModelRoot'"
             $expectedParaformerInstall = ".\Install-TalkSherpaModel.ps1 -ModelId paraformer-bilingual-zh-en -DestinationRoot '$resolvedModelRoot'"
             $expectedApiKeyCommand = '$env:TALK_TEST_REAL_MIC_MISSING_KEY = ''<redacted>'''
+            $multilingualCheck = @($preflight.Checks | Where-Object { $_.Name -eq 'model:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' })[0]
             $zipformerCheck = @($preflight.Checks | Where-Object { $_.Name -eq 'model:zipformer-zh-en-punct-int8-480ms' })[0]
             $paraformerCheck = @($preflight.Checks | Where-Object { $_.Name -eq 'model:paraformer-bilingual-zh-en' })[0]
             $cloudKeyCheck = @($preflight.Checks | Where-Object { $_.Name -eq 'cloud_baseline_api_key' })[0]
+            $multilingualCheck.RemediationCommand | Should Be $expectedMultilingualInstall
             $zipformerCheck.RemediationCommand | Should Be $expectedZipformerInstall
             $paraformerCheck.RemediationCommand | Should Be $expectedParaformerInstall
             $cloudKeyCheck.RemediationCommand | Should Be $expectedApiKeyCommand
+            ($preflight.RemediationCommands -contains $expectedMultilingualInstall) | Should Be $true
             ($preflight.RemediationCommands -contains $expectedZipformerInstall) | Should Be $true
             ($preflight.RemediationCommands -contains $expectedParaformerInstall) | Should Be $true
             ($preflight.RemediationCommands -contains $expectedApiKeyCommand) | Should Be $true
@@ -772,6 +810,7 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
 kind = "openai_compatible"
 api_key = "packaged-test-key"
 '@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
 
@@ -845,6 +884,7 @@ api_key = "packaged-test-key"
 kind = "openai_compatible"
 api_key = "packaged-test-key"
 '@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
 
@@ -927,6 +967,7 @@ api_key = "packaged-test-key"
 kind = "openai_compatible"
 api_key = "packaged-test-key"
 '@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
             New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
 
@@ -966,6 +1007,90 @@ api_key = "packaged-test-key"
                 Remove-Item Env:TALK_TEST_REAL_MIC_SILENT_PROBE_KEY -ErrorAction SilentlyContinue
             } else {
                 $env:TALK_TEST_REAL_MIC_SILENT_PROBE_KEY = $originalApiKey
+            }
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'blocks preflight when the optional microphone probe is too weak for provider transcription' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-real-mic-workflow-preflight-weak-probe-' + [guid]::NewGuid().ToString())
+        $modelRoot = Join-Path $tempRoot 'models'
+        $corpusRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        $originalApiKey = $env:TALK_TEST_REAL_MIC_WEAK_PROBE_KEY
+        try {
+            Mock Invoke-TalkAsrCorpusRecorder {
+                param(
+                    [string]$PromptManifest,
+                    [string]$OutputRoot,
+                    [string]$TalkExe,
+                    [switch]$PlanOnly
+                )
+                if (-not $PlanOnly) {
+                    throw 'preflight must not record the full corpus'
+                }
+                [pscustomobject]@{
+                    PromptManifest = [System.IO.Path]::GetFullPath($PromptManifest)
+                    OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+                    TalkExe = [System.IO.Path]::GetFullPath($TalkExe)
+                    CorpusManifestPath = [System.IO.Path]::GetFullPath((Join-Path $OutputRoot 'corpus.json'))
+                    Samples = @([pscustomobject]@{ SampleId = 'short-search-001' })
+                }
+            }
+            Remove-Item Env:TALK_TEST_REAL_MIC_WEAK_PROBE_KEY -ErrorAction SilentlyContinue
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            '{"schemaVersion":1,"samples":[{"sampleId":"short-search-001","referenceText":"你好呀"}]}' |
+                Set-Content -LiteralPath $promptPath -Encoding UTF8
+            foreach ($leaf in @('talk.exe', 'asr-bench.exe', 'talk-local-asr-sherpa.exe')) {
+                Set-Content -LiteralPath (Join-Path $tempRoot $leaf) -Value $leaf -Encoding ASCII
+            }
+            $configPath = Join-Path $tempRoot 'talk-desktop.toml'
+            @'
+[provider]
+kind = "openai_compatible"
+api_key = "packaged-test-key"
+'@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' -Family 'transducer'
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'zipformer-zh-en-punct-int8-480ms' -Family 'transducer'
+            New-TestTalkRealMicWorkflowSherpaModelDir -Root $modelRoot -ModelId 'paraformer-bilingual-zh-en' -Family 'paraformer'
+
+            $audioProbeInvoker = {
+                param([string]$TalkExe, [string]$ConfigPath, [int]$Seconds)
+                [pscustomobject]@{
+                    ExitCode = 0
+                    Stdout = '{"audio":{"nativeWindows":{"status":"ready","deviceName":"麦克风"},"signal":{"durationSeconds":2,"silent":false,"peak":0.02,"rms":0.001,"artifactPath":"probe.wav"}}}'
+                    Stderr = ''
+                }
+            }
+
+            $preflight = Invoke-TalkAsrRealMicDefaultModelWorkflow `
+                -PromptManifest $promptPath `
+                -CorpusRoot $corpusRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -ModelRoot $modelRoot `
+                -AsrBenchExe (Join-Path $tempRoot 'asr-bench.exe') `
+                -LocalAsrDaemonExe (Join-Path $tempRoot 'talk-local-asr-sherpa.exe') `
+                -ConfigPath $configPath `
+                -CloudOpenAiCompatibleEndpoint 'http://127.0.0.1:18080/v1/chat/completions' `
+                -CloudOpenAiCompatibleModel 'qwen-audio-test' `
+                -CloudOpenAiCompatibleApiKeyEnv 'TALK_TEST_REAL_MIC_WEAK_PROBE_KEY' `
+                -ProbeAudio `
+                -AudioProbeSeconds 2 `
+                -AudioProbeInvoker $audioProbeInvoker `
+                -PreflightOnly
+
+            $preflight.Ready | Should Be $false
+            $probeCheck = @($preflight.Checks | Where-Object { $_.Name -eq 'microphone_signal' })[0]
+            $probeCheck.Status | Should Be 'failed'
+            $probeCheck.Message | Should Match 'too weak for provider transcription'
+            $probeCheck.Message | Should Match 'peak=0.02'
+            $probeCheck.RemediationHint | Should Match 'microphone'
+        }
+        finally {
+            if ($null -eq $originalApiKey) {
+                Remove-Item Env:TALK_TEST_REAL_MIC_WEAK_PROBE_KEY -ErrorAction SilentlyContinue
+            } else {
+                $env:TALK_TEST_REAL_MIC_WEAK_PROBE_KEY = $originalApiKey
             }
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }

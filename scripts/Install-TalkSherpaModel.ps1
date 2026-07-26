@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ModelId = 'zipformer-zh-en-punct-int8-480ms',
+    [string]$ModelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
     [string]$DestinationRoot,
     [string]$ArchivePath,
     [switch]$SkipDownload,
@@ -14,8 +14,22 @@ $ErrorActionPreference = 'Stop'
 function Get-TalkSherpaModelCatalog {
     @(
         [pscustomobject]@{
-            Id = 'zipformer-zh-en-punct-int8-480ms'
+            Id = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
             Recommended = $true
+            Family = 'transducer'
+            ModelName = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+            ArchiveName = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2'
+            ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2'
+            Sha256 = '28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4'
+            SizeBytes = 258999581
+            SampleRateHz = 16000
+            Provider = 'cpu'
+            NumThreads = 2
+            DecodingMethod = 'greedy_search'
+        }
+        [pscustomobject]@{
+            Id = 'zipformer-zh-en-punct-int8-480ms'
+            Recommended = $false
             Family = 'transducer'
             ModelName = 'x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8'
             ArchiveName = 'sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2'
@@ -265,7 +279,7 @@ function Expand-TalkSherpaModelArchive {
 function Install-TalkSherpaModel {
     [CmdletBinding()]
     param(
-        [string]$ModelId = 'zipformer-zh-en-punct-int8-480ms',
+        [string]$ModelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
         [string]$DestinationRoot,
         [string]$ArchivePath,
         [switch]$SkipDownload,

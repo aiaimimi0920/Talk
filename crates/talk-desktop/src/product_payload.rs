@@ -20,6 +20,13 @@ const EXPECTED_RUNTIME_FILES: [&str; 5] = [
     "talk-local-asr-sherpa.exe",
 ];
 
+pub fn embedded_runtime_payload_is_appended(executable_bytes: &[u8]) -> bool {
+    let Some(trailer_start) = executable_bytes.len().checked_sub(PAYLOAD_TRAILER_LEN) else {
+        return false;
+    };
+    executable_bytes[trailer_start..].starts_with(PAYLOAD_MAGIC)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EmbeddedRuntimePayloadSource<'a> {
     pub path: &'a str,

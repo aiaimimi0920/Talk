@@ -195,9 +195,6 @@ impl TalkConfig {
                     .to_string(),
             );
         }
-        if self.audio.max_recording_seconds == 0 {
-            problems.push("audio.max_recording_seconds must be greater than 0".to_string());
-        }
         if self.audio.sample_rate_hz == 0 {
             problems.push("audio.sample_rate_hz must be greater than 0".to_string());
         }
@@ -574,6 +571,11 @@ fn validate_speculative_local_asr_daemon_config(
     validate_optional_config_path(
         config.hotwords_file.as_ref(),
         &format!("{prefix}.hotwords_file"),
+        problems,
+    );
+    validate_optional_config_path(
+        config.hotwords_words.as_ref(),
+        &format!("{prefix}.hotwords_words"),
         problems,
     );
     validate_optional_config_path(
@@ -1064,7 +1066,14 @@ pub struct SpeculativeLocalAsrDaemonConfig {
     #[serde(default)]
     pub decoding_method: Option<String>,
     #[serde(default)]
+    pub enable_endpoint: Option<bool>,
+    #[serde(default)]
     pub hotwords_file: Option<PathBuf>,
+    /// User vocabulary/biasing list (one phrase per line, `#` comments). Each
+    /// line may carry an explicit `:score`; unscored lines get a default score
+    /// when rendered into the sherpa hotwords file.
+    #[serde(default)]
+    pub hotwords_words: Option<PathBuf>,
     #[serde(default)]
     pub rule_fsts: Option<PathBuf>,
     #[serde(default)]
@@ -1088,7 +1097,9 @@ impl Default for SpeculativeLocalAsrDaemonConfig {
             num_threads: None,
             sample_rate_hz: None,
             decoding_method: None,
+            enable_endpoint: None,
             hotwords_file: None,
+            hotwords_words: None,
             rule_fsts: None,
             rule_fars: None,
         }

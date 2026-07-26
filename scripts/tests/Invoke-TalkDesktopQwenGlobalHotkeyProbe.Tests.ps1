@@ -146,7 +146,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             Mock Send-TalkDesktopGlobalHotkeyChord {}
             Mock Invoke-TalkDesktopPinnedWindowOperation { & $ScriptBlock }
             Mock Select-TalkTextCaptureTargetChildText {}
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh { 'Paris' }
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh { 'Paris' }
             Mock Wait-TalkTextCaptureContains { 'Paris' }
             Mock Wait-LatestSessionLog {
                 Get-Item -LiteralPath $logPath
@@ -161,7 +161,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
                 -AudioOverridePath 'C:\Talk\.runtime\qwen-probe\probe.wav'
 
             $summary.outputText | Should Be 'Paris'
-            Assert-MockCalled Wait-TalkTextCaptureContainsWithForegroundRefresh -Times 1 -Exactly
+            Assert-MockCalled Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh -Times 1 -Exactly
             Assert-MockCalled Wait-TalkTextCaptureContains -Times 0 -Exactly
             Assert-MockCalled Invoke-TalkTextCaptureTargetPrimer -Times 0 -Exactly
             Assert-MockCalled Set-TalkTextCaptureTargetForeground -Times 2
@@ -203,7 +203,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
                 & $ScriptBlock
             }
             Mock Select-TalkTextCaptureTargetChildText {}
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh {
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh {
                 $callOrder.Add('capture') | Out-Null
                 'Paris'
             }
@@ -259,7 +259,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             Mock Send-TalkDesktopGlobalHotkeyChord {}
             Mock Invoke-TalkDesktopPinnedWindowOperation { & $ScriptBlock }
             Mock Select-TalkTextCaptureTargetChildText {}
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh { 'talkprimerreadyParis' }
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh { 'talkprimerreadyParis' }
             Mock Wait-LatestSessionLog {
                 Get-Item -LiteralPath $logPath
             }
@@ -308,7 +308,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             Mock Start-TalkDesktopSmokeInstance { [pscustomobject]@{ } }
             Mock Invoke-TalkDesktopPinnedWindowOperation { & $ScriptBlock }
             Mock Send-TalkDesktopGlobalHotkeyChord {}
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh { 'Paris' }
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh { 'Paris' }
             Mock Wait-TalkTextCaptureContains { 'Paris.' }
             Mock Wait-LatestSessionLog { Get-Item -LiteralPath $logPath }
             Mock Stop-TalkDesktopSmokeInstance {}
@@ -323,7 +323,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             $summary.outputText | Should Be 'Paris.'
             $summary.capturedText | Should Be 'Paris.'
             $summary.capturedTextMatchesOutput | Should Be $true
-            Assert-MockCalled Wait-TalkTextCaptureContainsWithForegroundRefresh -Times 1 -Exactly -Scope It
+            Assert-MockCalled Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh -Times 1 -Exactly -Scope It
             Assert-MockCalled Wait-TalkTextCaptureContains -Times 1 -Exactly -ParameterFilter {
                 $ExpectedText -eq 'Paris.'
             } -Scope It
@@ -361,7 +361,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             Mock Start-TalkDesktopSmokeInstance { [pscustomobject]@{ } }
             Mock Invoke-TalkDesktopPinnedWindowOperation { & $ScriptBlock }
             Mock Send-TalkDesktopGlobalHotkeyChord {}
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh { 'headline Paris' }
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh { 'headline Paris' }
             Mock Wait-TalkTextCaptureContains { 'headline Paris' }
             Mock Wait-LatestSessionLog { Get-Item -LiteralPath $logPath }
             Mock Stop-TalkDesktopSmokeInstance {}
@@ -413,7 +413,7 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
             Mock Invoke-TalkDesktopPinnedWindowOperation { & $ScriptBlock }
             Mock Send-TalkDesktopGlobalHotkeyChord {}
             Mock Find-LatestSessionLogIfAvailable { Get-Item -LiteralPath $logPath }
-            Mock Wait-TalkTextCaptureContainsWithForegroundRefresh {
+            Mock Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh {
                 throw 'Talk text capture target did not contain [Paris]. Last text: []'
             }
             Mock Stop-TalkDesktopSmokeInstance {}
@@ -441,6 +441,22 @@ Describe 'Invoke-TalkDesktopQwenGlobalHotkeyProbe helpers' {
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'adds a dedicated no-log hostile foreground capture helper and uses it in the probe attempt' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+
+        $scriptText | Should Match 'function New-TalkDesktopQwenGlobalHotkeyProbeHostileForegroundFailureSummary'
+        $scriptText | Should Match 'foreground target could not retain focus long enough to capture probe output after hotkey stop'
+        $scriptText | Should Match 'Test-TalkDesktopForegroundTrailContainsExternalWindow'
+        $scriptText | Should Match 'New-TalkDesktopQwenGlobalHotkeyProbeHostileForegroundFailureSummary `'
+    }
+
+    It 'runs the Qwen global hotkey probe in transcribe mode so the probe validates real insertion instead of command dry-run routing' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+
+        $scriptText | Should Match "-VoiceMode 'transcribe'"
+        $scriptText.IndexOf("-VoiceMode 'transcribe'") | Should BeGreaterThan $scriptText.IndexOf('Write-TalkOpenAiCompatibleChatAudioInputSmokeConfig')
     }
 
     It 'pins the text target topmost and selects primer text before the Qwen hotkey sequence' {

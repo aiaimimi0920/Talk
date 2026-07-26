@@ -111,6 +111,138 @@ fn speculative_runtime_treats_punctuated_idle_partial_as_correction_ready() {
 }
 
 #[test]
+fn speculative_runtime_adds_pause_boundary_punctuation_before_correction() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "第一句话没有标点"),
+            config.soft_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert_eq!(
+        events,
+        vec![
+            SpeculativeRuntimeEvent::LocalSegmentCommitted {
+                segment_id: "seg-1".to_string(),
+                text: "第一句话没有标点，".to_string(),
+            },
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id: "seg-1".to_string(),
+                local_text: "第一句话没有标点，".to_string(),
+                context_before: String::new(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn speculative_runtime_does_not_split_decimal_numbers_at_the_period() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // The period in "3.5" is a decimal point, not a sentence boundary, so even a
+    // final event with a pause must keep the number intact rather than commit
+    // "the ratio is 3." and split off "5".
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "the ratio is 3.5"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    let committed = events.iter().find_map(|event| match event {
+        SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+        _ => None,
+    });
+    assert_eq!(committed, Some("the ratio is 3.5"), "events = {events:?}");
+}
+
+#[test]
+fn speculative_runtime_length_cap_break_backs_up_to_latin_word_boundary() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // 33 non-whitespace chars, no punctuation: the 30-char length cap fires
+    // inside "close". The break must back up to the last whole word rather than
+    // committing a partial token like "...and cl".
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "please open the settings menu and close"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let committed = events.iter().find_map(|event| match event {
+        SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+        _ => None,
+    });
+    assert_eq!(
+        committed,
+        Some("please open the settings menu and"),
+        "events = {events:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_pause_boundary_uses_ascii_comma_for_latin_ending_clause() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // A clause that contains CJK but ends in a Latin token must get an ASCII
+    // comma (keyed off the boundary character, not "any CJK char").
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "打开显卡 gpu"),
+            config.soft_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. },
+                SpeculativeRuntimeEvent::CorrectionRequested { local_text, .. },
+            ] if text == "打开显卡 gpu," && local_text == "打开显卡 gpu,"
+        ),
+        "events = {events:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_pause_boundary_uses_fullwidth_comma_for_cjk_ending_clause() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // A clause containing Latin but ending in CJK must get a full-width comma.
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "gpu 已经打开了"),
+            config.soft_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. },
+                SpeculativeRuntimeEvent::CorrectionRequested { .. },
+            ] if text == "gpu 已经打开了，"
+        ),
+        "events = {events:?}"
+    );
+}
+
+#[test]
 fn speculative_runtime_does_not_request_duplicate_correction_for_same_segment() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
@@ -225,6 +357,185 @@ fn speculative_runtime_splits_cumulative_same_asr_segment_into_tail_segments() {
 }
 
 #[test]
+fn speculative_runtime_recommits_revised_words_instead_of_dropping_them() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "我要去。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "我想去北京。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    // The revised hypothesis must be re-committed under the same id, not dropped
+    // and not concatenated onto the stale text.
+    assert!(
+        matches!(
+            revised.as_slice(),
+            [
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+                SpeculativeRuntimeEvent::CorrectionRequested { .. },
+            ] if segment_id == "seg-1" && text == "我想去北京。"
+        ),
+        "revised events = {revised:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_revision_preserves_shared_prefix_segment() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // Commit two clauses: seg-1 = 第一句。 and seg-1#2 = 第二句。
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "第一句。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第二句。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    // Revise only the second clause. The first clause must be untouched.
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第三句。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        matches!(
+            revised.as_slice(),
+            [
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+                SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. },
+            ] if segment_id == "seg-1#2" && text == "第三句。" && context_before == "第一句。"
+        ),
+        "revised events = {revised:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_revision_respects_utf8_char_boundaries() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "北京市。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    // Divergence after the first multi-byte codepoint (北) must not panic.
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "北海市。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        matches!(
+            revised.as_slice(),
+            [
+                SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+                SpeculativeRuntimeEvent::CorrectionRequested { .. },
+            ] if segment_id == "seg-1" && text == "北海市。"
+        ),
+        "revised events = {revised:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_reports_invalidated_segments_when_revision_shrinks() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    // Commit two clauses: seg-1 = 第一句。 and seg-1#2 = 第二句。
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第二句。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    // Revise into a single clause that diverges early. seg-1 is re-committed;
+    // seg-1#2 has no replacement and must be reported as invalidated so the HUD
+    // can drop it.
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第三句。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        revised.iter().any(|event| matches!(
+            event,
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text }
+                if segment_id == "seg-1" && text == "第三句。"
+        )),
+        "revised events = {revised:?}"
+    );
+    assert!(
+        revised.iter().any(|event| matches!(
+            event,
+            SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids }
+                if segment_ids == &vec!["seg-1#2".to_string()]
+        )),
+        "revised events = {revised:?}"
+    );
+}
+
+#[test]
+fn speculative_runtime_ignores_stale_shorter_prefix_hypothesis() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "你好世界。"),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    // A shorter hypothesis that is a prefix of the committed text is stale and
+    // must not disturb the committed segment.
+    let stale = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "你好世"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    assert!(
+        stale.is_empty(),
+        "stale shorter hypothesis events = {stale:?}"
+    );
+}
+
+#[test]
 fn speculative_runtime_requests_three_ordered_clause_corrections_for_example_sentence() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
@@ -272,6 +583,116 @@ fn speculative_runtime_requests_three_ordered_clause_corrections_for_example_sen
             ("seg-1#2".to_string(), "今天我们去北京玩，".to_string()),
             ("seg-1#3".to_string(), "明天我们去上海玩。".to_string()),
         ]
+    );
+}
+
+#[test]
+fn speculative_runtime_splits_single_final_event_into_three_clause_corrections() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "你好，今天我们去北京玩，明天我们去上海玩。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let corrections = events
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id,
+                local_text,
+                ..
+            } => Some((segment_id.as_str(), local_text.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        corrections,
+        vec![
+            ("seg-1", "你好，"),
+            ("seg-1#2", "今天我们去北京玩，"),
+            ("seg-1#3", "明天我们去上海玩。"),
+        ]
+    );
+}
+
+#[test]
+fn speculative_runtime_preserves_ascii_separator_when_aggregating_clause_events() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+    let first_events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "Hello,"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let second_events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "Hello, world."),
+            0,
+            &config,
+        )
+        .unwrap();
+    let events = first_events
+        .into_iter()
+        .chain(second_events)
+        .collect::<Vec<_>>();
+
+    let committed_text = events
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    let correction_text = events
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested { local_text, .. } => {
+                Some(local_text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<String>();
+
+    assert_eq!(committed_text, "Hello, world.");
+    assert_eq!(correction_text, "Hello, world.");
+}
+
+#[test]
+fn speculative_runtime_requests_correction_for_short_final_tail_clause() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句，好的"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let corrections = events
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id,
+                local_text,
+                ..
+            } => Some((segment_id.as_str(), local_text.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        corrections,
+        vec![("seg-1", "第一句，"), ("seg-1#2", "好的")]
     );
 }
 

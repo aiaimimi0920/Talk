@@ -96,13 +96,7 @@ function Write-TalkDesktopLiveOperatorProbeSummaryFile {
 function Test-TalkDesktopLiveOperatorAudioProbeHasSignal {
     param($ProbeSummary)
 
-    if ($null -eq $ProbeSummary) {
-        return $false
-    }
-    if ([bool]$ProbeSummary.silent) {
-        return $false
-    }
-    return ([double]$ProbeSummary.peak -gt 0)
+    Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary $ProbeSummary
 }
 
 function Invoke-TalkDesktopLiveOperatorAudioProbe {
@@ -121,7 +115,9 @@ function Invoke-TalkDesktopLiveOperatorAudioProbe {
     $effectiveConfigPath = New-TalkDesktopLaunchEffectiveConfig `
         -BaseConfigPath $resolvedBaseConfigPath `
         -Hotkey $Hotkey `
-        -InputDevice $InputDevice
+        -InputDevice $InputDevice `
+        -ForceRuntimeLaunchConfig `
+        -CliCompatibleMaxRecordingSeconds (Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds -ProbeSeconds $AudioProbeSeconds)
     $readinessReport = Invoke-TalkDesktopLaunchReadiness `
         -TalkBinaryPath $resolvedTalkBinaryPath `
         -EffectiveConfigPath $effectiveConfigPath `
@@ -195,7 +191,10 @@ function Invoke-TalkDesktopLiveOperatorProbe {
             $audioProbe = $preflight.AudioProbe
 
             if (-not (Test-TalkDesktopLiveOperatorAudioProbeHasSignal -ProbeSummary $audioProbe)) {
-                $failureReason = 'Live operator audio probe captured only silence; speak louder or fix the selected input device'
+                $failureReason = Get-TalkDesktopLaunchAudioProbeFailureReason `
+                    -ProbeSummary $audioProbe `
+                    -SilentReason 'Live operator audio probe captured only silence; speak louder or fix the selected input device' `
+                    -WeakReason 'Live operator audio probe captured speech that is too weak for provider transcription; speak louder or fix the selected input device'
                 $summary = New-TalkDesktopLiveOperatorProbeSummary `
                     -SmokeRoot $resolvedSmokeRoot `
                     -LaunchSummary $launchSummary `
@@ -236,7 +235,7 @@ function Invoke-TalkDesktopLiveOperatorProbe {
 
         Write-Host ''
         Write-Host 'Talk live operator probe is ready.' -ForegroundColor Green
-        Write-Host ("Press and hold [{0}], speak, then release. Waiting up to {1}s for a completed session." -f $Hotkey, $TimeoutSeconds)
+        Write-Host ("Press [{0}] once to start, speak, then press it again to stop. Waiting up to {1}s for a completed session." -f $Hotkey, $TimeoutSeconds)
         Write-Host ("Foreground target: {0}" -f $target.WindowTitle)
         Write-Host ("Desktop config: {0}" -f $launchSummary.effectiveConfigPath)
         Write-Host ''

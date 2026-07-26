@@ -32,15 +32,15 @@ struct InstalledModelManifest {
 
 pub fn default_zipformer_model_spec() -> ModelSpec {
     ModelSpec {
-        id: "zipformer-zh-en-punct-int8-480ms".to_string(),
-        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2".to_string(),
-        archive_name: "sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2".to_string(),
-        sha256: "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74".to_string(),
+        id: "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10".to_string(),
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2".to_string(),
+        archive_name: "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2".to_string(),
+        sha256: "28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4".to_string(),
         required_files: vec![
             "tokens.txt".to_string(),
-            "encoder.int8.onnx".to_string(),
-            "decoder.onnx".to_string(),
-            "joiner.int8.onnx".to_string(),
+            "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx".to_string(),
+            "decoder-epoch-75-avg-11-chunk-16-left-128.onnx".to_string(),
+            "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx".to_string(),
         ],
     }
 }

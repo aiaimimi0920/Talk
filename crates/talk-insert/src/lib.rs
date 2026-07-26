@@ -10,7 +10,7 @@ pub use patch::{compute_patch_edit_ratio, should_auto_apply_corrected_text};
 // Real desktop targets can return from Ctrl+V before they have actually consumed the
 // clipboard payload. Keep the inserted text available long enough to avoid restoring
 // the user's original clipboard contents back into a slow paste consumer.
-const CLIPBOARD_RESTORE_SETTLE_DELAY: Duration = Duration::from_millis(500);
+pub const DEFAULT_CLIPBOARD_RESTORE_SETTLE_DELAY: Duration = Duration::from_millis(500);
 pub const TALK_WINDOWS_PASTE_SHORTCUT_ENV: &str = "TALK_WINDOWS_PASTE_SHORTCUT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,14 +155,30 @@ pub struct ClipboardPasteInserter<C, P> {
     clipboard: C,
     paste_shortcut: P,
     restore_policy: ClipboardRestorePolicy,
+    settle_delay: Duration,
 }
 
 impl<C, P> ClipboardPasteInserter<C, P> {
     pub fn new(clipboard: C, paste_shortcut: P, restore_policy: ClipboardRestorePolicy) -> Self {
+        Self::with_settle_delay(
+            clipboard,
+            paste_shortcut,
+            restore_policy,
+            DEFAULT_CLIPBOARD_RESTORE_SETTLE_DELAY,
+        )
+    }
+
+    pub fn with_settle_delay(
+        clipboard: C,
+        paste_shortcut: P,
+        restore_policy: ClipboardRestorePolicy,
+        settle_delay: Duration,
+    ) -> Self {
         Self {
             clipboard,
             paste_shortcut,
             restore_policy,
+            settle_delay,
         }
     }
 }
@@ -181,9 +197,13 @@ where
                 self.clipboard.write_text(text)?;
                 let paste_result = self.paste_shortcut.send_paste();
                 if paste_result.is_ok() {
-                    std::thread::sleep(CLIPBOARD_RESTORE_SETTLE_DELAY);
+                    std::thread::sleep(self.settle_delay);
                 }
-                self.clipboard.restore(snapshot)?;
+                if let Err(error) = self.clipboard.restore(snapshot) {
+                    // The paste may already have reached the target. Do not turn a
+                    // post-paste clipboard cleanup failure into a retryable insert.
+                    eprintln!("Talk clipboard restore after paste failed: {error}");
+                }
                 paste_result?;
             }
             ClipboardRestorePolicy::LeaveInsertedText => {

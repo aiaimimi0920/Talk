@@ -104,17 +104,54 @@ Describe 'Invoke-TalkLiveAudioQwenProbe helpers' {
         $summary.summaryPath | Should Be 'C:\Talk\.runtime\live-audio-qwen\live-audio-qwen-probe-summary.json'
     }
 
-    It 'treats silent captured live audio as unusable input' {
+    It 'treats silent or provider-weak captured live audio as unusable input' {
         $silent = Test-TalkLiveAudioQwenProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0
+            rms = 0
             silent = $true
         })
+        $weak = Test-TalkLiveAudioQwenProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
+            peak = 0.02
+            rms = 0.001
+            silent = $false
+        })
         $audible = Test-TalkLiveAudioQwenProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0.15
+            rms = 0.03
             silent = $false
         })
 
         $silent | Should Be $false
+        $weak | Should Be $false
         $audible | Should Be $true
+    }
+
+    It 'uses the shared weak-signal failure reason before attempting the provider round-trip' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+
+        $scriptText | Should Match 'Get-TalkDesktopLaunchAudioProbeFailureReason'
+        $scriptText | Should Match 'Captured live audio was too weak for provider transcription; provider round-trip was skipped'
+    }
+
+    It 'captures native command output and nonzero exit codes without terminating the probe early' {
+        $result = Invoke-TalkLiveAudioQwenProbeNativeCommand `
+            -FilePath $env:ComSpec `
+            -ArgumentList @('/d', '/c', 'echo boom & exit /b 7')
+
+        $result.ExitCode | Should Be 7
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'boom'
+    }
+
+    It 'captures stderr text together with a nonzero exit code without terminating the probe early' {
+        $result = Invoke-TalkLiveAudioQwenProbeNativeCommand `
+            -FilePath $env:ComSpec `
+            -ArgumentList @('/d', '/c', 'echo stderr-boom 1>&2 & echo stdout-boom & exit /b 7')
+
+        $result.ExitCode | Should Be 7
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'stdout-boom'
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'stderr-boom'
     }
 }

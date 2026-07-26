@@ -247,6 +247,8 @@ provider = "cpu"
 num_threads = 4
 sample_rate_hz = 16000
 decoding_method = "modified_beam_search"
+enable_endpoint = false
+hotwords_words = "C:/models/zipformer/hotwords.txt"
 "#;
 
     let config =
@@ -286,6 +288,53 @@ decoding_method = "modified_beam_search"
     assert_eq!(
         daemon.decoding_method.as_deref(),
         Some("modified_beam_search")
+    );
+    assert_eq!(daemon.enable_endpoint, Some(false));
+    assert_eq!(
+        daemon.hotwords_words.as_deref().unwrap().to_string_lossy(),
+        "C:/models/zipformer/hotwords.txt"
+    );
+}
+
+#[test]
+fn speculative_local_daemon_defaults_new_sherpa_fields_to_none() {
+    let daemon = talk_core::SpeculativeLocalAsrDaemonConfig::default();
+
+    assert_eq!(daemon.enable_endpoint, None);
+    assert_eq!(daemon.hotwords_words, None);
+}
+
+#[test]
+fn rejects_speculative_streaming_service_sherpa_daemon_blank_hotwords_words() {
+    let raw = speculative_streaming_service_config_with(
+        r#"
+endpoint = "ws://127.0.0.1:53171/asr"
+sample_rate_hz = 16000
+channels = 1
+connect_timeout_ms = 1000
+idle_timeout_ms = 3000
+final_timeout_ms = 7000
+
+[speculative.streaming_service.local_daemon]
+mode = "sherpa-online"
+model_family = "transducer"
+model = "zipformer-bilingual-zh-en"
+tokens = "C:/models/zipformer/tokens.txt"
+encoder = "C:/models/zipformer/encoder.onnx"
+decoder = "C:/models/zipformer/decoder.onnx"
+joiner = "C:/models/zipformer/joiner.onnx"
+hotwords_words = "   "
+"#,
+    );
+
+    let error =
+        TalkConfig::from_toml_str(&raw).expect_err("blank hotwords_words path must be rejected");
+
+    assert!(
+        error.to_string().contains(
+            "speculative.streaming_service.local_daemon.hotwords_words must not be blank"
+        ),
+        "error={error}"
     );
 }
 
@@ -948,10 +997,39 @@ dir = ".runtime/talk/logs"
     let error = TalkConfig::from_toml_str(raw).expect_err("invalid config must fail");
     let message = error.to_string();
 
-    assert!(message.contains("max_recording_seconds"));
     assert!(message.contains("sample_rate_hz"));
     assert!(message.contains("channels"));
     assert!(message.contains("temp_dir"));
+}
+
+#[test]
+fn accepts_zero_audio_recording_seconds_to_disable_maximum_recording_length() {
+    let raw = r#"
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+max_recording_seconds = 0
+sample_rate_hz = 16000
+channels = 1
+temp_dir = ".runtime/talk/audio"
+
+[provider]
+kind = "mock"
+mock_transcript = "hello"
+
+[output]
+mode = "clipboard_paste"
+restore_clipboard = true
+
+[logging]
+dir = ".runtime/talk/logs"
+"#;
+
+    let config = TalkConfig::from_toml_str(raw).expect("zero max seconds should be valid");
+
+    assert_eq!(config.audio.max_recording_seconds, 0);
 }
 
 #[test]

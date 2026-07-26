@@ -19,7 +19,9 @@ use talk_desktop::{
     desktop_copy_popup_metrics, desktop_copy_popup_model,
     desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
     desktop_copy_popup_position, desktop_document_recorrection_decision,
+    desktop_document_recorrection_generation_is_current,
     desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
+    desktop_failure_cleanup_plan, desktop_final_correction_processing_mode,
     desktop_hud_activation_policy, desktop_hud_audio_meter_model,
     desktop_hud_audio_meter_model_for_waveform, desktop_hud_detail_lifecycle,
     desktop_hud_geometry_update_plan, desktop_hud_metrics_for_view_model,
@@ -30,28 +32,44 @@ use talk_desktop::{
     desktop_hud_view_model_for_listening_waveform_with_partial_and_lifecycle,
     desktop_hud_view_model_for_phase, desktop_insert_target_diagnostic_path,
     desktop_insert_target_restore_requested, desktop_listening_hud_action_for_point,
-    desktop_listening_hud_cancel_button_rect, desktop_listening_hud_complete_button_rect,
-    desktop_listening_hud_partial_text_layout, desktop_listening_hud_visible_partial_text,
-    desktop_live_correction_aggregate, desktop_live_correction_context_before,
+    desktop_listening_hud_auto_follow_for_scroll, desktop_listening_hud_cancel_button_rect,
+    desktop_listening_hud_complete_button_rect, desktop_listening_hud_line_origin,
+    desktop_listening_hud_partial_text_layout, desktop_listening_hud_reconcile_scroll_state,
+    desktop_listening_hud_requires_text_layout,
+    desktop_listening_hud_scroll_line_offset_for_pointer,
+    desktop_listening_hud_scroll_line_offset_for_wheel, desktop_listening_hud_scroll_max_offset,
+    desktop_listening_hud_scrollbar_hit_rect, desktop_listening_hud_scrollbar_thumb_rect,
+    desktop_listening_hud_visible_lines, desktop_listening_hud_visible_partial_text,
+    desktop_listening_hud_visible_partial_text_with_scroll, desktop_live_clipboard_settle_delay_ms,
+    desktop_live_correction_aggregate, desktop_live_correction_anchor_policy,
+    desktop_live_correction_backlog, desktop_live_correction_context_before,
     desktop_live_correction_eligibility, desktop_live_correction_inserted_baseline,
+    desktop_live_correction_ordered_backlog, desktop_live_correction_presentation,
+    desktop_live_correction_processing_mode, desktop_live_correction_target_apply_allowed,
+    desktop_live_correction_timing_log, desktop_live_correction_worker_policy,
+    desktop_live_smart_route_lock, desktop_live_smart_transcribe_evidence,
     desktop_mode_dropdown_model, desktop_mode_output_policy, desktop_mode_text_pane_layout,
     desktop_mode_text_result_model, desktop_mode_text_result_popup_text, desktop_output_plan,
     desktop_overlay_scale_factor_for_dpi, desktop_packaged_local_asr_daemon_launch_plan,
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
     desktop_preferred_paste_shortcut_for_process_name, desktop_preferred_paste_shortcut_for_target,
     desktop_product_local_asr_daemon_launch_plan_with_config,
-    desktop_product_local_asr_startup_timeout_ms, desktop_runtime_insert_directive_for_mode,
-    desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
-    desktop_shortcut_help_model, desktop_shortcut_help_position,
+    desktop_product_local_asr_model_available, desktop_product_local_asr_startup_timeout_ms,
+    desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
+    desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
     desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
     desktop_speculative_local_asr_route, desktop_speculative_pipeline_enabled,
     desktop_speculative_replacement_selection_count, desktop_speculative_transcript_view_model,
-    desktop_streaming_final_correction_job_enabled, desktop_streaming_hud_transcript,
-    desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_stop_aggregate,
-    desktop_streaming_stop_policy, desktop_streaming_stop_tail_text,
-    desktop_text_lifecycle_view_model, foreground_target_refresh_requested,
-    foreground_target_stability_satisfied, hotkey_status_message, hud_message_for_phase,
-    hydrate_foreground_insert_target_focus, idle_status_detail, live_streaming_local_segment_plan,
+    desktop_streaming_effective_segment_count, desktop_streaming_final_correction_job_enabled,
+    desktop_streaming_hud_transcript, desktop_streaming_hud_transcript_parts,
+    desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_segment_cache_text,
+    desktop_streaming_stop_aggregate, desktop_streaming_stop_aggregate_with_pending,
+    desktop_streaming_stop_policy, desktop_streaming_stop_reconciliation_plan,
+    desktop_streaming_stop_tail_decision, desktop_streaming_stop_tail_target_unchanged,
+    desktop_streaming_stop_tail_text, desktop_text_lifecycle_view_model,
+    foreground_target_refresh_requested, foreground_target_stability_satisfied,
+    hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
+    idle_status_detail, live_streaming_local_segment_plan,
     live_streaming_segment_plan_for_lifecycle, native_status_message,
     observe_foreground_target_stability, parse_desktop_window_handle, parse_hotkey,
     recording_stop_watcher_policy, resolve_default_desktop_config_path,
@@ -62,20 +80,23 @@ use talk_desktop::{
     select_windows_hotkey_binding_strategy, tray_menu_model,
     windows_hotkey_binding_registration_plan, ConfigAvailability, DesktopCopyPopupAction,
     DesktopCopyPopupMetrics, DesktopCopyPopupModel, DesktopCopyPopupPaneModel,
-    DesktopDocumentRecorrectionDecision, DesktopHudGeometry, DesktopHudGeometryUpdatePlan,
-    DesktopHudMetrics, DesktopHudPresentation, DesktopHudVisualState, DesktopInsertTargetContext,
-    DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
-    DesktopLiveCorrectionEligibility, DesktopLiveCorrectionSegment,
-    DesktopLiveStreamingLocalSegmentPlan, DesktopLocalAsrDaemonLaunchPlan,
-    DesktopModeDropdownEntry, DesktopModeDropdownModel, DesktopModeOutputPolicy,
-    DesktopModeTextPane, DesktopModeTextPaneLayout, DesktopModeTextResultModel, DesktopOutputPlan,
-    DesktopOutputStrategy, DesktopOverlayActivationPolicy, DesktopOverlayPosition,
-    DesktopOverlayRect, DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective,
-    DesktopRuntimeInsertPlan, DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics,
-    DesktopShortcutHelpModel, DesktopSpeculativeCorrectionJobModel,
-    DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
-    DesktopSpeculativePipelineConfig, DesktopSpeculativeTranscriptState,
-    DesktopStreamingStopPolicy, DesktopTextLifecycleState, DesktopTextLifecycleViewModel,
+    DesktopDocumentRecorrectionDecision, DesktopFailureCleanupPlan, DesktopHudGeometry,
+    DesktopHudGeometryUpdatePlan, DesktopHudMetrics, DesktopHudPresentation, DesktopHudVisualState,
+    DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
+    DesktopLiveCorrectionAnchorPolicy, DesktopLiveCorrectionBacklogItem,
+    DesktopLiveCorrectionEligibility, DesktopLiveCorrectionPresentation,
+    DesktopLiveCorrectionSegment, DesktopLiveStreamingLocalSegmentPlan,
+    DesktopLocalAsrDaemonLaunchPlan, DesktopModeDropdownEntry, DesktopModeDropdownModel,
+    DesktopModeOutputPolicy, DesktopModeTextPane, DesktopModeTextPaneLayout,
+    DesktopModeTextResultModel, DesktopOutputPlan, DesktopOutputStrategy,
+    DesktopOverlayActivationPolicy, DesktopOverlayPosition, DesktopOverlayRect,
+    DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective, DesktopRuntimeInsertPlan,
+    DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
+    DesktopSpeculativeCorrectionJobModel, DesktopSpeculativeCorrectionOutputTarget,
+    DesktopSpeculativeLocalAsrRoute, DesktopSpeculativePipelineConfig,
+    DesktopSpeculativeTranscriptState, DesktopStreamingHudTranscriptParts,
+    DesktopStreamingStopPolicy, DesktopStreamingStopReconciliationPlan,
+    DesktopStreamingStopTailDecision, DesktopTextLifecycleState, DesktopTextLifecycleViewModel,
     ForegroundFocusCaptureSource, ForegroundInsertTarget, ForegroundTargetReleaseReason,
     ForegroundTargetStabilityProgress, HotkeyBindingState, LastSessionStatus,
     LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
@@ -340,6 +361,251 @@ fn mode_text_pane_layout_uses_single_pane_for_transcribe_and_document_only() {
 }
 
 #[test]
+fn live_correction_processing_is_always_faithful_transcription() {
+    for requested_final_mode in [
+        VoiceMode::Smart,
+        VoiceMode::Command,
+        VoiceMode::Generate,
+        VoiceMode::Document,
+        VoiceMode::Translate,
+    ] {
+        assert_eq!(
+            desktop_live_correction_processing_mode(),
+            VoiceMode::Transcribe,
+            "live correction must not inherit requested final mode {requested_final_mode:?}"
+        );
+    }
+}
+
+#[test]
+fn final_correction_processing_uses_resolved_smart_mode_or_explicit_mode() {
+    assert_eq!(
+        desktop_final_correction_processing_mode(VoiceMode::Smart, Some(VoiceMode::Document)),
+        VoiceMode::Document
+    );
+    assert_eq!(
+        desktop_final_correction_processing_mode(VoiceMode::Smart, Some(VoiceMode::Transcribe)),
+        VoiceMode::Transcribe
+    );
+    assert_eq!(
+        desktop_final_correction_processing_mode(VoiceMode::Command, None),
+        VoiceMode::Command
+    );
+}
+
+#[test]
+fn live_correction_target_apply_requires_explicit_or_locked_transcribe_mode() {
+    assert!(desktop_live_correction_target_apply_allowed(
+        VoiceMode::Transcribe,
+        None
+    ));
+    assert!(desktop_live_correction_target_apply_allowed(
+        VoiceMode::Dictate,
+        None
+    ));
+    assert!(!desktop_live_correction_target_apply_allowed(
+        VoiceMode::Smart,
+        None
+    ));
+    assert!(desktop_live_correction_target_apply_allowed(
+        VoiceMode::Smart,
+        Some(VoiceMode::Transcribe)
+    ));
+    assert!(!desktop_live_correction_target_apply_allowed(
+        VoiceMode::Smart,
+        Some(VoiceMode::Command)
+    ));
+    for mode in [
+        VoiceMode::Document,
+        VoiceMode::Command,
+        VoiceMode::Generate,
+        VoiceMode::Polish,
+        VoiceMode::Translate,
+    ] {
+        assert!(!desktop_live_correction_target_apply_allowed(mode, None));
+    }
+}
+
+#[test]
+fn smart_live_route_locks_only_when_transcribe_evidence_is_ready() {
+    assert_eq!(
+        desktop_live_smart_route_lock(None, VoiceMode::Transcribe, true),
+        Some(VoiceMode::Transcribe)
+    );
+    assert_eq!(
+        desktop_live_smart_route_lock(None, VoiceMode::Transcribe, false),
+        None
+    );
+    assert_eq!(
+        desktop_live_smart_route_lock(None, VoiceMode::Document, true),
+        None
+    );
+    assert_eq!(
+        desktop_live_smart_route_lock(Some(VoiceMode::Transcribe), VoiceMode::Document, false),
+        Some(VoiceMode::Transcribe)
+    );
+}
+
+#[test]
+fn smart_live_transcribe_evidence_accepts_short_plain_fallback_but_not_commands() {
+    assert!(desktop_live_smart_transcribe_evidence(
+        VoiceMode::Transcribe,
+        true,
+        false
+    ));
+    assert!(desktop_live_smart_transcribe_evidence(
+        VoiceMode::Transcribe,
+        false,
+        true
+    ));
+    assert!(!desktop_live_smart_transcribe_evidence(
+        VoiceMode::Transcribe,
+        false,
+        false
+    ));
+    assert!(!desktop_live_smart_transcribe_evidence(
+        VoiceMode::Command,
+        false,
+        true
+    ));
+    assert!(!desktop_live_smart_transcribe_evidence(
+        VoiceMode::Document,
+        true,
+        false
+    ));
+}
+
+#[test]
+fn live_correction_backlog_keeps_only_corrected_unanchored_segments_in_order() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "第一段。".to_string(),
+            corrected_text: Some("第一段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "第二段。".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "第三段。".to_string(),
+            corrected_text: Some("第三段。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-3", "第三段。", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-4".to_string(),
+            local_text: "第四段。".to_string(),
+            corrected_text: Some("第四段修正。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_backlog(&segments),
+        vec![
+            DesktopLiveCorrectionBacklogItem {
+                segment_id: "seg-1".to_string(),
+                corrected_text: "第一段。".to_string(),
+            },
+            DesktopLiveCorrectionBacklogItem {
+                segment_id: "seg-4".to_string(),
+                corrected_text: "第四段修正。".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn live_correction_backlog_preserves_corrected_segment_boundaries() {
+    let segments = vec![DesktopLiveCorrectionSegment {
+        segment_id: "seg-1".to_string(),
+        local_text: " world".to_string(),
+        corrected_text: Some(" world".to_string()),
+        insert_anchor: None,
+    }];
+
+    assert_eq!(
+        desktop_live_correction_backlog(&segments),
+        vec![DesktopLiveCorrectionBacklogItem {
+            segment_id: "seg-1".to_string(),
+            corrected_text: " world".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn live_correction_ordered_backlog_stops_before_the_first_unresolved_segment() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "First".to_string(),
+            corrected_text: Some("First".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: " second".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: " third".to_string(),
+            corrected_text: Some(" third".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_ordered_backlog(&segments),
+        vec![DesktopLiveCorrectionBacklogItem {
+            segment_id: "seg-1".to_string(),
+            corrected_text: "First".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn live_correction_ordered_backlog_stops_when_an_anchor_splits_missing_segments() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "First".to_string(),
+            corrected_text: Some("First".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: " second".to_string(),
+            corrected_text: Some(" second".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-2", " second", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: " third".to_string(),
+            corrected_text: Some(" third".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_ordered_backlog(&segments),
+        vec![DesktopLiveCorrectionBacklogItem {
+            segment_id: "seg-1".to_string(),
+            corrected_text: "First".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn mode_output_policy_inserts_only_white_final_text_allowed_by_mode() {
     assert_eq!(
         desktop_mode_output_policy(VoiceMode::Transcribe, None),
@@ -594,6 +860,74 @@ fn document_recorrection_session_decision_uses_all_inserted_stable_segments() {
 }
 
 #[test]
+fn live_correction_refreshes_hud_instead_of_showing_popup_while_recording() {
+    assert_eq!(
+        desktop_live_correction_presentation(true, true, false),
+        DesktopLiveCorrectionPresentation::RefreshHud
+    );
+    assert_eq!(
+        desktop_live_correction_presentation(true, true, true),
+        DesktopLiveCorrectionPresentation::RefreshHud
+    );
+    assert_eq!(
+        desktop_live_correction_presentation(true, false, false),
+        DesktopLiveCorrectionPresentation::None
+    );
+    assert_eq!(
+        desktop_live_correction_presentation(false, false, false),
+        DesktopLiveCorrectionPresentation::ShowCopyPopup
+    );
+}
+
+#[test]
+fn stale_live_anchor_records_white_result_without_patching_editor() {
+    assert_eq!(
+        desktop_live_correction_anchor_policy(true, false),
+        DesktopLiveCorrectionAnchorPolicy::RecordOnly
+    );
+    assert_eq!(
+        desktop_live_correction_anchor_policy(true, true),
+        DesktopLiveCorrectionAnchorPolicy::PatchAndRecord
+    );
+    assert_eq!(
+        desktop_live_correction_anchor_policy(false, false),
+        DesktopLiveCorrectionAnchorPolicy::Ignore
+    );
+}
+
+#[test]
+fn document_recorrection_generation_is_invalidated_by_a_new_recording() {
+    assert!(desktop_document_recorrection_generation_is_current(8, 7));
+    assert!(!desktop_document_recorrection_generation_is_current(9, 7));
+    assert!(!desktop_document_recorrection_generation_is_current(0, 0));
+}
+
+#[test]
+fn failure_cleanup_remains_terminal_when_session_log_persistence_fails() {
+    let persisted = desktop_failure_cleanup_plan(true, true);
+    let persistence_failed = desktop_failure_cleanup_plan(false, true);
+
+    assert_eq!(
+        persisted,
+        DesktopFailureCleanupPlan {
+            stop_recording_timer: true,
+            hide_hud: true,
+            show_copy_popup: true,
+            persistence_failed: false,
+        }
+    );
+    assert_eq!(
+        persistence_failed,
+        DesktopFailureCleanupPlan {
+            stop_recording_timer: true,
+            hide_hud: true,
+            show_copy_popup: true,
+            persistence_failed: true,
+        }
+    );
+}
+
+#[test]
 fn mode_dropdown_model_lists_five_modes_and_marks_current_selection() {
     assert_eq!(
         desktop_mode_dropdown_model(VoiceMode::Generate),
@@ -779,6 +1113,58 @@ fn live_correction_summary_prefers_corrected_text_and_actual_inserted_baseline()
 }
 
 #[test]
+fn live_correction_context_keeps_pending_local_predecessors_during_concurrent_requests() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天去北京，".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天去上海。".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_context_before(&segments, "seg-1#3", 80),
+        "你好。今天去北京，"
+    );
+}
+
+#[test]
+fn live_correction_aggregate_preserves_local_clause_boundary_whitespace() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "Hello,".to_string(),
+            corrected_text: Some("Hello,".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: " world.".to_string(),
+            corrected_text: Some("world!".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_live_correction_aggregate(&segments),
+        "Hello, world!"
+    );
+}
+
+#[test]
 fn desktop_correction_job_model_ignores_non_correction_events_and_disabled_cloud_mode() {
     let disabled_pipeline = DesktopSpeculativePipelineConfig {
         enabled: true,
@@ -884,6 +1270,29 @@ fn live_streaming_corrected_segment_plan_can_insert_when_original_target_is_stil
 }
 
 #[test]
+fn live_streaming_segment_plan_defers_when_recording_origin_target_was_not_captured() {
+    let current_target = editable_insert_target(0x707, 0x808);
+    let event = SpeculativeRuntimeEvent::LocalSegmentCommitted {
+        segment_id: "seg-1".to_string(),
+        text: "不要写入未知焦点。".to_string(),
+    };
+
+    assert_eq!(
+        live_streaming_segment_plan_for_lifecycle(
+            OutputMode::ClipboardPaste,
+            &event,
+            None,
+            Some(&current_target),
+            DesktopTextLifecycleState::Corrected,
+        ),
+        DesktopLiveStreamingLocalSegmentPlan::DeferToStop {
+            segment_id: "seg-1".to_string(),
+            text: "不要写入未知焦点。".to_string(),
+        }
+    );
+}
+
+#[test]
 fn live_streaming_local_segment_plan_defers_when_focus_moved_to_another_control() {
     let origin_target = editable_insert_target(0x707, 0x808);
     let current_target = editable_insert_target(0x707, 0x909);
@@ -932,24 +1341,184 @@ fn streaming_stop_policy_skips_final_insert_but_keeps_final_correction_after_liv
 
 #[test]
 fn desktop_streaming_stop_tail_text_inserts_only_uncommitted_remainder() {
-    let inserted =
-        vec![SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "你好。", 0).unwrap()];
+    let segments = vec![DesktopLiveCorrectionSegment {
+        segment_id: "seg-1".to_string(),
+        local_text: "你好。".to_string(),
+        corrected_text: Some("你好。".to_string()),
+        insert_anchor: Some(
+            SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "你好。", 0).unwrap(),
+        ),
+    }];
 
     assert_eq!(
-        desktop_streaming_stop_tail_text("seg-1", "你好。", &inserted),
+        desktop_streaming_stop_tail_text("seg-1", "你好。", &segments),
         None
     );
     assert_eq!(
-        desktop_streaming_stop_tail_text("seg-1", "你好。今天继续。", &inserted),
+        desktop_streaming_stop_tail_text("seg-1", "你好。今天继续。", &segments),
         Some("今天继续。".to_string())
     );
     assert_eq!(
-        desktop_streaming_stop_tail_text("seg-2", "这是尾句。", &inserted),
+        desktop_streaming_stop_tail_text("seg-2", "这是尾句。", &segments),
         Some("这是尾句。".to_string())
     );
     assert_eq!(
         desktop_streaming_stop_tail_text("seg-1", "完整句。", &[]),
         Some("完整句。".to_string())
+    );
+}
+
+#[test]
+fn streaming_stop_tail_requires_an_unchanged_inserted_baseline() {
+    let baseline = vec!["Hello".to_string()];
+
+    assert!(desktop_streaming_stop_tail_target_unchanged(
+        &baseline,
+        Some("Hello"),
+        true,
+    ));
+    assert!(!desktop_streaming_stop_tail_target_unchanged(
+        &baseline,
+        Some("HelloX"),
+        true,
+    ));
+    assert!(!desktop_streaming_stop_tail_target_unchanged(
+        &baseline, None, true,
+    ));
+    assert!(!desktop_streaming_stop_tail_target_unchanged(
+        &baseline,
+        Some("Hello"),
+        false,
+    ));
+}
+
+#[test]
+fn desktop_streaming_stop_tail_text_does_not_reinsert_split_source_clauses() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好，".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "你好，", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天我们去北京玩，".to_string(),
+            corrected_text: Some("今天我们去北京游玩，".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(
+                    0x707,
+                    Some(0x808),
+                    "seg-1#2",
+                    "今天我们去北京游玩，",
+                    0,
+                )
+                .unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天我们去上海玩。".to_string(),
+            corrected_text: Some("明天我们去上海玩。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_tail_text(
+            "seg-1",
+            "你好，今天我们去北京玩，明天我们去上海玩。",
+            &segments,
+        ),
+        Some("明天我们去上海玩。".to_string())
+    );
+}
+
+#[test]
+fn streaming_stop_tail_decision_shows_full_popup_for_noncontiguous_inserted_segments() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "第一段。".to_string(),
+            corrected_text: Some("第一段。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "第一段。", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "第二段。".to_string(),
+            corrected_text: Some("第二段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "第三段。".to_string(),
+            corrected_text: Some("第三段。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1#3", "第三段。", 0).unwrap(),
+            ),
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_tail_decision("seg-1", "第一段。第二段。第三段。", &segments,),
+        DesktopStreamingStopTailDecision::ShowFullTranscriptPopup
+    );
+}
+
+#[test]
+fn streaming_stop_reconciliation_restores_unanchored_middle_content() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "第一段。".to_string(),
+            corrected_text: Some("第一段。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "第一段。", 0).unwrap(),
+            ),
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "第二段。".to_string(),
+            corrected_text: Some("第二段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "第三段。".to_string(),
+            corrected_text: Some("第三段。".to_string()),
+            insert_anchor: Some(
+                SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-3", "第三段。", 0).unwrap(),
+            ),
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_reconciliation_plan(&segments, "第一段。第二段。第三段。",),
+        DesktopStreamingStopReconciliationPlan::ReconcileWholeDocument {
+            inserted_segments: vec!["第一段。".to_string(), "第三段。".to_string()],
+            replacement_text: "第一段。第二段。第三段。".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_stop_reconciliation_keeps_exact_tail_separator() {
+    let segments = vec![DesktopLiveCorrectionSegment {
+        segment_id: "seg-1".to_string(),
+        local_text: "Hello".to_string(),
+        corrected_text: Some("Hello".to_string()),
+        insert_anchor: Some(
+            SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "Hello", 0).unwrap(),
+        ),
+    }];
+
+    assert_eq!(
+        desktop_streaming_stop_reconciliation_plan(&segments, "Hello world",),
+        DesktopStreamingStopReconciliationPlan::InsertTail(" world".to_string())
     );
 }
 
@@ -989,6 +1558,220 @@ fn streaming_stop_aggregate_uses_tracker_segments_and_avoids_duplicate_final_tai
     assert_eq!(
         desktop_streaming_stop_aggregate(&segments, "seg-9", "额外补一句。"),
         "你好。今天我们去北京游玩，明天我们去上海玩。额外补一句。"
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_does_not_duplicate_full_final_text_when_source_id_was_split() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天我们去北京玩，".to_string(),
+            corrected_text: Some("今天我们去北京玩，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天我们去上海玩。".to_string(),
+            corrected_text: Some("明天我们去上海玩。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate(
+            &segments,
+            "seg-1",
+            "你好，今天我们去北京玩，明天我们去上海玩。"
+        ),
+        "你好，今天我们去北京玩，明天我们去上海玩。"
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_with_pending_matches_the_visible_hud_without_revision() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "第一句，".to_string(),
+            corrected_text: Some("第一句。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "第二句".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+    let pending = [("seg-2", "第二句。"), ("seg-3", "第三句。")];
+    let hud_parts = desktop_streaming_hud_transcript_parts(&segments, &pending);
+    let hud_text = format!(
+        "{}{}",
+        hud_parts.corrected_prefix, hud_parts.pre_recognized_tail
+    );
+
+    assert_eq!(hud_text, "第一句。第二句。第三句。");
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &pending, "seg-3", "第三句。"),
+        hud_text
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_preserves_and_counts_pending_only_nonblank_segments() {
+    let segments = Vec::<DesktopLiveCorrectionSegment>::new();
+    let pending = [
+        ("seg-1", "第一句。"),
+        ("seg-blank", " \t"),
+        ("seg-2", "第二句。"),
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &pending, "seg-2", "第二句。"),
+        "第一句。第二句。"
+    );
+    assert_eq!(
+        desktop_streaming_effective_segment_count(&segments, &pending),
+        2
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_replaces_only_a_non_prefix_revised_middle_source() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "前段。".to_string(),
+            corrected_text: Some("前段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "今天去北京。".to_string(),
+            corrected_text: Some("今天去北京。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "后段。".to_string(),
+            corrected_text: Some("后段。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &[], "seg-2", "今天去了北京。"),
+        "前段。今天去了北京。后段。"
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_revises_middle_source_even_when_text_matches_document_tail() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "前段。".to_string(),
+            corrected_text: Some("前段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "中段。".to_string(),
+            corrected_text: Some("中段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "尾段。".to_string(),
+            corrected_text: Some("尾段。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &[], "seg-2", "尾段。"),
+        "前段。尾段。尾段。"
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_preserves_ascii_separator_spacing() {
+    let segments = vec![DesktopLiveCorrectionSegment {
+        segment_id: "seg-1".to_string(),
+        local_text: "Hello".to_string(),
+        corrected_text: Some("Hello".to_string()),
+        insert_anchor: None,
+    }];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &[], "seg-1", "Hello world"),
+        "Hello world"
+    );
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(&segments, &[], "seg-2", " world"),
+        "Hello world"
+    );
+    assert_eq!(
+        desktop_streaming_stop_tail_decision(
+            "seg-1",
+            "Hello world",
+            &[DesktopLiveCorrectionSegment {
+                segment_id: "seg-1".to_string(),
+                local_text: "Hello".to_string(),
+                corrected_text: Some("Hello".to_string()),
+                insert_anchor: Some(
+                    SpeculativeInsertAnchor::new(0x707, Some(0x808), "seg-1", "Hello", 0,).unwrap(),
+                ),
+            },]
+        ),
+        DesktopStreamingStopTailDecision::InsertTail(" world".to_string())
+    );
+}
+
+#[test]
+fn streaming_stop_aggregate_normalizes_split_source_and_appends_only_extension_suffix() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "前段。".to_string(),
+            corrected_text: Some("前段。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "今天去".to_string(),
+            corrected_text: Some("今天去".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2#2".to_string(),
+            local_text: "北景。".to_string(),
+            corrected_text: Some("北京。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "后段。".to_string(),
+            corrected_text: Some("后段。".to_string()),
+            insert_anchor: None,
+        },
+    ];
+
+    assert_eq!(
+        desktop_streaming_stop_aggregate_with_pending(
+            &segments,
+            &[],
+            "seg-2#2",
+            "今天去北京。明天返回。"
+        ),
+        "前段。今天去北京。明天返回。后段。"
     );
 }
 
@@ -1334,13 +2117,36 @@ fn listening_hud_expands_vertically_for_long_streaming_partial_text() {
 }
 
 #[test]
+fn listening_hud_keeps_a_full_cjk_line_in_the_available_row_before_wrapping() {
+    let twenty_cjk = "识".repeat(20);
+    let layout = desktop_listening_hud_partial_text_layout(340, 88, 96, Some(&twenty_cjk))
+        .expect("single-line CJK layout");
+
+    assert_eq!(layout.raw_line_count, 1);
+    assert_eq!(layout.line_count, 1);
+    assert_eq!(
+        desktop_listening_hud_line_origin(
+            DesktopOverlayRect {
+                left: 50,
+                top: 0,
+                right: 290,
+                bottom: 17,
+            },
+            180,
+        ),
+        80
+    );
+}
+
+#[test]
 fn listening_hud_scrolls_tail_for_very_long_streaming_partial_text() {
     let very_long_partial = format!(
         "{}{}{}",
         "这是一个特别长的实时转录内容，用户可能还在持续说话，所以界面不应该横向撑满屏幕，而应该在保持合理宽度的前提下纵向扩展，",
         "当用户继续描述更多上下文、更多细节、更多需要被输入的内容时，界面应该继续保持录音状态，并把实时识别的最新内容放在可见区域，",
         "超过最大高度以后显示滚动条，并且优先展示最新的尾部转录内容，让用户知道识别仍然在继续同步更新。"
-    );
+    )
+    .repeat(2);
     let model = desktop_hud_view_model_for_listening_waveform_with_partial(
         [0.0, 0.1, 0.85, 0.25, 0.65, 0.15, 0.4, 0.95, 0.05],
         Some(&very_long_partial),
@@ -1364,6 +2170,281 @@ fn listening_hud_scrolls_tail_for_very_long_streaming_partial_text() {
 }
 
 #[test]
+fn listening_hud_scrollbar_drag_model_can_reveal_earlier_lines() {
+    let very_long_partial = format!(
+        "{}{}{}",
+        "这是一个特别长的实时转录内容，用户可能还在持续说话，所以界面不应该横向撑满屏幕，而应该在保持合理宽度的前提下纵向扩展，",
+        "当用户继续描述更多上下文、更多细节、更多需要被输入的内容时，界面应该继续保持录音状态，并把实时识别的最新内容放在可见区域，",
+        "超过最大高度以后显示滚动条，并且优先展示最新的尾部转录内容，让用户知道识别仍然在继续同步更新。"
+    )
+    .repeat(2);
+    let model = desktop_hud_view_model_for_listening_waveform_with_partial(
+        [0.0, 0.1, 0.85, 0.25, 0.65, 0.15, 0.4, 0.95, 0.05],
+        Some(&very_long_partial),
+    );
+    let metrics = desktop_hud_metrics_for_view_model(&model);
+    let layout = desktop_listening_hud_partial_text_layout(
+        metrics.width,
+        metrics.height,
+        96,
+        model.detail.as_deref(),
+    )
+    .expect("very long partial text layout");
+
+    let max_offset = desktop_listening_hud_scroll_max_offset(&layout);
+    assert!(max_offset > 0);
+
+    let top_visible =
+        desktop_listening_hud_visible_partial_text_with_scroll(&very_long_partial, &layout, 0);
+    let bottom_visible = desktop_listening_hud_visible_partial_text_with_scroll(
+        &very_long_partial,
+        &layout,
+        max_offset,
+    );
+    assert!(top_visible.starts_with("这是一个特别长的实时转录内容"));
+    assert!(bottom_visible.ends_with("识别仍然在继续同步更新。"));
+    assert_ne!(top_visible, bottom_visible);
+
+    let top_thumb =
+        desktop_listening_hud_scrollbar_thumb_rect(&layout, 96, 0).expect("top thumb rect");
+    let bottom_thumb = desktop_listening_hud_scrollbar_thumb_rect(&layout, 96, max_offset)
+        .expect("bottom thumb rect");
+    assert!(top_thumb.top < bottom_thumb.top);
+
+    let mid_pointer = (layout.scrollbar_rect.expect("scrollbar").top
+        + layout.scrollbar_rect.expect("scrollbar").bottom)
+        / 2;
+    let mid_offset = desktop_listening_hud_scroll_line_offset_for_pointer(&layout, 96, mid_pointer);
+    assert!(mid_offset > 0);
+    assert!(mid_offset < max_offset);
+}
+
+#[test]
+fn listening_hud_mouse_wheel_scrolls_three_lines_and_clamps_at_both_ends() {
+    assert_eq!(
+        desktop_listening_hud_scroll_line_offset_for_wheel(24, 100, 120),
+        21
+    );
+    assert_eq!(
+        desktop_listening_hud_scroll_line_offset_for_wheel(2, 100, 120),
+        0
+    );
+    assert_eq!(
+        desktop_listening_hud_scroll_line_offset_for_wheel(98, 100, -120),
+        100
+    );
+    assert_eq!(
+        desktop_listening_hud_scroll_line_offset_for_wheel(40, 100, 0),
+        40
+    );
+}
+
+#[test]
+fn listening_hud_auto_follow_only_returns_at_the_bottom() {
+    assert!(desktop_listening_hud_auto_follow_for_scroll(100, 100));
+    assert!(desktop_listening_hud_auto_follow_for_scroll(
+        usize::MAX,
+        100
+    ));
+    assert!(!desktop_listening_hud_auto_follow_for_scroll(99, 100));
+}
+
+#[test]
+fn listening_hud_layout_reconciliation_restores_auto_follow_after_content_shrinks() {
+    assert_eq!(
+        desktop_listening_hud_reconcile_scroll_state(5, 3, true),
+        (3, false)
+    );
+    assert_eq!(
+        desktop_listening_hud_reconcile_scroll_state(1, 3, true),
+        (1, true)
+    );
+    assert_eq!(
+        desktop_listening_hud_reconcile_scroll_state(usize::MAX, 3, false),
+        (3, false)
+    );
+}
+
+#[test]
+fn listening_hud_waveform_only_refresh_does_not_require_full_text_layout() {
+    assert!(!desktop_listening_hud_requires_text_layout(
+        false, false, false
+    ));
+    assert!(desktop_listening_hud_requires_text_layout(
+        true, false, false
+    ));
+    assert!(desktop_listening_hud_requires_text_layout(
+        false, true, false
+    ));
+    assert!(desktop_listening_hud_requires_text_layout(
+        false, false, true
+    ));
+}
+
+#[test]
+fn live_correction_worker_policy_is_bounded_and_timing_log_is_non_sensitive() {
+    let policy = desktop_live_correction_worker_policy();
+    assert_eq!(policy.queue_capacity, 32);
+    assert_eq!(policy.max_concurrency, 3);
+    assert_eq!(policy.drain_timeout_ms, 5_000);
+    assert_eq!(policy.provider_timeout_ms, 5_000);
+    assert_eq!(desktop_live_clipboard_settle_delay_ms(), 60);
+
+    let line = desktop_live_correction_timing_log("segment-7", 12, 340, 8, 361, "applied");
+    assert!(line.contains("segment=segment-7"));
+    assert!(line.contains("queue_wait_ms=12"));
+    assert!(line.contains("provider_ms=340"));
+    assert!(line.contains("apply_ms=8"));
+    assert!(line.contains("total_ms=361"));
+    assert!(line.contains("outcome=applied"));
+    assert!(!line.contains("transcript"));
+}
+
+#[test]
+fn listening_hud_scroll_reaches_tail_beyond_255_wrapped_lines() {
+    let very_long_partial = (0..300)
+        .map(|index| format!("line-{index:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let layout = desktop_listening_hud_partial_text_layout(340, 178, 96, Some(&very_long_partial))
+        .expect("300-line partial text layout");
+
+    assert_eq!(layout.raw_line_count as usize, 300);
+    let max_offset = desktop_listening_hud_scroll_max_offset(&layout);
+    assert!(max_offset as usize > u8::MAX as usize);
+
+    let bottom_visible = desktop_listening_hud_visible_partial_text_with_scroll(
+        &very_long_partial,
+        &layout,
+        max_offset,
+    );
+    assert!(bottom_visible.ends_with("line-299"));
+}
+
+#[test]
+fn listening_hud_scrollbar_hit_area_is_wider_than_the_painted_track() {
+    let partial = "这是一个很长的实时识别内容，应该出现可以拖动的滚动条。".repeat(8);
+    let model = desktop_hud_view_model_for_listening_waveform_with_partial(
+        [0.0, 0.1, 0.85, 0.25, 0.65, 0.15, 0.4, 0.95, 0.05],
+        Some(&partial),
+    );
+    let metrics = desktop_hud_metrics_for_view_model(&model);
+    let layout = desktop_listening_hud_partial_text_layout(
+        metrics.width,
+        metrics.height,
+        96,
+        model.detail.as_deref(),
+    )
+    .expect("long partial text layout");
+    let painted = layout.scrollbar_rect.expect("painted scrollbar");
+    let hit = desktop_listening_hud_scrollbar_hit_rect(&layout, 96).expect("scrollbar hit area");
+
+    assert!(hit.left < painted.left);
+    assert!(hit.right > painted.right);
+    assert!(hit.top <= painted.top);
+    assert!(hit.bottom >= painted.bottom);
+}
+
+#[test]
+fn listening_hud_visible_lines_keep_white_prefix_when_new_yellow_tail_arrives() {
+    let corrected_prefix = "你好，今天我们去北京玩，";
+    let yellow_tail = "明天我们去上海玩。";
+    let combined = format!("{corrected_prefix}{yellow_tail}");
+    let layout = desktop_listening_hud_partial_text_layout(340, 88, 96, Some(&combined))
+        .expect("combined transcript layout");
+
+    let visible_lines = desktop_listening_hud_visible_lines(
+        corrected_prefix,
+        yellow_tail,
+        &layout,
+        desktop_listening_hud_scroll_max_offset(&layout),
+    );
+
+    let flattened = visible_lines
+        .iter()
+        .flat_map(|line| line.runs.iter())
+        .map(|run| run.text.as_str())
+        .collect::<String>();
+    assert_eq!(flattened, format!("{corrected_prefix}{yellow_tail}"));
+    assert_eq!(
+        visible_lines
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .filter(|run| run.lifecycle == DesktopTextLifecycleState::Corrected)
+            .map(|run| run.text.as_str())
+            .collect::<String>(),
+        corrected_prefix
+    );
+    assert_eq!(
+        visible_lines
+            .iter()
+            .flat_map(|line| line.runs.iter())
+            .filter(|run| run.lifecycle == DesktopTextLifecycleState::PreRecognized)
+            .map(|run| run.text.as_str())
+            .collect::<String>(),
+        yellow_tail
+    );
+}
+
+#[test]
+fn streaming_hud_transcript_parts_preserve_corrected_prefix_while_pending_tail_keeps_growing() {
+    let corrected_segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "你好，".to_string(),
+            corrected_text: Some("你好，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#2".to_string(),
+            local_text: "今天我们去北京玩，".to_string(),
+            corrected_text: Some("今天我们去北京玩，".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1#3".to_string(),
+            local_text: "明天我们去上".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+    let pending_tail = vec![("seg-1#3", "明天我们去上海玩。")];
+
+    assert_eq!(
+        desktop_streaming_hud_transcript_parts(&corrected_segments, &pending_tail),
+        DesktopStreamingHudTranscriptParts {
+            corrected_prefix: "你好，今天我们去北京玩，".to_string(),
+            pre_recognized_tail: "明天我们去上海玩。".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_hud_transcript_parts_preserve_boundary_spaces_between_lifecycles() {
+    let corrected_segments = vec![DesktopLiveCorrectionSegment {
+        segment_id: "seg-1".to_string(),
+        local_text: "Hello ".to_string(),
+        corrected_text: Some("Hello ".to_string()),
+        insert_anchor: None,
+    }];
+    let pending_segments = vec![("seg-2", "world")];
+
+    let parts = desktop_streaming_hud_transcript_parts(&corrected_segments, &pending_segments);
+
+    assert_eq!(parts.corrected_prefix, "Hello ");
+    assert_eq!(parts.pre_recognized_tail, "world");
+}
+
+#[test]
+fn streaming_segment_cache_keeps_clause_leading_separator() {
+    assert_eq!(
+        desktop_streaming_segment_cache_text(" world.\n"),
+        Some(" world.")
+    );
+    assert_eq!(desktop_streaming_segment_cache_text(" \t\n"), None);
+}
+
+#[test]
 fn toggle_recording_uses_manual_stop_instead_of_short_timeout_watcher() {
     assert_eq!(
         recording_stop_watcher_policy(TriggerMode::Toggle, 15),
@@ -1372,6 +2453,10 @@ fn toggle_recording_uses_manual_stop_instead_of_short_timeout_watcher() {
     assert_eq!(
         recording_stop_watcher_policy(TriggerMode::PushToTalk, 15),
         DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(15)
+    );
+    assert_eq!(
+        recording_stop_watcher_policy(TriggerMode::PushToTalk, 0),
+        DesktopRecordingStopWatcherPolicy::ManualOnly
     );
 }
 
@@ -1710,7 +2795,20 @@ fn desktop_output_strategy_keeps_direct_insert_when_focus_looks_editable() {
 }
 
 #[test]
-fn desktop_output_plan_uses_current_editable_focus_in_same_window() {
+fn desktop_output_plan_suppresses_final_insert_when_recording_origin_was_not_captured() {
+    let current_target = editable_insert_target(0x707, 0x808);
+
+    assert_eq!(
+        desktop_output_plan(OutputMode::ClipboardPaste, None, Some(&current_target)),
+        DesktopOutputPlan {
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
+        }
+    );
+}
+
+#[test]
+fn desktop_output_plan_suppresses_insert_when_current_editable_focus_changes_in_same_window() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -1753,14 +2851,14 @@ fn desktop_output_plan_uses_current_editable_focus_in_same_window() {
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
-            insert_target: current_target.target,
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
         }
     );
 }
 
 #[test]
-fn desktop_output_plan_uses_current_editable_focus_after_foreground_window_changes() {
+fn desktop_output_plan_suppresses_insert_after_foreground_window_changes() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -1803,8 +2901,8 @@ fn desktop_output_plan_uses_current_editable_focus_after_foreground_window_chang
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
-            insert_target: current_target.target,
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
         }
     );
 }
@@ -2030,7 +3128,7 @@ fn desktop_output_plan_keeps_insert_when_browser_same_control_is_confirmed_via_m
 }
 
 #[test]
-fn desktop_output_plan_uses_current_editable_browser_focus_when_runtime_id_changed() {
+fn desktop_output_plan_suppresses_insert_when_browser_runtime_id_changed() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -2073,8 +3171,43 @@ fn desktop_output_plan_uses_current_editable_browser_focus_when_runtime_id_chang
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
-            insert_target: current_target.target,
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
+        }
+    );
+}
+
+#[test]
+fn desktop_output_plan_suppresses_insert_when_runtime_id_changes_even_if_handles_match() {
+    let origin_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: Some(0x808),
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0x808),
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 159]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+    let mut current_target = origin_target.clone();
+    current_target.automation_runtime_id = Some(vec![42, 314, 160]);
+
+    assert_eq!(
+        desktop_output_plan(
+            OutputMode::ClipboardPaste,
+            Some(&origin_target),
+            Some(&current_target)
+        ),
+        DesktopOutputPlan {
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
         }
     );
 }
@@ -2115,6 +3248,56 @@ fn desktop_output_plan_keeps_insert_when_same_control_is_confirmed_via_origin_fo
         automation_is_keyboard_focusable: None,
         automation_supports_text_pattern: false,
         automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        desktop_output_plan(
+            OutputMode::ClipboardPaste,
+            Some(&origin_target),
+            Some(&current_target)
+        ),
+        DesktopOutputPlan {
+            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
+            insert_target: current_target.target,
+        }
+    );
+}
+
+#[test]
+fn desktop_output_plan_keeps_insert_when_handles_match_and_only_current_runtime_id_exists() {
+    let origin_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: Some(0x808),
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("WindowsForms10.EDIT.app.0.2ea3f5b_r14_ad1".to_string()),
+        caret_window_handle: Some(0x808),
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let current_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: Some(0x808),
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("WindowsForms10.EDIT.app.0.2ea3f5b_r14_ad1".to_string()),
+        caret_window_handle: Some(0x808),
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("WinForm".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 159]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: true,
     };
 
     assert_eq!(
@@ -2219,7 +3402,7 @@ fn desktop_insert_target_restore_is_not_requested_when_selected_target_already_m
 }
 
 #[test]
-fn desktop_output_plan_uses_current_editable_focus_when_foreground_switched() {
+fn desktop_output_plan_suppresses_insert_when_foreground_switched() {
     let origin_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -2262,8 +3445,8 @@ fn desktop_output_plan_uses_current_editable_focus_when_foreground_switched() {
             Some(&current_target)
         ),
         DesktopOutputPlan {
-            strategy: DesktopOutputStrategy::HonorConfiguredOutput,
-            insert_target: current_target.target,
+            strategy: DesktopOutputStrategy::ShowCopyPopupOnly,
+            insert_target: None,
         }
     );
 }
@@ -2308,6 +3491,49 @@ fn hotkey_origin_insert_target_prefers_pretrigger_snapshot_over_release_time_foc
     assert_eq!(
         resolve_hotkey_origin_insert_target(Some(&pending_target), Some(&release_time_target)),
         Some(pending_target)
+    );
+}
+
+#[test]
+fn hotkey_origin_insert_target_upgrades_window_only_pending_to_editable_release_target() {
+    let pending_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let editable_release_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 159]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+
+    assert_eq!(
+        resolve_hotkey_origin_insert_target(Some(&pending_target), Some(&editable_release_target)),
+        Some(editable_release_target)
     );
 }
 
@@ -2431,7 +3657,129 @@ fn pending_hotkey_origin_capture_accepts_richer_candidate_when_existing_snapshot
 }
 
 #[test]
-fn hotkey_recording_origin_enrichment_accepts_richer_same_window_browser_candidate() {
+fn pending_hotkey_origin_capture_rejects_richer_candidate_from_another_window() {
+    let window_only_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let other_window_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x909,
+            focus_handle: Some(0xA0A),
+            primary_focus_handle: Some(0xA0A),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Chrome_RenderWidgetHostHWND".to_string()),
+        caret_window_handle: None,
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![90, 9]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+
+    assert_eq!(
+        resolve_pending_hotkey_origin_capture(
+            Some(&window_only_target),
+            Some(&other_window_target)
+        ),
+        Some(window_only_target)
+    );
+}
+
+#[test]
+fn pending_hotkey_origin_capture_rejects_noneditable_same_window_candidate() {
+    let window_only_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let noneditable_candidate = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: Some(0x808),
+            primary_focus_handle: Some(0x808),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Button".to_string()),
+        caret_window_handle: None,
+        automation_control_type: Some("button".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        resolve_pending_hotkey_origin_capture(
+            Some(&window_only_target),
+            Some(&noneditable_candidate)
+        ),
+        Some(window_only_target)
+    );
+}
+
+#[test]
+fn pending_hotkey_origin_capture_rejects_conflicting_existing_control_identity() {
+    let existing_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 1]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+    let conflicting_candidate = DesktopInsertTargetContext {
+        automation_runtime_id: Some(vec![42, 2]),
+        ..existing_target.clone()
+    };
+
+    assert_eq!(
+        resolve_pending_hotkey_origin_capture(Some(&existing_target), Some(&conflicting_candidate)),
+        Some(existing_target)
+    );
+}
+
+#[test]
+fn hotkey_recording_origin_enrichment_upgrades_window_only_origin_to_editable_candidate() {
     let window_only_target = DesktopInsertTargetContext {
         target: Some(ForegroundInsertTarget {
             window_handle: 0x707,
@@ -2473,6 +3821,140 @@ fn hotkey_recording_origin_enrichment_accepts_richer_same_window_browser_candida
             Some(&rich_browser_target)
         ),
         Some(rich_browser_target)
+    );
+}
+
+#[test]
+fn hotkey_recording_origin_enrichment_upgrades_noneditable_browser_pane_origin_to_editable_candidate(
+) {
+    let browser_pane_origin = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("pane".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 8]),
+        automation_is_keyboard_focusable: Some(false),
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let editable_browser_candidate = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("group".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 159]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        resolve_hotkey_recording_origin_enrichment(
+            Some(&browser_pane_origin),
+            Some(&editable_browser_candidate)
+        ),
+        Some(editable_browser_candidate)
+    );
+}
+
+#[test]
+fn hotkey_recording_origin_enrichment_rejects_noneditable_same_window_candidate() {
+    let window_only_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: None,
+        automation_framework_id: None,
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: None,
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+    let noneditable_candidate = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("button".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 999]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: false,
+        automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        resolve_hotkey_recording_origin_enrichment(
+            Some(&window_only_target),
+            Some(&noneditable_candidate)
+        ),
+        Some(window_only_target)
+    );
+}
+
+#[test]
+fn hotkey_recording_origin_enrichment_rejects_same_window_different_focus_identity() {
+    let origin_target = editable_insert_target(0x707, 0x808);
+    let candidate_target = editable_insert_target(0x707, 0x909);
+
+    assert_eq!(
+        resolve_hotkey_recording_origin_enrichment(Some(&origin_target), Some(&candidate_target)),
+        Some(origin_target)
+    );
+}
+
+#[test]
+fn hotkey_recording_origin_enrichment_rejects_same_window_different_runtime_identity() {
+    let origin_target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x707,
+            focus_handle: None,
+            primary_focus_handle: None,
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: None,
+        caret_window_handle: None,
+        automation_control_type: Some("edit".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: Some(vec![42, 314, 159]),
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+    let candidate_target = DesktopInsertTargetContext {
+        automation_runtime_id: Some(vec![42, 314, 999]),
+        ..origin_target.clone()
+    };
+
+    assert_eq!(
+        resolve_hotkey_recording_origin_enrichment(Some(&origin_target), Some(&candidate_target)),
+        Some(origin_target)
     );
 }
 
@@ -3885,7 +5367,9 @@ fn packaged_local_asr_daemon_launch_plan_adds_sherpa_model_args_from_config() {
         num_threads: Some(4),
         sample_rate_hz: Some(16_000),
         decoding_method: Some("modified_beam_search".to_string()),
+        enable_endpoint: None,
         hotwords_file: None,
+        hotwords_words: None,
         rule_fsts: None,
         rule_fars: None,
     };
@@ -3931,8 +5415,162 @@ fn packaged_local_asr_daemon_launch_plan_adds_sherpa_model_args_from_config() {
     );
 }
 
+fn sherpa_daemon_config_with(
+    decoding_method: Option<&str>,
+    enable_endpoint: Option<bool>,
+    hotwords_file: Option<PathBuf>,
+    hotwords_words: Option<PathBuf>,
+) -> SpeculativeLocalAsrDaemonConfig {
+    SpeculativeLocalAsrDaemonConfig {
+        mode: SpeculativeLocalAsrDaemonMode::SherpaOnline,
+        engine: None,
+        model: Some("zipformer-bilingual-zh-en".to_string()),
+        dry_run_text: None,
+        dry_run_partial_text: None,
+        model_family: SpeculativeSherpaOnlineModelFamily::Transducer,
+        tokens: Some(PathBuf::from("C:/models/zipformer/tokens.txt")),
+        encoder: Some(PathBuf::from("C:/models/zipformer/encoder.onnx")),
+        decoder: Some(PathBuf::from("C:/models/zipformer/decoder.onnx")),
+        joiner: Some(PathBuf::from("C:/models/zipformer/joiner.onnx")),
+        provider: Some("cpu".to_string()),
+        num_threads: Some(4),
+        sample_rate_hz: Some(16_000),
+        decoding_method: decoding_method.map(str::to_string),
+        enable_endpoint,
+        hotwords_file,
+        hotwords_words,
+        rule_fsts: None,
+        rule_fars: None,
+    }
+}
+
+fn arg_value_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| args.get(index + 1))
+        .map(String::as_str)
+}
+
+fn packaged_daemon_launch_plan_for(
+    marker: &str,
+    daemon_config: &SpeculativeLocalAsrDaemonConfig,
+) -> (PathBuf, DesktopLocalAsrDaemonLaunchPlan) {
+    let temp_dir = unique_temp_dir(marker);
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    let executable_path = release_dir.join("talk-desktop.exe");
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        Some(daemon_config),
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+    (release_dir, plan)
+}
+
 #[test]
-fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_release_zipformer_model() {
+fn packaged_local_asr_daemon_launch_plan_emits_enable_endpoint_when_configured() {
+    let config = sherpa_daemon_config_with(Some("greedy_search"), Some(false), None, None);
+    let (_release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-endpoint", &config);
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--enable-endpoint"),
+        Some("false"),
+        "args={:?}",
+        plan.args
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_omits_enable_endpoint_when_unset() {
+    let config = sherpa_daemon_config_with(Some("greedy_search"), None, None, None);
+    let (_release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-endpoint-unset", &config);
+
+    assert!(
+        !plan.args.iter().any(|arg| arg == "--enable-endpoint"),
+        "args={:?}",
+        plan.args
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_upgrades_decoding_to_beam_search_for_hotwords() {
+    let config = sherpa_daemon_config_with(
+        Some("greedy_search"),
+        None,
+        Some(PathBuf::from("C:/models/zipformer/hotwords.txt")),
+        None,
+    );
+    let (_release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-hotwords-file", &config);
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--decoding-method"),
+        Some("modified_beam_search"),
+        "hotwords must force beam search, args={:?}",
+        plan.args
+    );
+    assert_eq!(
+        arg_value_after(&plan.args, "--hotwords-file"),
+        Some("C:/models/zipformer/hotwords.txt"),
+        "args={:?}",
+        plan.args
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_generates_hotwords_file_from_words() {
+    let words_dir = unique_temp_dir("talk-desktop-local-asr-hotwords-words");
+    fs::create_dir_all(&words_dir).expect("create words dir");
+    let words_path = words_dir.join("vocab.txt");
+    fs::write(&words_path, "北京\n# a comment\nGPU:2.0\n\n").expect("write words");
+
+    let config = sherpa_daemon_config_with(Some("greedy_search"), None, None, Some(words_path));
+    let (release_dir, plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-hotwords-gen", &config);
+
+    let generated = arg_value_after(&plan.args, "--hotwords-file").expect("hotwords file arg");
+    assert!(
+        generated.ends_with("talk-generated-hotwords.txt"),
+        "generated hotwords path={generated}, args={:?}",
+        plan.args
+    );
+    assert_eq!(
+        arg_value_after(&plan.args, "--decoding-method"),
+        Some("modified_beam_search"),
+        "generated hotwords must force beam search, args={:?}",
+        plan.args
+    );
+
+    let generated_under_model_root = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx")
+        .join("talk-generated-hotwords.txt");
+    let rendered =
+        fs::read_to_string(&generated_under_model_root).expect("read generated hotwords");
+    assert!(
+        rendered.contains("北京 :1.5"),
+        "unscored phrase must get default score, rendered={rendered:?}"
+    );
+    assert!(
+        rendered.contains("GPU:2.0"),
+        "explicit score preserved, rendered={rendered:?}"
+    );
+    assert!(
+        !rendered.contains("comment"),
+        "comments dropped, rendered={rendered:?}"
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_multilingual_zipformer_model() {
     let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-model");
     let release_dir = temp_dir.join("release");
     let internal_dir = release_dir.join(".internal");
@@ -3940,15 +5578,27 @@ fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_release_zipformer_m
         .join(".runtime")
         .join("models")
         .join("sherpa-onnx")
-        .join("zipformer-zh-en-punct-int8-480ms");
+        .join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
     fs::create_dir_all(&internal_dir).expect("create internal dir");
     fs::create_dir_all(&model_dir).expect("create model dir");
     let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
     fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
     fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
-    fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
-    fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
-    fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+    fs::write(
+        model_dir.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"encoder",
+    )
+    .expect("write encoder");
+    fs::write(
+        model_dir.join("decoder-epoch-75-avg-11-chunk-16-left-128.onnx"),
+        b"decoder",
+    )
+    .expect("write decoder");
+    fs::write(
+        model_dir.join("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"joiner",
+    )
+    .expect("write joiner");
     let executable_path = release_dir.join("talk-desktop.exe");
 
     let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
@@ -3965,11 +5615,11 @@ fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_release_zipformer_m
     assert!(plan
         .args
         .iter()
-        .any(|arg| arg == "zipformer-zh-en-punct-int8-480ms"));
+        .any(|arg| arg == "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"));
     assert!(plan
         .args
         .iter()
-        .any(|arg| arg.ends_with("encoder.int8.onnx")));
+        .any(|arg| arg.ends_with("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx")));
     assert!(!plan.args.iter().any(|arg| arg == "dry-run"));
 }
 
@@ -3978,15 +5628,28 @@ fn product_local_asr_launch_plan_uses_extracted_worker_and_app_data_model_root()
     let temp_dir = unique_temp_dir("talk-desktop-product-local-asr");
     let runtime_dir = temp_dir.join("runtime").join("payload-hash");
     let model_root = temp_dir.join("models").join("sherpa-onnx");
-    let model_dir = model_root.join("zipformer-zh-en-punct-int8-480ms");
+    let model_dir =
+        model_root.join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
     fs::create_dir_all(&runtime_dir).expect("create runtime dir");
     fs::create_dir_all(&model_dir).expect("create model dir");
     let worker_path = runtime_dir.join("talk-local-asr-sherpa.exe");
     fs::write(&worker_path, b"worker").expect("write worker");
     fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
-    fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
-    fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
-    fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+    fs::write(
+        model_dir.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"encoder",
+    )
+    .expect("write encoder");
+    fs::write(
+        model_dir.join("decoder-epoch-75-avg-11-chunk-16-left-128.onnx"),
+        b"decoder",
+    )
+    .expect("write decoder");
+    fs::write(
+        model_dir.join("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"joiner",
+    )
+    .expect("write joiner");
 
     let plan = desktop_product_local_asr_daemon_launch_plan_with_config(
         &worker_path,
@@ -4001,8 +5664,23 @@ fn product_local_asr_launch_plan_uses_extracted_worker_and_app_data_model_root()
     assert!(plan
         .args
         .iter()
-        .any(|arg| arg.ends_with("encoder.int8.onnx")));
+        .any(|arg| arg.ends_with("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx")));
     fs::remove_dir_all(temp_dir).expect("remove product launch fixture");
+}
+
+#[test]
+fn product_local_asr_model_availability_accepts_an_installed_legacy_zipformer() {
+    let temp_dir = unique_temp_dir("talk-desktop-product-legacy-local-asr");
+    let model_root = temp_dir.join("models").join("sherpa-onnx");
+    let model_dir = model_root.join("zipformer-zh-en-punct-int8-480ms");
+    fs::create_dir_all(&model_dir).expect("create legacy model dir");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+    fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
+    fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+
+    assert!(desktop_product_local_asr_model_available(&model_root));
+    fs::remove_dir_all(temp_dir).expect("remove legacy product model fixture");
 }
 
 #[test]

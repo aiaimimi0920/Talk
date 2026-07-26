@@ -208,6 +208,50 @@ function Write-TalkDesktopQwenGlobalHotkeyProbeSummaryFile {
     )
 }
 
+function Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh {
+    param(
+        [Parameter(Mandatory = $true)][System.IntPtr]$Hwnd,
+        [Parameter(Mandatory = $true)][string]$SnapshotPath,
+        [string]$BaselineText = '',
+        [int]$TimeoutMs = 30000,
+        [int]$RefreshIntervalMs = 100
+    )
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    $baseline = [string]$BaselineText
+    $lastText = ''
+    $foregroundTrail = New-Object 'System.Collections.Generic.List[string]'
+    $lastForeground = ''
+    do {
+        Set-TalkDesktopForegroundWindow -Hwnd $Hwnd | Out-Null
+        $foregroundSummary = Get-TalkDesktopForegroundWindowDebugString
+        if ($foregroundSummary -ne $lastForeground) {
+            $lastForeground = $foregroundSummary
+            $foregroundTrail.Add($foregroundSummary) | Out-Null
+            if ($foregroundTrail.Count -gt 6) {
+                $foregroundTrail.RemoveAt(0)
+            }
+        }
+        if (Test-Path -LiteralPath $SnapshotPath) {
+            $lastText = Get-Content -LiteralPath $SnapshotPath -Raw -Encoding UTF8
+            if (
+                -not [string]::IsNullOrWhiteSpace([string]$lastText) -and
+                [string]$lastText -ne $baseline
+            ) {
+                return $lastText
+            }
+        }
+        Start-Sleep -Milliseconds $RefreshIntervalMs
+    } while ((Get-Date) -lt $deadline)
+
+    $foregroundTailText = if ($foregroundTrail.Count -gt 0) {
+        ($foregroundTrail.ToArray() -join ' -> ')
+    } else {
+        'none'
+    }
+    throw "Talk text capture target did not change from baseline [$baseline]. Last text: [$lastText]. Foreground tail: [$foregroundTailText]"
+}
+
 function Resolve-TalkDesktopQwenProbeCapturedText {
     param(
         [Parameter(Mandatory = $true)][string]$SnapshotPath,
@@ -306,6 +350,54 @@ function New-TalkDesktopQwenGlobalHotkeyProbeFailureSummary {
     }
 }
 
+function New-TalkDesktopQwenGlobalHotkeyProbeHostileForegroundFailureSummary {
+    param(
+        [Parameter(Mandatory = $true)][string]$ResolvedSmokeRoot,
+        [Parameter(Mandatory = $true)][string]$ResolvedBinaryPath,
+        [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$ResolvedAudioOverridePath,
+        [Parameter(Mandatory = $true)][string]$SnapshotPath,
+        [Parameter(Mandatory = $true)][string]$ResolvedTextCapturePrimer,
+        [Parameter(Mandatory = $true)][string]$ErrorMessage
+    )
+
+    $capturedText = if (Test-Path -LiteralPath $SnapshotPath) {
+        Get-Content -LiteralPath $SnapshotPath -Raw -Encoding UTF8
+    } else {
+        ''
+    }
+    $foregroundTail = Get-TalkDesktopForegroundTailFromErrorMessage -ErrorMessage $ErrorMessage
+    $failureEvidencePath = Join-Path $ResolvedSmokeRoot 'failure-diagnostic.json'
+    $failureSummary = 'foreground target could not retain focus long enough to capture probe output after hotkey stop'
+    $failureDiagnostic = [pscustomobject][ordered]@{
+        scenario = 'qwen-global-hotkey-probe'
+        failureKind = 'hostile_foreground_environment'
+        failureSummary = $failureSummary
+        expectedOutputText = 'Paris'
+        capturedText = if ([string]::IsNullOrWhiteSpace($capturedText)) { $null } else { $capturedText }
+        foregroundTail = $foregroundTail
+        errorMessage = $ErrorMessage
+        snapshotPath = $SnapshotPath
+        stage = 'capture'
+    }
+    Write-TalkDesktopSmokeJson -Path $failureEvidencePath -Value $failureDiagnostic
+    $normalizedCapturedText = Remove-TalkTextCapturePrimerPrefix `
+        -CapturedText ([string]$capturedText) `
+        -PrimerText $ResolvedTextCapturePrimer
+    $summary = New-TalkDesktopQwenGlobalHotkeyProbeFailureSummary `
+        -SmokeRoot $ResolvedSmokeRoot `
+        -BinaryPath $ResolvedBinaryPath `
+        -ConfigPath $ConfigPath `
+        -AudioOverridePath $ResolvedAudioOverridePath `
+        -CapturedText $normalizedCapturedText `
+        -CapturedTextMatchesOutput $false `
+        -FailureKind 'hostile_foreground_environment' `
+        -FailureSummary $failureSummary `
+        -FailureEvidencePath $failureEvidencePath
+    Write-TalkDesktopQwenGlobalHotkeyProbeSummaryFile -Path $summary.summaryPath -Summary $summary
+    $summary
+}
+
 function Invoke-TalkDesktopQwenGlobalHotkeyProbeAttempt {
     param(
         [Parameter(Mandatory = $true)][string]$ResolvedBinaryPath,
@@ -322,6 +414,7 @@ function Invoke-TalkDesktopQwenGlobalHotkeyProbeAttempt {
         -ConfigPath $configPath `
         -Hotkey $hotkey `
         -ChatCompletionsEndpoint 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' `
+        -VoiceMode 'transcribe' `
         -OutputMode 'clipboard_paste' `
         -ClipboardBackend 'native_windows'
 
@@ -408,10 +501,10 @@ function Invoke-TalkDesktopQwenGlobalHotkeyProbeAttempt {
                 Set-TalkTextCaptureTargetForeground -Target $target | Out-Null
                 Send-TalkDesktopGlobalHotkeyChord -Shortcut $hotkey
 
-                Wait-TalkTextCaptureContainsWithForegroundRefresh `
+                Wait-TalkDesktopQwenProbeTextChangeWithForegroundRefresh `
                     -Hwnd $target.Hwnd `
                     -SnapshotPath $target.SnapshotPath `
-                    -ExpectedText 'Paris' `
+                    -BaselineText $ResolvedTextCapturePrimer `
                     -TimeoutMs 30000
             }
         }
@@ -505,6 +598,23 @@ function Invoke-TalkDesktopQwenGlobalHotkeyProbeAttempt {
                     Write-TalkDesktopQwenGlobalHotkeyProbeSummaryFile -Path $summary.summaryPath -Summary $summary
                     throw ($summary | ConvertTo-Json -Depth 8 -Compress)
                 }
+            }
+
+            $foregroundTail = Get-TalkDesktopForegroundTailFromErrorMessage -ErrorMessage $errorMessage
+            if (
+                Test-TalkDesktopForegroundTrailContainsExternalWindow `
+                    -ForegroundTail $foregroundTail `
+                    -TargetWindowTitle 'Talk Smoke Text Target'
+            ) {
+                $summary = New-TalkDesktopQwenGlobalHotkeyProbeHostileForegroundFailureSummary `
+                    -ResolvedSmokeRoot $ResolvedSmokeRoot `
+                    -ResolvedBinaryPath $ResolvedBinaryPath `
+                    -ConfigPath $configPath `
+                    -ResolvedAudioOverridePath $ResolvedAudioOverridePath `
+                    -SnapshotPath $target.SnapshotPath `
+                    -ResolvedTextCapturePrimer $ResolvedTextCapturePrimer `
+                    -ErrorMessage $errorMessage
+                throw ($summary | ConvertTo-Json -Depth 8 -Compress)
             }
 
             throw

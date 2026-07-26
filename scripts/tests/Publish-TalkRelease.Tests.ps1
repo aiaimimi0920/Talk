@@ -26,9 +26,32 @@ Describe 'Publish-TalkRelease helpers' {
                 ForEach-Object { $_.FullName.Substring($result.DestinationDir.Length).TrimStart('\\') } |
                 Sort-Object)
             $relativeFiles | Should Be @('Talk.exe', 'talk.toml')
+            (Get-Content -LiteralPath (Join-Path $result.DestinationDir 'talk.toml') -Raw) |
+                Should Match 'max_recording_seconds = 0'
+            $result.ProductValidation.Files | Should Be @('Talk.exe', 'talk.toml')
+            $result.ProductValidation.EmbeddedRuntimeSha256 |
+                Should Be $result.EmbeddedRuntimeSha256
         } finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'documents the product default multilingual Zipformer model files' {
+        $config = New-TalkReleaseDesktopConfigContent
+        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $modelRoot = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\$modelId"
+
+        foreach ($expectedLine in @(
+                "# model = `"$modelId`"",
+                "# tokens = `"$modelRoot\tokens.txt`"",
+                "# encoder = `"$modelRoot\encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx`"",
+                "# decoder = `"$modelRoot\decoder-epoch-75-avg-11-chunk-16-left-128.onnx`"",
+                "# joiner = `"$modelRoot\joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx`""
+            )) {
+            $config.Contains($expectedLine) | Should Be $true
+        }
+        $config | Should Not Match 'zipformer-zh-en-punct-int8-480ms'
+        $config | Should Not Match '\.runtime/models/sherpa-onnx'
     }
 
     It 'embeds the five-member runtime payload into the product executable' {
@@ -62,6 +85,38 @@ Describe 'Publish-TalkRelease helpers' {
             $magicOffset = $bytes.Length - 60
             $bytes[$magicOffset..($magicOffset + 7)] | Should Be $magic
             $result.ArchiveSha256.Length | Should Be 64
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects runtime payload member names with incorrect casing' {
+        $tempRoot = Join-Path $env:TEMP ('talk-release-payload-case-' + [guid]::NewGuid().ToString())
+        $outputPath = Join-Path $tempRoot 'Talk.exe'
+        $sourceRoot = Join-Path $tempRoot 'sources'
+        New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+        try {
+            $basePath = Join-Path $sourceRoot 'talk-desktop.exe'
+            Set-Content -LiteralPath $basePath -Value 'base executable bytes' -Encoding ASCII
+            $payloadNames = @(
+                'talk-local-asr-sherpa.exe',
+                'sherpa-onnx-c-api.dll',
+                'sherpa-onnx-cxx-api.dll',
+                'ONNXRUNTIME.DLL',
+                'onnxruntime_providers_shared.dll'
+            )
+            $payloadFiles = foreach ($name in $payloadNames) {
+                $path = Join-Path $sourceRoot $name
+                Set-Content -LiteralPath $path -Value $name -Encoding ASCII
+                [pscustomobject]@{ Name = $name; Path = $path }
+            }
+
+            {
+                New-TalkEmbeddedRuntimeExecutable `
+                    -BaseExecutablePath $basePath `
+                    -PayloadFiles $payloadFiles `
+                    -OutputPath $outputPath
+            } | Should Throw
         } finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -996,7 +1051,7 @@ Describe 'Publish-TalkRelease helpers' {
             $manifest.buildLogs.Count | Should Be 4
             $manifest.nativePreflight.Count | Should Be 2
             $manifest.desktopSmoke | Should Be $null
-            $manifest.supportFiles.Count | Should Be 23
+            $manifest.supportFiles.Count | Should Be 24
             $manifest.supportFiles[0].kind | Should Be 'release-summary'
             $manifest.supportFiles[0].path | Should Be 'release-summary.json'
             $manifest.supportFiles[1].kind | Should Be 'desktop-config'
@@ -1152,6 +1207,7 @@ Describe 'Publish-TalkRelease helpers' {
             $desktopConfigText | Should Match 'translate_shortcut = "RightAlt\+/"'
             $desktopConfigText | Should Match 'ask_shortcut = "RightAlt\+Space"'
             $desktopConfigText | Should Match 'backend = "native_windows"'
+            $desktopConfigText | Should Match 'max_recording_seconds = 0'
             $desktopConfigText | Should Match 'transcription_transport = "chat_completions_audio_input"'
             $desktopConfigText | Should Match 'standard per-user DashScope credential file'
             $desktopConfigText | Should Match 'api_key_env = "TALK_PROVIDER_API_KEY"'
@@ -1261,6 +1317,52 @@ Describe 'Publish-TalkRelease helpers' {
         }
     }
 
+    It 'packages a release README with direct launch and live hotkey validation commands' {
+        $tempRoot = Join-Path $env:TEMP ('talk-release-publish-test-' + [guid]::NewGuid().ToString())
+        $releaseRoot = Join-Path $tempRoot 'release-root'
+        New-Item -ItemType Directory -Path $releaseRoot | Out-Null
+        try {
+            Mock Invoke-PowerShellCommand {
+                param([string]$Command, [string]$WorkingDirectory)
+                [pscustomobject]@{
+                    Display = $Command
+                    WorkingDirectory = $WorkingDirectory
+                    OutputText = "mock output for $Command"
+                    ExitCode = 0
+                }
+            }
+            Mock Invoke-TalkNativeWindowsPreflight { @() }
+            Mock Invoke-TalkNativeWindowsReadiness { $null }
+
+            $result = Publish-TalkRelease `
+                -VersionId 'desktop-shell-test-readme' `
+                -ReleaseRoot $releaseRoot `
+                -SkipSmoke
+
+            $readmePath = Join-Path $result.DestinationDir 'README.md'
+            Test-Path -LiteralPath $readmePath | Should Be $true
+            $readmeText = Get-Content -LiteralPath $readmePath -Raw -Encoding UTF8
+            $readmeText | Should Match 'Start-TalkDesktop.ps1'
+            $readmeText | Should Match 'Invoke-TalkDesktopLiveHotkeyProbe.ps1'
+            $readmeText | Should Match 'TALK_PROVIDER_API_KEY'
+            $readmeText | Should Match 'AudioOverridePath'
+            $readmeText | Should Match 'checksums.sha256'
+            $readmeText | Should Match '```powershell'
+            $readmeText | Should Match '`talk-desktop\.exe`'
+            $readmeText | Should Match '`talk-desktop\.toml`'
+            $readmeText | Should Match '`api_key`'
+            $readmeText | Should Match '`clipboard_paste`'
+            $readmeText | Should Not Match "`t"
+            $readmeText | Should Not Match "`a"
+
+            $manifest = Get-Content -LiteralPath (Join-Path $result.DestinationDir 'manifest.json') -Raw | ConvertFrom-Json
+            @($manifest.supportFiles | Where-Object { $_.kind -eq 'release-readme' }).Count | Should Be 1
+            @($manifest.supportFiles | Where-Object { $_.kind -eq 'release-readme' })[0].path | Should Be 'README.md'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     It 'packages a desktop launcher script for release-side direct launch' {
         $tempRoot = Join-Path $env:TEMP ('talk-release-publish-test-' + [guid]::NewGuid().ToString())
         $releaseRoot = Join-Path $tempRoot 'release-root'
@@ -1675,7 +1777,7 @@ Describe 'Publish-TalkRelease helpers' {
             $probeText = Get-Content -LiteralPath $probePath -Raw
             $helperText = Get-Content -LiteralPath $helperPath -Raw
             $probeText | Should Match 'function Invoke-TalkDesktopLiveHotkeyProbe'
-            $probeText | Should Match 'Invoke-TalkDesktopGlobalHotkeyOperation'
+            $probeText | Should Match 'Invoke-TalkDesktopPinnedWindowOperation'
             $probeText | Should Match 'AudioProbeSeconds'
             $probeText | Should Match 'Invoke-TalkDesktopLiveHotkeyAudioProbe'
             $probeText | Should Match 'ProviderAudioTranscriptionsEndpoint'
@@ -1722,7 +1824,7 @@ Describe 'Publish-TalkRelease helpers' {
 
             $probeText = Get-Content -LiteralPath $probePath -Raw
             $probeText | Should Match 'function Invoke-TalkDesktopLiveOperatorProbe'
-            $probeText | Should Match 'Press and hold'
+            $probeText | Should Match 'Press \[\{0\}\] once to start, speak, then press it again to stop'
             $probeText | Should Match 'AudioProbeSeconds'
 
             $manifest = Get-Content -LiteralPath (Join-Path $result.DestinationDir 'manifest.json') -Raw | ConvertFrom-Json

@@ -58,7 +58,14 @@ configured default.
 }
 ```
 
-`sequence` is monotonic per session. `pcm_base64` is raw PCM bytes, not WAV.
+`sequence` is the per-session idempotency key for an audio chunk. A newly
+created chunk must use a value greater than every previously sent chunk in the
+same session; a retry of that chunk must reuse its original `sequence`. The
+service accepts an audio message only when its `sequence` is greater than the
+last successfully accepted sequence. Duplicate or stale messages
+(`sequence <= last_sequence`) are ignored without decoding or feeding their PCM
+to ASR and without incrementing `audio_chunks`. Sequence values need not be
+contiguous. `pcm_base64` is raw PCM bytes, not WAV.
 
 ### stop
 

@@ -20,6 +20,40 @@ Describe 'Start-TalkDesktop helpers' {
         }
     }
 
+    It 'explains that native readiness probes require a desktop bundle release when the internal Talk helper is missing' {
+        $tempRoot = Join-Path $env:TEMP ('talk-start-launch-missing-internal-helper-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            {
+                Resolve-TalkDesktopLaunchTalkBinaryPath -ReleaseDir $tempRoot
+            } | Should Throw 'desktop bundle release'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'includes the missing internal helper path instead of a formatting placeholder in the bundle-only error' {
+        $tempRoot = Join-Path $env:TEMP ('talk-start-launch-missing-internal-helper-path-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $message = ''
+            try {
+                Resolve-TalkDesktopLaunchTalkBinaryPath -ReleaseDir $tempRoot
+                throw 'expected Resolve-TalkDesktopLaunchTalkBinaryPath to throw'
+            }
+            catch {
+                $message = $_.Exception.Message
+            }
+
+            $message | Should Match ([regex]::Escape((Join-Path $tempRoot '.internal\talk.exe')))
+            $message | Should Not Match '\{0\}'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'prefers an explicit api key over json file and environment fallback' {
         $env:TALK_PROVIDER_API_KEY = 'env-key'
         try {
@@ -53,6 +87,35 @@ Describe 'Start-TalkDesktop helpers' {
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    It 'temporarily applies launch environment overrides and restores previous process values' {
+        $previousApiKey = $env:TALK_PROVIDER_API_KEY
+        $previousOverride = $env:TALK_DESKTOP_AUDIO_FILE_OVERRIDE
+        try {
+            $env:TALK_PROVIDER_API_KEY = 'old-key'
+            $env:TALK_DESKTOP_AUDIO_FILE_OVERRIDE = 'old-audio.wav'
+            $seenApiKey = $null
+            $seenOverride = $null
+
+            Invoke-TalkDesktopLaunchWithEnvironmentOverrides `
+                -EnvironmentOverrides @{
+                    TALK_PROVIDER_API_KEY = 'new-key'
+                    TALK_DESKTOP_AUDIO_FILE_OVERRIDE = 'new-audio.wav'
+                } `
+                -ScriptBlock {
+                    $script:seenApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
+                    $script:seenOverride = [Environment]::GetEnvironmentVariable('TALK_DESKTOP_AUDIO_FILE_OVERRIDE', 'Process')
+                }
+
+            $script:seenApiKey | Should Be 'new-key'
+            $script:seenOverride | Should Be 'new-audio.wav'
+            $env:TALK_PROVIDER_API_KEY | Should Be 'old-key'
+            $env:TALK_DESKTOP_AUDIO_FILE_OVERRIDE | Should Be 'old-audio.wav'
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $previousApiKey, 'Process')
+            [Environment]::SetEnvironmentVariable('TALK_DESKTOP_AUDIO_FILE_OVERRIDE', $previousOverride, 'Process')
         }
     }
 
@@ -209,6 +272,37 @@ toggle_shortcut = "Ctrl+Alt+Space"
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'forces a runtime-launch config copy for CLI probe flows even without hotkey or input overrides' {
+        $tempRoot = Join-Path $env:TEMP ('talk-start-launch-config-cli-copy-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        try {
+            $baseConfigPath = Join-Path $tempRoot 'talk-desktop.toml'
+            @'
+[audio]
+backend = "native_windows"
+max_recording_seconds = 0
+'@ | Set-Content -LiteralPath $baseConfigPath -Encoding UTF8
+
+            $effectiveConfigPath = New-TalkDesktopLaunchEffectiveConfig `
+                -BaseConfigPath $baseConfigPath `
+                -ForceRuntimeLaunchConfig `
+                -CliCompatibleMaxRecordingSeconds 5
+
+            $effectiveConfigPath | Should Not Be $baseConfigPath
+            (Get-Content -LiteralPath $effectiveConfigPath -Raw) | Should Match 'max_recording_seconds = 5'
+            (Get-Content -LiteralPath $baseConfigPath -Raw) | Should Match 'max_recording_seconds = 0'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'computes a positive CLI-compatible recording limit for release-side probes' {
+        (Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds -ProbeSeconds 0) | Should Be 5
+        (Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds -ProbeSeconds 3) | Should Be 5
+        (Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds -ProbeSeconds 8) | Should Be 8
     }
 
     It 'removes a generated runtime-launch override config after one-shot probe flows complete' {
@@ -432,18 +526,55 @@ max_recording_seconds = 15
         $summary.silent | Should Be $true
     }
 
-    It 'treats silent audio probe summaries as unusable input for release-side round-trip probes' {
+    It 'treats silent or provider-weak audio probe summaries as unusable input for release-side round-trip probes' {
         $silent = Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0
+            rms = 0
             silent = $true
         })
+        $weak = Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
+            peak = 0.02
+            rms = 0.001
+            silent = $false
+        })
+        $briefWeak = Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 0.5
+            peak = 0.02
+            rms = 0.001
+            silent = $false
+        })
         $audible = Test-TalkDesktopLaunchAudioProbeHasSignal -ProbeSummary ([pscustomobject]@{
+            durationSeconds = 3
             peak = 0.2
+            rms = 0.05
             silent = $false
         })
 
         $silent | Should Be $false
+        $weak | Should Be $false
+        $briefWeak | Should Be $true
         $audible | Should Be $true
+    }
+
+    It 'captures native command output and exit code for round-trip diagnostics without terminating early' {
+        $result = Invoke-TalkDesktopLaunchNativeCommand `
+            -FilePath $env:ComSpec `
+            -ArgumentList @('/d', '/c', 'echo boom & exit /b 7')
+
+        $result.ExitCode | Should Be 7
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'boom'
+    }
+
+    It 'captures stderr text together with a nonzero exit code without terminating early' {
+        $result = Invoke-TalkDesktopLaunchNativeCommand `
+            -FilePath $env:ComSpec `
+            -ArgumentList @('/d', '/c', 'echo stderr-boom 1>&2 & echo stdout-boom & exit /b 7')
+
+        $result.ExitCode | Should Be 7
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'stdout-boom'
+        (($result.Output -join [Environment]::NewLine)) | Should Match 'stderr-boom'
     }
 
     It 'builds a qwen round-trip provider config with audio-input transport and dry_run output' {

@@ -10,7 +10,8 @@ param(
         'broken-config-recovery',
         'native-unavailable-status',
         'openai-compatible-success',
-        'openai-compatible-audio-input-insert-success'
+        'openai-compatible-audio-input-insert-success',
+        'openai-compatible-audio-input-focus-switch-copy-popup-success'
     )
 )
 
@@ -3161,7 +3162,9 @@ function Invoke-OpenAiCompatibleChatAudioInputInsertSuccessSmoke {
     $progressPath = Join-Path $ScenarioRoot 'progress.log'
     $sessionLogPath = $null
     try {
-        $provider = Start-TalkFakeOpenAiCompatibleChatAudioInputProvider -ScenarioRoot $ScenarioRoot
+        $provider = Start-TalkFakeOpenAiCompatibleChatAudioInputProvider `
+            -ScenarioRoot $ScenarioRoot `
+            -TranscribedText 'assistant reply from audio input chat'
         Write-TalkSmokeProgress -Path $progressPath -Message 'provider-ready'
         $chatCompletionsEndpoint = $provider.ChatCompletionsEndpoint
         $providerRequestsPath = $provider.RequestsPath
@@ -3341,6 +3344,12 @@ function Invoke-OpenAiCompatibleChatAudioInputInsertSuccessSmoke {
         $normalizedCapturedText = Remove-TalkTextCapturePrimerPrefix `
             -CapturedText ([string]$capturedText) `
             -PrimerText $textCapturePrimer
+        if ($normalizedCapturedText -ne 'assistant reply from audio input chat') {
+            throw "Expected inserted target text [assistant reply from audio input chat], got [$($normalizedCapturedText)]"
+        }
+        Set-Content -LiteralPath $target.SnapshotPath -Value $normalizedCapturedText -Encoding UTF8
+        Stop-TalkTextCaptureTarget -Target $target
+        $target = $null
 
         $log = Wait-LatestSessionLog -LogsDir (Join-Path $ScenarioRoot 'logs')
         $sessionLogPath = $log.FullName
@@ -3437,6 +3446,7 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke {
     try {
         $provider = Start-TalkFakeOpenAiCompatibleChatAudioInputProvider `
             -ScenarioRoot $ScenarioRoot `
+            -TranscribedText 'assistant reply from audio input chat' `
             -ResponseDelayMs 1500
         Write-TalkSmokeProgress -Path $progressPath -Message 'provider-ready'
         $chatCompletionsEndpoint = $provider.ChatCompletionsEndpoint
@@ -3523,13 +3533,112 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke {
             throw
         }
 
-        Set-TalkTextCaptureTargetForeground -Target $alternateTarget | Out-Null
-        $capturedAlternate = Wait-TalkTextCaptureContainsWithForegroundRefresh `
-            -Hwnd $alternateTarget.Hwnd `
-            -SnapshotPath $alternateTarget.SnapshotPath `
-            -ExpectedText 'assistant reply from audio input chat' `
-            -TimeoutMs 12000
-        Write-TalkSmokeProgress -Path $progressPath -Message 'current-focus-text-captured'
+        $popupHwnd = $null
+        try {
+            $popupHwnd = Invoke-TalkDesktopPinnedWindowOperation -Hwnd $alternateTarget.Hwnd -ScriptBlock {
+                Assert-TalkTextCaptureTargetForeground -Target $alternateTarget -Name 'alternate' | Out-Null
+                if ($alternateTarget.TextBoxHwnd -and $alternateTarget.TextBoxHwnd -ne [System.IntPtr]::Zero) {
+                    Select-TalkTextCaptureTargetChildText -ChildHwnd $alternateTarget.TextBoxHwnd | Out-Null
+                }
+                Assert-TalkTextCaptureTargetForeground -Target $alternateTarget -Name 'alternate' | Out-Null
+                Write-TalkSmokeProgress -Path $progressPath -Message 'alternate-foreground-armed'
+                Wait-TalkDesktopVisibleWindowByProcessIdAndClass `
+                    -TargetProcessId $instance.Process.Id `
+                    -ClassName 'TalkDesktopCopyPopupWindow' `
+                    -TimeoutMs 12000
+            }
+        }
+        catch {
+            $errorMessage = [string]$_.Exception.Message
+            if (Test-TalkDesktopFocusSwitchForegroundPreconditionError -ErrorMessage $errorMessage) {
+                return New-TalkDesktopFocusSwitchHostileForegroundFailure `
+                    -ScenarioName 'openai-compatible-audio-input-focus-switch-copy-popup-success' `
+                    -ScenarioRoot $ScenarioRoot `
+                    -Stage 'alternate-foreground' `
+                    -ErrorMessage $errorMessage `
+                    -ProgressPath $progressPath `
+                    -OriginTarget $originTarget `
+                    -AlternateTarget $alternateTarget `
+                    -TalkDesktopBinaryPath $TalkDesktopBinaryPath `
+                    -ConfigPath $configPath `
+                    -ChatCompletionsEndpoint $chatCompletionsEndpoint `
+                    -AudioOverridePath $audioOverridePath `
+                    -ProviderRequestsPath $providerRequestsPath
+            }
+            $log = Find-LatestSessionLogIfAvailable -LogsDir (Join-Path $ScenarioRoot 'logs')
+            $insertTargetDiagnosticPath = if ($null -ne $log) {
+                Resolve-TalkDesktopInsertTargetDiagnosticPath -SessionLogPath $log.FullName
+            } else {
+                $null
+            }
+            $originCapturedText = if (Test-Path -LiteralPath $originTarget.SnapshotPath) {
+                Get-Content -LiteralPath $originTarget.SnapshotPath -Raw -Encoding UTF8
+            } else {
+                $null
+            }
+            $alternateCapturedText = if (Test-Path -LiteralPath $alternateTarget.SnapshotPath) {
+                Get-Content -LiteralPath $alternateTarget.SnapshotPath -Raw -Encoding UTF8
+            } else {
+                $null
+            }
+            $diagnosticPath = Join-Path $ScenarioRoot 'failure-diagnostic.json'
+            Write-TalkDesktopSmokeJson -Path $diagnosticPath -Value ([pscustomobject][ordered]@{
+                scenario = 'openai-compatible-audio-input-focus-switch-copy-popup-success'
+                failureKind = 'copy_popup_focus_switch_failed'
+                failureSummary = 'focus switched away from the origin target, but Talk did not remain in copy-popup mode'
+                errorMessage = $errorMessage
+                originSnapshotPath = $originTarget.SnapshotPath
+                alternateSnapshotPath = $alternateTarget.SnapshotPath
+                originCapturedText = if ([string]::IsNullOrEmpty([string]$originCapturedText)) { $null } else { [string]$originCapturedText }
+                alternateCapturedText = if ([string]::IsNullOrEmpty([string]$alternateCapturedText)) { $null } else { [string]$alternateCapturedText }
+                sessionLogPath = if ($null -ne $log) { $log.FullName } else { $null }
+                insertTargetDiagnosticPath = $insertTargetDiagnosticPath
+                progressPath = $progressPath
+            })
+
+            return [pscustomobject][ordered]@{
+                Scenario = 'openai-compatible-audio-input-focus-switch-copy-popup-success'
+                BinaryPath = $TalkDesktopBinaryPath
+                ConfigPath = $configPath
+                ChatCompletionsEndpoint = $chatCompletionsEndpoint
+                AudioOverridePath = $audioOverridePath
+                ProviderRequestsPath = $providerRequestsPath
+                LogPath = if ($null -ne $log) { $log.FullName } else { $null }
+                InsertTargetDiagnosticPath = $insertTargetDiagnosticPath
+                OriginCapturedText = if ([string]::IsNullOrEmpty([string]$originCapturedText)) { $null } else { [string]$originCapturedText }
+                AlternateCapturedText = if ([string]::IsNullOrEmpty([string]$alternateCapturedText)) { $null } else { [string]$alternateCapturedText }
+                FailureKind = 'copy_popup_focus_switch_failed'
+                FailureSummary = 'focus switched away from the origin target, but Talk did not remain in copy-popup mode'
+                FailureEvidencePath = $diagnosticPath
+            }
+        }
+        Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-visible'
+
+        $foregroundAfterPopup = Get-TalkDesktopForegroundWindowHwnd
+        if ($foregroundAfterPopup -eq $popupHwnd) {
+            $foregroundSummary = Get-TalkDesktopForegroundWindowDebugString
+            throw "Expected copy popup hwnd [0x$('{0:X}' -f $popupHwnd.ToInt64())] to stay non-activating, but it became the foreground window [$foregroundSummary]"
+        }
+
+        Set-TalkDesktopClipboardText -Value 'talk-copy-popup-pending'
+        $clickPoint = Get-TalkDesktopCopyPopupCopyButtonClickPoint -Hwnd $popupHwnd
+        Send-TalkDesktopWindowLeftClick -Hwnd $popupHwnd -X $clickPoint.X -Y $clickPoint.Y
+        Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-mouse-clicked'
+        Wait-TalkDesktopVisibleWindowByProcessIdAndClass `
+            -TargetProcessId $instance.Process.Id `
+            -ClassName 'TalkDesktopCopyPopupWindow' `
+            -TimeoutMs 1000 | Out-Null
+        Start-Sleep -Milliseconds 150
+        $copiedText = Get-TalkDesktopClipboardText
+        if ($copiedText.Trim() -ne 'assistant reply from audio input chat') {
+            throw "Expected popup copy text [assistant reply from audio input chat], got [$copiedText]"
+        }
+        Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B
+        Wait-TalkDesktopWindowHiddenByProcessIdAndClass `
+            -TargetProcessId $instance.Process.Id `
+            -ClassName 'TalkDesktopCopyPopupWindow' `
+            -TimeoutMs 5000
+        Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-mouse-closed'
 
         $log = Wait-LatestSessionLog -LogsDir (Join-Path $ScenarioRoot 'logs')
         $insertTargetDiagnosticPath = Resolve-TalkDesktopInsertTargetDiagnosticPath -SessionLogPath $log.FullName
@@ -3543,8 +3652,8 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke {
 
         if (-not [string]::IsNullOrWhiteSpace($insertTargetDiagnosticPath)) {
             $insertTargetDiagnostic = Get-Content -LiteralPath $insertTargetDiagnosticPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ([string]$insertTargetDiagnostic.outputStrategy -ne 'honor_configured_output') {
-                throw "Expected insert-target diagnostic outputStrategy [honor_configured_output], got [$($insertTargetDiagnostic.outputStrategy)]"
+            if ([string]$insertTargetDiagnostic.outputStrategy -ne 'show_copy_popup_only') {
+                throw "Expected insert-target diagnostic outputStrategy [show_copy_popup_only], got [$($insertTargetDiagnostic.outputStrategy)]"
             }
         }
 
@@ -3564,19 +3673,23 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke {
         } else {
             ''
         }
-        $alternateCapturedText = [string]$capturedAlternate
+        $alternateCapturedText = if (Test-Path -LiteralPath $alternateTarget.SnapshotPath) {
+            Get-Content -LiteralPath $alternateTarget.SnapshotPath -Raw -Encoding UTF8
+        } else {
+            ''
+        }
 
-        if ([string]$alternateCapturedText -notlike '*assistant reply from audio input chat*') {
-            throw "Expected current alternate target to receive corrected output, got [$alternateCapturedText]"
+        if ([string]$alternateCapturedText -like '*assistant reply from audio input chat*') {
+            throw "Expected alternate target to remain unchanged while copy popup was visible, got [$alternateCapturedText]"
         }
         if ([string]$originCapturedText -like '*assistant reply from audio input chat*') {
-            throw "Expected origin target to remain unchanged after focus switched, got [$originCapturedText]"
+            throw "Expected origin target to remain unchanged while copy popup was visible, got [$originCapturedText]"
         }
         if ($originCapturedText.Trim() -ne $originPrimer) {
             throw "Expected origin target to keep primer text [$originPrimer], got [$originCapturedText]"
         }
-        if ([string]$alternateCapturedText -notlike "*$alternatePrimer*") {
-            throw "Expected alternate target to retain primer text [$alternatePrimer] alongside corrected output, got [$alternateCapturedText]"
+        if ($alternateCapturedText.Trim() -ne $alternatePrimer) {
+            throw "Expected alternate target to keep primer text [$alternatePrimer], got [$alternateCapturedText]"
         }
 
         [pscustomobject][ordered]@{
@@ -3589,9 +3702,10 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke {
             LogPath = $log.FullName
             InsertTargetDiagnosticPath = $insertTargetDiagnosticPath
             Status = $session.status
-            PopupVisible = $false
-            PopupHwnd = $null
-            CopiedText = $null
+            PopupVisible = ($popupHwnd -ne [System.IntPtr]::Zero)
+            PopupHwnd = if ($popupHwnd -ne [System.IntPtr]::Zero) { ('0x{0:X}' -f $popupHwnd.ToInt64()) } else { $null }
+            ClipboardText = [string]$copiedText
+            CopiedText = [string]$copiedText
             OriginCapturedText = [string]$originCapturedText
             AlternateCapturedText = [string]$alternateCapturedText
         }
@@ -3623,6 +3737,7 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmokeCore {
     try {
         $provider = Start-TalkFakeOpenAiCompatibleChatAudioInputProvider `
             -ScenarioRoot $ScenarioRoot `
+            -TranscribedText 'assistant reply from audio input chat' `
             -ResponseDelayMs 1500
         Write-TalkSmokeProgress -Path $progressPath -Message 'provider-ready'
         $chatCompletionsEndpoint = $provider.ChatCompletionsEndpoint

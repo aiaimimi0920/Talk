@@ -551,15 +551,18 @@ async fn handle_connection(
                 if session.session_id != session_id {
                     anyhow::bail!("audio session_id does not match active session");
                 }
+                if !should_accept_audio_sequence(session.last_sequence, sequence) {
+                    continue;
+                }
                 if pcm_base64.trim().is_empty() {
                     anyhow::bail!("audio.pcm_base64 must not be blank");
                 }
                 let pcm = base64::engine::general_purpose::STANDARD
                     .decode(pcm_base64.as_bytes())
                     .context("audio.pcm_base64 must be valid base64 PCM")?;
+                let partial_to_send = session.asr_session.accept_pcm_i16_le(&pcm)?;
                 session.audio_chunks = session.audio_chunks.saturating_add(1);
                 session.last_sequence = Some(sequence);
-                let partial_to_send = session.asr_session.accept_pcm_i16_le(&pcm)?;
                 if let Some(partial) = partial_to_send {
                     websocket
                         .send(Message::Text(
@@ -624,6 +627,13 @@ struct StreamingSession {
     last_sequence: Option<u64>,
     language: Option<String>,
     asr_session: Box<dyn LocalStreamingAsrSession + Send>,
+}
+
+fn should_accept_audio_sequence(last_sequence: Option<u64>, sequence: u64) -> bool {
+    match last_sequence {
+        Some(last_sequence) => sequence > last_sequence,
+        None => true,
+    }
 }
 
 fn parse_client_message(message: Message) -> Result<Option<ClientMessage>> {
@@ -717,14 +727,20 @@ fn validate_session_id(session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        handle_connection, validate_loopback_bind, Cli, DaemonConfig, DaemonMode,
+        handle_connection, should_accept_audio_sequence, validate_loopback_bind, Cli, DaemonConfig,
+        DaemonMode, LocalAsrText, LocalStreamingAsrEngine, LocalStreamingAsrSession,
         SherpaOnlineModelFamily,
     };
+    use anyhow::Result;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::Value;
     use std::fs;
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use tokio::net::TcpListener;
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
@@ -736,6 +752,13 @@ mod tests {
 
         let loopback: SocketAddr = "127.0.0.1:53171".parse().unwrap();
         assert!(validate_loopback_bind(loopback).is_ok());
+    }
+
+    #[test]
+    fn audio_sequence_must_strictly_increase() {
+        assert!(!should_accept_audio_sequence(Some(5), 5));
+        assert!(!should_accept_audio_sequence(Some(5), 4));
+        assert!(should_accept_audio_sequence(Some(5), 6));
     }
 
     #[test]
@@ -890,6 +913,120 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, b"marker").expect("write marker file");
         path
+    }
+
+    struct CountingEngine {
+        accepted_audio_chunks: Arc<AtomicUsize>,
+    }
+
+    impl LocalStreamingAsrEngine for CountingEngine {
+        fn ready_engine(&self) -> &str {
+            "counting"
+        }
+
+        fn ready_model(&self) -> &str {
+            "counting"
+        }
+
+        fn start_session(
+            &self,
+            _sample_rate_hz: u32,
+            _channels: u16,
+            _language: Option<String>,
+        ) -> Result<Box<dyn LocalStreamingAsrSession + Send>> {
+            Ok(Box::new(CountingSession {
+                accepted_audio_chunks: self.accepted_audio_chunks.clone(),
+            }))
+        }
+    }
+
+    struct CountingSession {
+        accepted_audio_chunks: Arc<AtomicUsize>,
+    }
+
+    impl LocalStreamingAsrSession for CountingSession {
+        fn accept_pcm_i16_le(&mut self, _pcm: &[u8]) -> Result<Option<LocalAsrText>> {
+            self.accepted_audio_chunks.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        }
+
+        fn finish(&mut self) -> Result<LocalAsrText> {
+            Ok(LocalAsrText {
+                segment_id: "counting-segment-1".to_string(),
+                text: "done".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_ignores_duplicate_and_stale_audio_sequences() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let accepted_audio_chunks = Arc::new(AtomicUsize::new(0));
+        let engine = Arc::new(CountingEngine {
+            accepted_audio_chunks: accepted_audio_chunks.clone(),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            handle_connection(stream, peer, engine).await.unwrap();
+        });
+
+        let (mut websocket, _) = connect_async(endpoint).await.unwrap();
+        websocket
+            .send(Message::Text(
+                r#"{"type":"start","session_id":"sequence-session","sample_rate_hz":16000,"channels":1}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let ready = websocket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&ready).unwrap()["type"],
+            "ready"
+        );
+
+        for sequence in [5, 5, 4, 6] {
+            websocket
+                .send(Message::Text(
+                    serde_json::json!({
+                        "type": "audio",
+                        "session_id": "sequence-session",
+                        "sequence": sequence,
+                        "pcm_base64": "AAAA"
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        }
+        websocket
+            .send(Message::Text(
+                r#"{"type":"stop","session_id":"sequence-session"}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+        let final_message = websocket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let final_message = serde_json::from_str::<Value>(&final_message).unwrap();
+        assert_eq!(final_message["type"], "final");
+        assert_eq!(final_message["audio_chunks"], 2);
+        assert_eq!(final_message["last_sequence"], 6);
+        assert_eq!(accepted_audio_chunks.load(Ordering::SeqCst), 2);
+
+        server.await.unwrap();
     }
 
     #[tokio::test]

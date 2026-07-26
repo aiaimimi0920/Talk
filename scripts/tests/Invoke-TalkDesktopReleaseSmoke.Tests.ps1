@@ -1142,6 +1142,36 @@ Audio backend readiness: unavailable
         $scenarioText | Should Match 'CapturedText = .*normalizedCapturedText'
     }
 
+    It 'freezes the observed insert snapshot before later status work can mutate the foreground target' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputInsertSuccessSmoke'
+        $endMarker = 'function Invoke-HotkeyConflictSmoke'
+        $startIndex = $scriptText.IndexOf($startMarker)
+        $endIndex = $scriptText.IndexOf($endMarker)
+        $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
+
+        $scenarioText | Should Match 'Set-Content -LiteralPath \$target\.SnapshotPath -Value \$normalizedCapturedText -Encoding UTF8'
+        $scenarioText | Should Match 'Stop-TalkTextCaptureTarget -Target \$target'
+        $scenarioText | Should Match '\$target = \$null'
+        $scenarioText.IndexOf('Set-Content -LiteralPath $target.SnapshotPath -Value $normalizedCapturedText -Encoding UTF8') | Should BeGreaterThan $scenarioText.IndexOf('$normalizedCapturedText = Remove-TalkTextCapturePrimerPrefix')
+        $scenarioText.IndexOf('Stop-TalkTextCaptureTarget -Target $target') | Should BeGreaterThan $scenarioText.IndexOf('Set-Content -LiteralPath $target.SnapshotPath -Value $normalizedCapturedText -Encoding UTF8')
+        $scenarioText.IndexOf('Stop-TalkTextCaptureTarget -Target $target') | Should BeLessThan $scenarioText.IndexOf('$log = Wait-LatestSessionLog')
+    }
+
+    It 'requires the normalized captured insert text to exactly match the expected transcript before returning success' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputInsertSuccessSmoke'
+        $endMarker = 'function Invoke-HotkeyConflictSmoke'
+        $startIndex = $scriptText.IndexOf($startMarker)
+        $endIndex = $scriptText.IndexOf($endMarker)
+        $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
+
+        $scenarioText | Should Match '\$normalizedCapturedText -ne ''assistant reply from audio input chat'''
+        $scenarioText | Should Match 'Expected inserted target text \[assistant reply from audio input chat\], got \[\$\(\$normalizedCapturedText\)\]'
+        $scenarioText.IndexOf('$normalizedCapturedText -ne ''assistant reply from audio input chat''') | Should BeGreaterThan $scenarioText.IndexOf('$normalizedCapturedText = Remove-TalkTextCapturePrimerPrefix')
+        $scenarioText.IndexOf('$normalizedCapturedText -ne ''assistant reply from audio input chat''') | Should BeLessThan $scenarioText.IndexOf('Set-Content -LiteralPath $target.SnapshotPath -Value $normalizedCapturedText -Encoding UTF8')
+    }
+
     It 'switches foreground to a second target before waiting for the copy popup in the focus-switch smoke flow' {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
         $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke'
@@ -1233,7 +1263,7 @@ Audio backend readiness: unavailable
         $coreScenarioText | Should Not Match 'TALK_DESKTOP_INSERT_TARGET_FOCUS'
     }
 
-    It 'waits for corrected text in the current focused target in the focus-switch smoke flow' {
+    It 'uses mouse copy-popup interaction, verifies clipboard copy, and then closes the popup explicitly in the focus-switch smoke flow' {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
         $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmoke'
         $endMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupSmokeCore'
@@ -1241,11 +1271,16 @@ Audio backend readiness: unavailable
         $endIndex = $scriptText.IndexOf($endMarker)
         $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
 
-        $scenarioText | Should Match 'Wait-TalkTextCaptureContainsWithForegroundRefresh'
-        $scenarioText | Should Match 'Write-TalkSmokeProgress -Path \$progressPath -Message ''current-focus-text-captured'''
-        $scenarioText | Should Match "outputStrategy -ne 'honor_configured_output'"
-        $scenarioText | Should Not Match 'Get-TalkDesktopCopyPopupCopyButtonClickPoint'
-        $scenarioText | Should Not Match 'Send-TalkDesktopWindowLeftClick'
+        $scenarioText | Should Match 'Get-TalkDesktopCopyPopupCopyButtonClickPoint'
+        $scenarioText | Should Match 'Send-TalkDesktopWindowLeftClick'
+        $scenarioText | Should Match 'Set-TalkDesktopClipboardText -Value ''talk-copy-popup-pending'''
+        $scenarioText | Should Match 'Get-TalkDesktopClipboardText'
+        $scenarioText | Should Match "outputStrategy -ne 'show_copy_popup_only'"
+        $scenarioText | Should Match "ClassName 'TalkDesktopCopyPopupWindow'"
+        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x1B'
+        $scenarioText | Should Match "Message 'copy-popup-mouse-closed'"
+        $scenarioText | Should Not Match 'Wait-TalkTextCaptureContainsWithForegroundRefresh'
+        $scenarioText | Should Not Match 'current-focus-text-captured'
     }
 
     It 'does not move foreground onto the copy popup when it becomes visible in the focus-switch popup core flow' {
@@ -1368,6 +1403,13 @@ Audio backend readiness: unavailable
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force
         }
+    }
+
+    It 'includes openai-compatible-audio-input-focus-switch-copy-popup-success in the script parameter default scenario list' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $paramBlock = $scriptText.Substring(0, $scriptText.IndexOf('Set-StrictMode'))
+
+        $paramBlock | Should Match "'openai-compatible-audio-input-focus-switch-copy-popup-success'"
     }
 
     It 'waits for captured insert text before reading the insert-session log in the insert smoke flow' {

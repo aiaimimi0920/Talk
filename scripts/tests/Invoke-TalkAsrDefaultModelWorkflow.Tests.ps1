@@ -22,6 +22,32 @@ function New-TestTalkWorkflowSherpaModelDir {
 }
 
 Describe 'Invoke-TalkAsrDefaultModelWorkflow' {
+    It 'uses the multilingual model first in every benchmark and required-local default collection' {
+        $expected = @(
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+            'zipformer-zh-en-punct-int8-480ms',
+            'paraformer-bilingual-zh-en'
+        )
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -in @('ModelId', 'RequiredLocalModelId') -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 5
+        foreach ($default in $defaults) {
+            (@($default.DefaultValue.SafeGetValue()) -join '|') | Should Be ($expected -join '|')
+        }
+    }
+
     It 'creates a release-side plan-only workflow using paths relative to the current PowerShell location' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-default-workflow-plan-' + [guid]::NewGuid().ToString())
         $releaseDir = Join-Path $tempRoot 'release'

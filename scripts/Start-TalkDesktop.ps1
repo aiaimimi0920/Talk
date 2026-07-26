@@ -11,6 +11,7 @@ param(
     [switch]$ProbeAudio,
     [switch]$ProbeQwenRoundTrip,
     [int]$ProbeSeconds = 3,
+    [hashtable]$EnvironmentOverrides = @{},
     [string]$SpokenPromptText = 'What is the capital of France?',
     [string]$ExpectedText = 'Paris'
 )
@@ -174,7 +175,11 @@ function Resolve-TalkDesktopLaunchTalkBinaryPath {
 
     $resolvedTalkBinaryPath = Join-Path $ReleaseDir '.internal\talk.exe'
     if (-not (Test-Path -LiteralPath $resolvedTalkBinaryPath)) {
-        throw "Talk desktop launch readiness binary does not exist: $resolvedTalkBinaryPath"
+        throw ((
+            "Talk desktop launch readiness binary does not exist: {0}. " +
+            "This operation requires a desktop bundle release containing .internal\\talk.exe; " +
+            "single-exe releases do not include the native helper."
+        ) -f $resolvedTalkBinaryPath)
     }
     $resolvedTalkBinaryPath
 }
@@ -206,10 +211,12 @@ function New-TalkDesktopLaunchEffectiveConfig {
     param(
         [Parameter(Mandatory = $true)][string]$BaseConfigPath,
         [string]$Hotkey,
-        [string]$InputDevice
+        [string]$InputDevice,
+        [switch]$ForceRuntimeLaunchConfig,
+        [int]$CliCompatibleMaxRecordingSeconds
     )
 
-    if ([string]::IsNullOrWhiteSpace($Hotkey) -and [string]::IsNullOrWhiteSpace($InputDevice)) {
+    if ([string]::IsNullOrWhiteSpace($Hotkey) -and [string]::IsNullOrWhiteSpace($InputDevice) -and -not $ForceRuntimeLaunchConfig) {
         return $BaseConfigPath
     }
     if ($Hotkey.Trim() -ne $Hotkey) {
@@ -244,6 +251,24 @@ function New-TalkDesktopLaunchEffectiveConfig {
                 $updatedConfigText,
                 '(^backend\s*=\s*".*"\r?$)',
                 ('$1' + [Environment]::NewLine + ('input_device = "{0}"' -f $escapedInputDevice)),
+                [System.Text.RegularExpressions.RegexOptions]::Multiline
+            )
+        }
+    }
+    if ($CliCompatibleMaxRecordingSeconds -gt 0) {
+        if ($updatedConfigText -match '(?m)^max_recording_seconds\s*=') {
+            $updatedConfigText = [System.Text.RegularExpressions.Regex]::Replace(
+                $updatedConfigText,
+                '^max_recording_seconds\s*=\s*0\r?$',
+                ('max_recording_seconds = {0}' -f $CliCompatibleMaxRecordingSeconds),
+                [System.Text.RegularExpressions.RegexOptions]::Multiline
+            )
+        }
+        else {
+            $updatedConfigText = [System.Text.RegularExpressions.Regex]::Replace(
+                $updatedConfigText,
+                '(^\[audio\]\r?$)',
+                ('$1' + [Environment]::NewLine + ('max_recording_seconds = {0}' -f $CliCompatibleMaxRecordingSeconds)),
                 [System.Text.RegularExpressions.RegexOptions]::Multiline
             )
         }
@@ -433,10 +458,121 @@ function Test-TalkDesktopLaunchAudioProbeHasSignal {
     if ($null -eq $ProbeSummary) {
         return $false
     }
-    if ([bool]$ProbeSummary.silent) {
+    $silent = [bool](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'silent')
+    if ($silent) {
         return $false
     }
-    return ([double]$ProbeSummary.peak -gt 0)
+    $peak = [double](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'peak')
+    if ($peak -le 0) {
+        return $false
+    }
+
+    return -not (Test-TalkDesktopLaunchAudioProbeHasProviderWeakSpeechSignal -ProbeSummary $ProbeSummary)
+}
+
+function Test-TalkDesktopLaunchAudioProbeHasProviderWeakSpeechSignal {
+    param($ProbeSummary)
+
+    if ($null -eq $ProbeSummary) {
+        return $false
+    }
+
+    $durationSeconds = [double](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'durationSeconds')
+    if ($durationSeconds -lt 1.0) {
+        return $false
+    }
+
+    $peak = [double](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'peak')
+    $rms = [double](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'rms')
+    return ($peak -lt 0.05 -and $rms -lt 0.003)
+}
+
+function Get-TalkDesktopLaunchAudioProbeFailureReason {
+    param(
+        $ProbeSummary,
+        [Parameter(Mandatory = $true)][string]$SilentReason,
+        [Parameter(Mandatory = $true)][string]$WeakReason
+    )
+
+    if ($null -eq $ProbeSummary) {
+        return $SilentReason
+    }
+
+    $peak = [double](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'peak')
+    $silent = [bool](Get-TalkDesktopLaunchOptionalPropertyValue -Object $ProbeSummary -Name 'silent')
+    if ($silent -or $peak -le 0) {
+        return $SilentReason
+    }
+
+    if (Test-TalkDesktopLaunchAudioProbeHasProviderWeakSpeechSignal -ProbeSummary $ProbeSummary) {
+        return $WeakReason
+    }
+
+    ''
+}
+
+function Join-TalkDesktopLaunchWindowsArgumentList {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    (($Arguments | ForEach-Object {
+        if ($_ -eq $null) {
+            '""'
+        } elseif ($_ -match '[\s"]') {
+            '"' + ($_.Replace('\', '\\').Replace('"', '\"')) + '"'
+        } else {
+            $_
+        }
+    }) -join ' ')
+}
+
+function Invoke-TalkDesktopLaunchNativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList
+    )
+
+    $stdoutPath = Join-Path $env:TEMP ('talk-start-native-stdout-' + [guid]::NewGuid().ToString() + '.log')
+    $stderrPath = Join-Path $env:TEMP ('talk-start-native-stderr-' + [guid]::NewGuid().ToString() + '.log')
+    $argumentString = Join-TalkDesktopLaunchWindowsArgumentList -Arguments $ArgumentList
+    try {
+        $process = Start-Process `
+            -FilePath $FilePath `
+            -ArgumentList $argumentString `
+            -PassThru `
+            -Wait `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+        $stdout = if (Test-Path -LiteralPath $stdoutPath) {
+            @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue)
+        } else {
+            @()
+        }
+        $stderr = if (Test-Path -LiteralPath $stderrPath) {
+            @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue)
+        } else {
+            @()
+        }
+        $exitCode = [int]$process.ExitCode
+    }
+    finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    [pscustomobject][ordered]@{
+        ExitCode = [int]$exitCode
+        Output = [object[]]@($stdout) + [object[]]@($stderr)
+    }
+}
+
+function Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds {
+    param([int]$ProbeSeconds)
+
+    if ($ProbeSeconds -gt 0) {
+        return [Math]::Max($ProbeSeconds, 5)
+    }
+
+    5
 }
 
 function New-TalkDesktopLaunchQwenRoundTripConfigContent {
@@ -544,6 +680,27 @@ function New-TalkDesktopLaunchQwenRoundTripSummary {
     }
 }
 
+function Invoke-TalkDesktopLaunchWithEnvironmentOverrides {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$EnvironmentOverrides,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+
+    $previousValues = @{}
+    foreach ($name in $EnvironmentOverrides.Keys) {
+        $previousValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, [string]$EnvironmentOverrides[$name], 'Process')
+    }
+
+    try {
+        & $ScriptBlock
+    }
+    finally {
+        foreach ($name in $EnvironmentOverrides.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $previousValues[$name], 'Process')
+        }
+    }
+}
 function Start-TalkDesktop {
     param(
         [string]$BinaryPath,
@@ -557,6 +714,7 @@ function Start-TalkDesktop {
         [switch]$ProbeAudio,
         [switch]$ProbeQwenRoundTrip,
         [int]$ProbeSeconds = 3,
+        [hashtable]$EnvironmentOverrides = @{},
         [string]$SpokenPromptText = 'What is the capital of France?',
         [string]$ExpectedText = 'Paris'
     )
@@ -568,15 +726,18 @@ function Start-TalkDesktop {
     $resolvedReleaseDir = Resolve-TalkDesktopLaunchReleaseDir -ReleaseDir $ReleaseDir -BinaryPath $BinaryPath
     $resolvedBinaryPath = Resolve-TalkDesktopLaunchBinaryPath -BinaryPath $BinaryPath -ReleaseDir $resolvedReleaseDir
     $resolvedBaseConfigPath = Resolve-TalkDesktopLaunchConfigPath -ConfigPath $ConfigPath -ReleaseDir $resolvedReleaseDir
+    $requiresCliCompatibleConfig = $ListInputDevices -or $ProbeAudio -or $ProbeQwenRoundTrip
     $effectiveConfigPath = New-TalkDesktopLaunchEffectiveConfig `
         -BaseConfigPath $resolvedBaseConfigPath `
         -Hotkey $Hotkey `
-        -InputDevice $InputDevice
-    $cleanupTemporaryLaunchConfig = $ListInputDevices -or $ProbeAudio -or $ProbeQwenRoundTrip
+        -InputDevice $InputDevice `
+        -ForceRuntimeLaunchConfig:$requiresCliCompatibleConfig `
+        -CliCompatibleMaxRecordingSeconds $(if ($requiresCliCompatibleConfig) { Get-TalkDesktopLaunchCliCompatibleMaxRecordingSeconds -ProbeSeconds $ProbeSeconds } else { 0 })
+    $cleanupTemporaryLaunchConfig = $requiresCliCompatibleConfig -or ($effectiveConfigPath -ne $resolvedBaseConfigPath)
     try {
         $resolvedTalkBinaryPath = $null
         $readinessReport = $null
-        if ($ListInputDevices -or $ProbeAudio -or $ProbeQwenRoundTrip) {
+        if ($requiresCliCompatibleConfig) {
             $resolvedTalkBinaryPath = Resolve-TalkDesktopLaunchTalkBinaryPath -ReleaseDir $resolvedReleaseDir
         }
 
@@ -658,7 +819,12 @@ function Start-TalkDesktop {
                     }) `
                     -ProviderConfigPath $providerConfigPath `
                     -LogPath ''
-                $failure | Add-Member -NotePropertyName failureReason -NotePropertyValue 'Captured live audio was silent; provider round-trip was skipped'
+                $failure | Add-Member -NotePropertyName failureReason -NotePropertyValue (
+                    Get-TalkDesktopLaunchAudioProbeFailureReason `
+                        -ProbeSummary $audioProbeSummary `
+                        -SilentReason 'Captured live audio was silent; provider round-trip was skipped' `
+                        -WeakReason 'Captured live audio was too weak for provider transcription; provider round-trip was skipped'
+                )
                 throw ($failure | ConvertTo-Json -Depth 6 -Compress)
             }
 
@@ -669,8 +835,11 @@ function Start-TalkDesktop {
             $previousApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
             try {
                 [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $resolvedApiKey, 'Process')
-                $onceResult = & $resolvedTalkBinaryPath once --config $providerConfigPath --audio-file $audioProbeSummary.artifactPath 2>&1
-                $onceExitCode = $LASTEXITCODE
+                $onceCommand = Invoke-TalkDesktopLaunchNativeCommand `
+                    -FilePath $resolvedTalkBinaryPath `
+                    -ArgumentList @('once', '--config', $providerConfigPath, '--audio-file', $audioProbeSummary.artifactPath)
+                $onceResult = @($onceCommand.Output)
+                $onceExitCode = [int]$onceCommand.ExitCode
             }
             finally {
                 [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $previousApiKey, 'Process')
@@ -719,19 +888,21 @@ function Start-TalkDesktop {
             -ApiKeyJsonPath $ApiKeyJsonPath `
             -ConfigPath $effectiveConfigPath
 
-        $previousApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
-        try {
-            [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $resolvedApiKey, 'Process')
-            $process = Start-Process `
-                -FilePath $resolvedBinaryPath `
-                -ArgumentList @('--config', $effectiveConfigPath) `
-                -WorkingDirectory $resolvedReleaseDir `
-                -WindowStyle Hidden `
-                -PassThru
+        $launchEnvironmentOverrides = @{}
+        foreach ($name in $EnvironmentOverrides.Keys) {
+            $launchEnvironmentOverrides[$name] = $EnvironmentOverrides[$name]
         }
-        finally {
-            [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $previousApiKey, 'Process')
-        }
+        $launchEnvironmentOverrides['TALK_PROVIDER_API_KEY'] = $resolvedApiKey
+        $process = Invoke-TalkDesktopLaunchWithEnvironmentOverrides `
+            -EnvironmentOverrides $launchEnvironmentOverrides `
+            -ScriptBlock {
+                Start-Process `
+                    -FilePath $resolvedBinaryPath `
+                    -ArgumentList @('--config', $effectiveConfigPath) `
+                    -WorkingDirectory $resolvedReleaseDir `
+                    -WindowStyle Hidden `
+                    -PassThru
+            }
 
         New-TalkDesktopLaunchSummary `
             -ReleaseDir $resolvedReleaseDir `
@@ -762,6 +933,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -ProbeAudio:$ProbeAudio `
         -ProbeQwenRoundTrip:$ProbeQwenRoundTrip `
         -ProbeSeconds $ProbeSeconds `
+        -EnvironmentOverrides $EnvironmentOverrides `
         -SpokenPromptText $SpokenPromptText `
         -ExpectedText $ExpectedText
 }

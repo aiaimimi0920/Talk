@@ -22,6 +22,32 @@ function New-TestTalkSherpaModelDir {
 }
 
 Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
+    It 'defaults every benchmark entry point to multilingual, legacy, and Paraformer models in that order' {
+        $expected = @(
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+            'zipformer-zh-en-punct-int8-480ms',
+            'paraformer-bilingual-zh-en'
+        )
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -eq 'ModelId' -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 2
+        foreach ($default in $defaults) {
+            (@($default.DefaultValue.SafeGetValue()) -join '|') | Should Be ($expected -join '|')
+        }
+    }
+
     It 'loads a corpus manifest and resolves sample WAV paths relative to the manifest' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-test-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null

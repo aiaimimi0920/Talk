@@ -394,6 +394,8 @@ impl OpenAiCompatibleTextProcessor {
 struct OpenAiChatCompletionsRequest {
     model: String,
     messages: Vec<OpenAiChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -459,6 +461,7 @@ impl TextProcessor for OpenAiCompatibleTextProcessor {
         let request = OpenAiChatCompletionsRequest {
             model: self.model.clone(),
             messages: build_openai_processing_messages(transcript, mode, context)?,
+            enable_thinking: qwen3_thinking_override(&self.model),
         };
         let request_builder = self.client.post(&self.endpoint).json(&request);
         let request_builder = with_optional_bearer_auth(request_builder, self.api_key.as_deref());
@@ -490,6 +493,14 @@ impl TextProcessor for OpenAiCompatibleTextProcessor {
             })?;
         validate_response_text(text, "openai-compatible text processor")
     }
+}
+
+fn qwen3_thinking_override(model: &str) -> Option<bool> {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("qwen3")
+        .then_some(false)
 }
 
 fn validate_response_text(text: String, component: &str) -> Result<String, TalkError> {
