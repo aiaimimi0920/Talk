@@ -5170,6 +5170,11 @@ fn desktop_zipformer_daemon_config_for_model(
     if !tokens.is_file() || !encoder.is_file() || !decoder.is_file() || !joiner.is_file() {
         return None;
     }
+    let bpe_vocab = model_dir.join("bpe.vocab");
+    let bpe_vocab = bpe_vocab.is_file().then_some(bpe_vocab);
+    let modeling_unit = bpe_vocab
+        .as_ref()
+        .map(|_| "cjkchar+bpe".to_string());
 
     Some(SpeculativeLocalAsrDaemonConfig {
         mode: SpeculativeLocalAsrDaemonMode::SherpaOnline,
@@ -5186,12 +5191,12 @@ fn desktop_zipformer_daemon_config_for_model(
         num_threads: Some(2),
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
-        enable_endpoint: None,
-        endpoint_reset: None,
+        enable_endpoint: Some(true),
+        endpoint_reset: Some(true),
         hotwords_file: None,
         hotwords_words: None,
-        modeling_unit: None,
-        bpe_vocab: None,
+        modeling_unit,
+        bpe_vocab,
         rule_fsts: None,
         rule_fars: None,
     })
@@ -5224,8 +5229,8 @@ fn desktop_installed_paraformer_daemon_config(
         num_threads: Some(2),
         sample_rate_hz: Some(16_000),
         decoding_method: Some("greedy_search".to_string()),
-        enable_endpoint: None,
-        endpoint_reset: None,
+        enable_endpoint: Some(true),
+        endpoint_reset: Some(true),
         hotwords_file: None,
         hotwords_words: None,
         modeling_unit: None,

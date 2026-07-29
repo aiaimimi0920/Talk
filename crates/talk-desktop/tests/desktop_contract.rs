@@ -5667,6 +5667,58 @@ fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_multilingual_zipfor
 }
 
 #[test]
+fn packaged_local_asr_daemon_launch_plan_auto_carries_low_latency_defaults_and_bpe_metadata() {
+    let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-model-defaults");
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    let model_dir = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx")
+        .join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    fs::create_dir_all(&model_dir).expect("create model dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(
+        model_dir.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"encoder",
+    )
+    .expect("write encoder");
+    fs::write(
+        model_dir.join("decoder-epoch-75-avg-11-chunk-16-left-128.onnx"),
+        b"decoder",
+    )
+    .expect("write decoder");
+    fs::write(
+        model_dir.join("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"joiner",
+    )
+    .expect("write joiner");
+    fs::write(model_dir.join("bpe.vocab"), b"<blk>\nTalk\nNeuro\n").expect("write bpe vocab");
+    let executable_path = release_dir.join("talk-desktop.exe");
+
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+
+    assert!(plan.args.windows(2).any(|pair| pair == ["--enable-endpoint", "true"]));
+    assert!(plan.args.windows(2).any(|pair| pair == ["--endpoint-reset", "true"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--modeling-unit", "cjkchar+bpe"]));
+    assert!(plan.args.windows(2).any(|pair| {
+        pair[0] == "--bpe-vocab" && pair[1].ends_with("bpe.vocab")
+    }));
+}
+
+#[test]
 fn product_local_asr_launch_plan_uses_extracted_worker_and_app_data_model_root() {
     let temp_dir = unique_temp_dir("talk-desktop-product-local-asr");
     let runtime_dir = temp_dir.join("runtime").join("payload-hash");
