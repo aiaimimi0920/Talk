@@ -48,6 +48,19 @@ Describe 'Invoke-TalkAsrRealMicDefaultModelWorkflow' {
         }
     }
 
+    It 'ships a multilingual default prompt manifest for default-model locking' {
+        $promptPath = Join-Path (Split-Path $scriptRoot -Parent) 'examples\asr-real-mic-prompts.json'
+        $manifest = Get-Content -LiteralPath $promptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $sampleIds = @($manifest.samples | ForEach-Object { [string]$_.sampleId })
+
+        ($sampleIds -contains 'short-search-001') | Should Be $true
+        ($sampleIds -contains 'mixed-english-001') | Should Be $true
+        ($sampleIds -contains 'mixed-english-japanese-001') | Should Be $true
+        ($sampleIds -contains 'proper-nouns-001') | Should Be $true
+        ($sampleIds -contains 'punctuation-longform-001') | Should Be $true
+        ($sampleIds -contains 'noise-realistic-001') | Should Be $true
+    }
+
     It 'creates a release-side plan from prompt recording through default model selection' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-real-mic-workflow-plan-' + [guid]::NewGuid().ToString())
         $releaseDir = Join-Path $tempRoot 'release'

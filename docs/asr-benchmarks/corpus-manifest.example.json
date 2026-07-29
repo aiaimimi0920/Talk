@@ -10,6 +10,26 @@
       "sampleId": "mixed-english-001",
       "audioWav": "mixed-english-001-16k-mono-s16.wav",
       "referenceText": "打开 Talk 的 local first ASR 测试"
+    },
+    {
+      "sampleId": "mixed-english-japanese-001",
+      "audioWav": "mixed-english-japanese-001-16k-mono-s16.wav",
+      "referenceText": "请帮我打开 Talk 的 local first ASR テスト 页面。"
+    },
+    {
+      "sampleId": "proper-nouns-001",
+      "audioWav": "proper-nouns-001-16k-mono-s16.wav",
+      "referenceText": "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。"
+    },
+    {
+      "sampleId": "punctuation-longform-001",
+      "audioWav": "punctuation-longform-001-16k-mono-s16.wav",
+      "referenceText": "今天下午三点半我们先开项目例会，确认 Talk 的默认识别模型，然后把多语言测试结果同步给 Neuro 团队。"
+    },
+    {
+      "sampleId": "noise-realistic-001",
+      "audioWav": "noise-realistic-001-16k-mono-s16.wav",
+      "referenceText": "现在办公室里有一点空调和键盘声，请继续记录 Talk 的多语言识别测试结果。"
     }
   ]
 }
