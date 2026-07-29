@@ -135,6 +135,7 @@ pub struct SmartVoiceRouteAnalysis {
 #[serde(rename_all = "snake_case")]
 pub enum FaithfulOutputFallbackReason {
     CatastrophicCompression,
+    ProtectedTokenMismatch,
     ExcessiveSequenceChange,
 }
 
@@ -142,6 +143,7 @@ impl FaithfulOutputFallbackReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CatastrophicCompression => "catastrophic_compression",
+            Self::ProtectedTokenMismatch => "protected_token_mismatch",
             Self::ExcessiveSequenceChange => "excessive_sequence_change",
         }
     }
@@ -314,6 +316,20 @@ pub fn validate_faithful_output(input: &str, output: &str) -> FaithfulOutputVali
         };
     }
 
+    if !faithful_output_preserves_protected_tokens(input, output) {
+        return FaithfulOutputValidation {
+            accepted: false,
+            fallback_reason: Some(FaithfulOutputFallbackReason::ProtectedTokenMismatch),
+            input_char_count,
+            output_char_count,
+            retention_ratio,
+            normalized_change_ratio: normalized_length_difference(
+                input_char_count,
+                output_char_count,
+            ),
+        };
+    }
+
     if max_char_count == 0 {
         return FaithfulOutputValidation {
             accepted: true,
@@ -355,6 +371,64 @@ fn normalize_faithful_text(text: &str) -> Vec<char> {
         .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn faithful_output_preserves_protected_tokens(input: &str, output: &str) -> bool {
+    let protected_tokens = extract_protected_faithful_tokens(input);
+    if protected_tokens.is_empty() {
+        return true;
+    }
+
+    let normalized_output = output.to_ascii_lowercase();
+    protected_tokens
+        .iter()
+        .all(|token| normalized_output.contains(token))
+}
+
+fn extract_protected_faithful_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::<String>::new();
+    let mut current = String::new();
+
+    for character in text.chars() {
+        if is_protected_faithful_token_character(character) {
+            current.push(character);
+        } else {
+            push_protected_faithful_token(&mut tokens, &mut current);
+        }
+    }
+    push_protected_faithful_token(&mut tokens, &mut current);
+
+    tokens
+}
+
+fn push_protected_faithful_token(tokens: &mut Vec<String>, current: &mut String) {
+    if current.is_empty() {
+        return;
+    }
+    if protected_faithful_token_kind(current.as_str()) {
+        let normalized = current.to_ascii_lowercase();
+        if !tokens.iter().any(|token| token == &normalized) {
+            tokens.push(normalized);
+        }
+    }
+    current.clear();
+}
+
+fn is_protected_faithful_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':' | '/' | '\\')
+}
+
+fn protected_faithful_token_kind(token: &str) -> bool {
+    if token.len() < 2 || !token.chars().any(|character| character.is_ascii_alphanumeric()) {
+        return false;
+    }
+
+    token.chars().any(|character| character.is_ascii_uppercase())
+        || token.chars().any(|character| character.is_ascii_digit())
+        || token
+            .chars()
+            .any(|character| matches!(character, '-' | '_' | '.' | ':' | '/' | '\\'))
+        || token.len() >= 4
 }
 
 fn normalized_length_difference(left: usize, right: usize) -> f64 {

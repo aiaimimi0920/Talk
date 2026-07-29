@@ -1002,6 +1002,39 @@ async fn qwen3_text_processor_disables_thinking_for_fast_dictation_correction() 
     assert_eq!(request_json["enable_thinking"], false);
 }
 
+#[tokio::test]
+async fn dictation_prompt_explicitly_preserves_language_and_token_sensitive_content() {
+    let (endpoint, handle) = spawn_openai_chat_response(
+        r#"{"choices":[{"message":{"content":"请打开 Talk 的 local first ASR テスト 页面。"}}]}"#,
+    );
+    let processor = OpenAiCompatibleTextProcessor::new(
+        endpoint,
+        "qwen3.7-plus",
+        Some("talk-test-key".to_string()),
+    );
+
+    let processed = processor
+        .process(
+            "请打开 Talk 的 local first ASR テスト 页面".to_string(),
+            VoiceMode::Dictate,
+            FrontContext::default(),
+        )
+        .await
+        .expect("dictation prompt should succeed");
+
+    let request = handle.join().expect("provider thread joins");
+    let request_json: serde_json::Value =
+        serde_json::from_str(&request.body).expect("chat completions body json");
+    let messages = request_json["messages"].as_array().expect("messages array");
+    let system_prompt = messages[0]["content"].as_str().expect("system prompt");
+
+    assert_eq!(processed, "请打开 Talk 的 local first ASR テスト 页面。");
+    assert!(system_prompt.contains("Preserve the original language"));
+    assert!(system_prompt.contains("mixed-language tokens"));
+    assert!(system_prompt.contains("product names"));
+    assert!(system_prompt.contains("Do not translate"));
+}
+
 fn spawn_text_provider_response(text: &str) -> (String, thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind text provider");
     let endpoint = format!(

@@ -20,6 +20,7 @@ use talk_runtime::{
     run_voice_session_from_local_transcript_with_insert_hooks,
     run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
     runtime_voice_text_result, update_session_log_after_text_processing,
+    validate_faithful_output,
     FaithfulOutputFallbackReason, FaithfulOutputValidation, RuntimeInsertContext,
     RuntimeInsertDirective, RuntimePhase, RuntimeVoiceTextResult, SmartRouteEvidence,
 };
@@ -526,6 +527,26 @@ async fn transcript_processing_diagnostics_are_available_to_non_session_callers(
     assert!(validation.accepted);
     assert_eq!(validation.input_char_count, validation.output_char_count);
     assert_eq!(validation.normalized_change_ratio, 0.0);
+}
+
+#[test]
+fn faithful_output_rejects_protected_mixed_language_and_product_token_rewrites() {
+    let validation = validate_faithful_output(
+        "今天请打开 Talk 的日志，然后继续记录会议结果，最后把内容发给团队。",
+        "今天请打开 Hook 的日志，然后继续记录会议结果，最后把内容发给团队。",
+    );
+
+    assert!(!validation.accepted);
+}
+
+#[test]
+fn faithful_output_accepts_multilingual_punctuation_only_cleanup() {
+    let validation = validate_faithful_output(
+        "请打开 Talk 的 local first ASR テスト 页面",
+        "请打开 Talk 的 local first ASR テスト 页面。",
+    );
+
+    assert!(validation.accepted);
 }
 
 #[test]

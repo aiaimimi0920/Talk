@@ -659,7 +659,7 @@ fn build_openai_processing_messages(
 fn system_prompt_for_mode(mode: VoiceMode) -> &'static str {
     match mode {
         VoiceMode::Transcribe | VoiceMode::Dictate => {
-            "You clean up speech-to-text dictation. Return only the final text with punctuation and light corrections. Do not add commentary."
+            "You clean up speech-to-text dictation. Preserve the original language, mixed-language tokens, product names, paths, hotkeys, numbers, and ASCII terms. Only fix obvious speech-to-text mistakes and punctuation. Do not translate, summarize, paraphrase, rewrite, or add commentary. Return only the final text."
         }
         VoiceMode::Document | VoiceMode::Polish => {
             "You rewrite dictated text into polished formal or document-ready writing. Return only the final rewritten text."
