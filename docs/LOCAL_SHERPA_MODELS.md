@@ -7,14 +7,14 @@ the product release does not contain a PowerShell script.
 The pinned default is:
 
 ```text
-zipformer-zh-en-punct-int8-480ms
-SHA-256: fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74
+sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
+SHA-256: 28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4
 ```
 
 Talk stores the validated model under:
 
 ```text
-%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms
+%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
 ```
 
 The archive is downloaded over HTTPS into a `.partial` file while its SHA-256
@@ -39,7 +39,7 @@ From a Talk source checkout, an engineer can still install a catalog model
 explicitly:
 
 ```powershell
-.\scripts\Install-TalkSherpaModel.ps1 -ModelId zipformer-zh-en-punct-int8-480ms
+.\scripts\Install-TalkSherpaModel.ps1 -ModelId sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
 ```
 
 The script downloads the archive, extracts it under `.runtime\models\sherpa-onnx`,
@@ -86,7 +86,7 @@ typing one command per model/sample:
 ```powershell
 .\Invoke-TalkAsrCorpusBenchmark.ps1 `
   -CorpusManifest .\.runtime\asr-bench\real-mic-corpus\corpus.json `
-  -ModelId @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
+  -ModelId @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
   -OutputRoot .\.runtime\asr-bench\real-mic-corpus\reports `
   -CloudOpenAiCompatibleEndpoint https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions `
   -CloudOpenAiCompatibleModel qwen3-asr-flash `
@@ -110,7 +110,7 @@ config-locking commands:
 
 ```powershell
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 `
-  -ModelId @('zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
+  -ModelId @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
   -ModelRoot .\.runtime\models\sherpa-onnx `
   -ConfigPath .\talk-desktop.toml
 ```
@@ -186,11 +186,12 @@ diagnostic artifact.
 
 This gate is what should be used before changing the packaged default. It
 requires real microphone evidence, at least three samples per candidate,
-the same unique sample ID set for every candidate, Zipformer and Paraformer
-local candidates, and the cloud-only baseline. It independently re-ranks local
-candidates by CER, first partial latency, final latency, RTF, memory, and model
-size rather than trusting the comparison JSON order. It intentionally rejects
-the current Huihui TTS smoke reports as insufficient production evidence.
+the same unique sample ID set for every candidate, multilingual Zipformer,
+legacy zh-en Zipformer, and Paraformer local candidates, and the cloud-only
+baseline. It independently re-ranks local candidates by CER, first partial
+latency, final latency, RTF, memory, and model size rather than trusting the
+comparison JSON order. It intentionally rejects the current Huihui TTS smoke
+reports as insufficient production evidence.
 
 When that gate succeeds, apply the selected installed model to the desktop
 config:
@@ -213,11 +214,12 @@ selected sherpa model instead of dry-run mode.
 
 | Model ID | Family | Size | Use |
 | --- | --- | ---: | --- |
+| `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10` | transducer | ~247 MiB | Packaged default local model. Streaming multilingual Zipformer for Chinese/English/Japanese mixed speech plus other supported languages. |
 | `zipformer-zh-en-punct-int8-480ms` | transducer | ~128 MiB | Recommended first real local model. Low-latency streaming Chinese/English with punctuation. |
 | `zipformer-zh-int8-2025-06-30` | transducer | ~126 MiB | Chinese-only streaming Zipformer fallback. |
 | `paraformer-bilingual-zh-en` | paraformer | ~999 MiB | Larger bilingual streaming Paraformer comparison target. |
 
-The default model is `zipformer-zh-en-punct-int8-480ms`.
+The default model is `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10`.
 
 Current evidence status:
 
@@ -244,8 +246,10 @@ Current evidence status:
 - `Invoke-TalkAsrCorpusRecorder.ps1` is available in the source tree so the
   real microphone corpus itself can be captured from the same source/CI
   checkout before running the same-corpus benchmark helper. The repository
-  includes `asr-real-mic-prompts.json` as a starter prompt manifest for the required
-  short search, mixed Chinese/English, punctuation, and natural/noisy samples.
+  includes `asr-real-mic-prompts.json` as a starter prompt manifest for the
+  required short Chinese, mixed Chinese/English, mixed
+  Chinese/English/Japanese, proper-noun, long punctuation, and realistic-noise
+  samples.
 - `Select-TalkDefaultAsrModel.ps1` is available in the source tree so the
   final default-model decision can be gated by evidence instead of manually
   reading the comparison JSON or over-trusting a synthetic smoke sample.

@@ -54,6 +54,16 @@ Describe 'Publish-TalkRelease helpers' {
         $config | Should Not Match '\.runtime/models/sherpa-onnx'
     }
 
+    It 'documents the same packaged default model in LOCAL_SHERPA_MODELS' {
+        $docPath = Join-Path $talkRoot 'docs\LOCAL_SHERPA_MODELS.md'
+        $doc = Get-Content -LiteralPath $docPath -Raw -Encoding UTF8
+
+        $doc | Should Match 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $doc | Should Match '28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4'
+        $doc | Should Match '%LOCALAPPDATA%\\Talk\\models\\sherpa-onnx\\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $doc | Should Match 'The default model is `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10`'
+    }
+
     It 'embeds the five-member runtime payload into the product executable' {
         $tempRoot = Join-Path $env:TEMP ('talk-release-payload-builder-' + [guid]::NewGuid().ToString())
         $outputPath = Join-Path $tempRoot 'Talk.exe'
