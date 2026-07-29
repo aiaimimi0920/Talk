@@ -3303,7 +3303,7 @@ fn once_command_uses_http_provider_and_preserves_unfaithful_transcription_output
     assert_eq!(json["output_text"], "transcribed via http");
     assert_eq!(
         json["processing"]["preservation_fallback_reason"],
-        "excessive_sequence_change"
+        "protected_token_mismatch"
     );
     assert_eq!(json["insert_outcome"]["method"], "dry_run");
 }

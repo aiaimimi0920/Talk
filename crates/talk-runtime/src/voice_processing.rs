@@ -419,11 +419,17 @@ fn is_protected_faithful_token_character(character: char) -> bool {
 }
 
 fn protected_faithful_token_kind(token: &str) -> bool {
-    if token.len() < 2 || !token.chars().any(|character| character.is_ascii_alphanumeric()) {
+    if token.len() < 2
+        || !token
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+    {
         return false;
     }
 
-    token.chars().any(|character| character.is_ascii_uppercase())
+    token
+        .chars()
+        .any(|character| character.is_ascii_uppercase())
         || token.chars().any(|character| character.is_ascii_digit())
         || token
             .chars()

@@ -5172,9 +5172,7 @@ fn desktop_zipformer_daemon_config_for_model(
     }
     let bpe_vocab = model_dir.join("bpe.vocab");
     let bpe_vocab = bpe_vocab.is_file().then_some(bpe_vocab);
-    let modeling_unit = bpe_vocab
-        .as_ref()
-        .map(|_| "cjkchar+bpe".to_string());
+    let modeling_unit = bpe_vocab.as_ref().map(|_| "cjkchar+bpe".to_string());
 
     Some(SpeculativeLocalAsrDaemonConfig {
         mode: SpeculativeLocalAsrDaemonMode::SherpaOnline,

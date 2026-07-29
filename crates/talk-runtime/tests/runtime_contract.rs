@@ -19,8 +19,7 @@ use talk_runtime::{
     run_voice_session_from_audio_artifact_with_insert_hooks,
     run_voice_session_from_local_transcript_with_insert_hooks,
     run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
-    runtime_voice_text_result, update_session_log_after_text_processing,
-    validate_faithful_output,
+    runtime_voice_text_result, update_session_log_after_text_processing, validate_faithful_output,
     FaithfulOutputFallbackReason, FaithfulOutputValidation, RuntimeInsertContext,
     RuntimeInsertDirective, RuntimePhase, RuntimeVoiceTextResult, SmartRouteEvidence,
 };

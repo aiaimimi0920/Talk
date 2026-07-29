@@ -5707,15 +5707,22 @@ fn packaged_local_asr_daemon_launch_plan_auto_carries_low_latency_defaults_and_b
     .expect("valid launch plan")
     .expect("packaged daemon should be found");
 
-    assert!(plan.args.windows(2).any(|pair| pair == ["--enable-endpoint", "true"]));
-    assert!(plan.args.windows(2).any(|pair| pair == ["--endpoint-reset", "true"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--enable-endpoint", "true"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--endpoint-reset", "true"]));
     assert!(plan
         .args
         .windows(2)
         .any(|pair| pair == ["--modeling-unit", "cjkchar+bpe"]));
-    assert!(plan.args.windows(2).any(|pair| {
-        pair[0] == "--bpe-vocab" && pair[1].ends_with("bpe.vocab")
-    }));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--bpe-vocab" && pair[1].ends_with("bpe.vocab") }));
 }
 
 #[test]
