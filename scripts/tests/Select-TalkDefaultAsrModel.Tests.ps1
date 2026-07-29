@@ -41,6 +41,17 @@ function New-TestTalkDefaultAsrCandidate {
     }
 }
 
+function Get-TestTalkDefaultAsrRequiredSampleIds {
+    @(
+        'short-search-001',
+        'mixed-english-001',
+        'mixed-english-japanese-001',
+        'proper-nouns-001',
+        'punctuation-longform-001',
+        'noise-realistic-001'
+    )
+}
+
 function Write-TestTalkDefaultAsrComparison {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -204,13 +215,49 @@ Describe 'Select-TalkDefaultAsrModel' {
         }
     }
 
+    It 'rejects local candidates that do not cover the multilingual default prompt set' {
+        $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-required-samples-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
+            $legacySampleIds = @('short-search-001', 'mixed-english-001', 'punctuation-001')
+            Write-TestTalkDefaultAsrComparison `
+                -Path $comparisonPath `
+                -SelectedEngine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                -Candidates @(
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                        -SampleIds $legacySampleIds),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en' `
+                        -SampleIds $legacySampleIds),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $legacySampleIds),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
+                        -SampleIds $legacySampleIds)
+                )
+
+            $status = Select-TalkDefaultAsrModel `
+                -ComparisonJson $comparisonPath `
+                -StatusOnly
+
+            $status.ready | Should Be $false
+            ($status.blockingReasons -join "`n") | Should Match 'required default sample'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'selects the best local candidate from a comparison that also includes a cloud baseline' {
         $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-ready-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
             $outputPath = Join-Path $tempRoot 'selected-default-asr-model.json'
-            $sampleIds = @('short-search-001', 'mixed-english-001', 'punctuation-001')
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
             Write-TestTalkDefaultAsrComparison `
                 -Path $comparisonPath `
                 -SelectedEngine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
@@ -270,13 +317,66 @@ Describe 'Select-TalkDefaultAsrModel' {
         }
     }
 
+    It 'rejects low-CER candidates that exceed the live default latency budget' {
+        $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-latency-budget-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
+            $outputPath = Join-Path $tempRoot 'selected-default-asr-model.json'
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
+            Write-TestTalkDefaultAsrComparison `
+                -Path $comparisonPath `
+                -SelectedEngine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                -Candidates @(
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.0 `
+                        -FirstPartialMs 900 `
+                        -FinalLatencyMs 900),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.005 `
+                        -FirstPartialMs 210 `
+                        -FinalLatencyMs 720 `
+                        -Rtf 0.72),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.03 `
+                        -FirstPartialMs 250 `
+                        -FinalLatencyMs 360 `
+                        -Rtf 0.32),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.02 `
+                        -FirstPartialMs 180 `
+                        -FinalLatencyMs 290 `
+                        -Rtf 0.24)
+                )
+
+            $selection = Select-TalkDefaultAsrModel `
+                -ComparisonJson $comparisonPath `
+                -OutputJson $outputPath `
+                -PassThru
+
+            $selection.selectedModelId | Should Be 'zipformer-zh-en-punct-int8-480ms'
+            ($selection.rejectedCandidates | ConvertTo-Json -Depth 8) | Should Match 'latency'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'ranks local candidates by evidence metrics instead of trusting input order' {
         $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-rerank-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
             $outputPath = Join-Path $tempRoot 'selected-default-asr-model.json'
-            $sampleIds = @('short-search-001', 'mixed-english-001', 'punctuation-001')
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
             Write-TestTalkDefaultAsrComparison `
                 -Path $comparisonPath `
                 -SelectedEngine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
@@ -330,7 +430,7 @@ Describe 'Select-TalkDefaultAsrModel' {
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
-            $sharedSampleIds = @('short-search-001', 'mixed-english-001', 'punctuation-001')
+            $sharedSampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
             Write-TestTalkDefaultAsrComparison `
                 -Path $comparisonPath `
                 -SelectedEngine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
@@ -340,7 +440,14 @@ Describe 'Select-TalkDefaultAsrModel' {
                         -SampleIds $sharedSampleIds),
                     (New-TestTalkDefaultAsrCandidate `
                         -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
-                        -SampleIds @('short-search-001', 'mixed-english-001', 'browser-url-001')),
+                        -SampleIds @(
+                            'short-search-001',
+                            'mixed-english-001',
+                            'mixed-english-japanese-001',
+                            'proper-nouns-001',
+                            'punctuation-longform-001',
+                            'browser-url-001'
+                        )),
                     (New-TestTalkDefaultAsrCandidate `
                         -Engine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
                         -SampleIds $sharedSampleIds)
@@ -360,7 +467,7 @@ Describe 'Select-TalkDefaultAsrModel' {
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
-            $sampleIds = @('short-search-001', 'mixed-english-001', 'punctuation-001')
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
             Write-TestTalkDefaultAsrComparison `
                 -Path $comparisonPath `
                 -Candidates @(

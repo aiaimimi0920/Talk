@@ -193,7 +193,7 @@ function Assert-TalkDefaultAsrSelectionEvidence {
         -AllowSyntheticSampleIds:$AllowSyntheticSampleIds
 
     if (-not $status.ready) {
-        throw [string]$status.blockingReasons[0]
+        throw ((@($status.blockingReasons) -join [Environment]::NewLine))
     }
 }
 
@@ -214,13 +214,33 @@ function Get-TalkDefaultAsrSyntheticSampleIds {
     @($SampleIds | Where-Object { $_ -match '(?i)(huihui|tts|synthetic|smoke)' })
 }
 
+function Get-TalkDefaultAsrRequiredDefaultSampleIds {
+    @(
+        'short-search-001',
+        'mixed-english-001',
+        'mixed-english-japanese-001',
+        'proper-nouns-001',
+        'punctuation-longform-001',
+        'noise-realistic-001'
+    )
+}
+
+function Get-TalkDefaultAsrLatencyBudget {
+    [pscustomobject]@{
+        MaxFirstPartialMs = 350
+        MaxFinalLatencyMs = 650
+        MaxRtf = 0.60
+    }
+}
+
 function New-TalkDefaultAsrCandidateEvidenceStatus {
     param(
         [Parameter(Mandatory = $true)]$Candidate,
         [Parameter(Mandatory = $true)][int]$MinSamples,
         [string]$BaselineSampleIdSetKey,
         [string]$BaselineSampleIdSetEngine,
-        [switch]$AllowSyntheticSampleIds
+        [switch]$AllowSyntheticSampleIds,
+        [Parameter(Mandatory = $true)]$LatencyBudget
     )
 
     $candidateSampleIds = @($Candidate.SampleIds | ForEach-Object { [string]$_ })
@@ -229,6 +249,7 @@ function New-TalkDefaultAsrCandidateEvidenceStatus {
     $duplicateSampleIds = @(Get-TalkDefaultAsrDuplicateSampleIds -SampleIds $candidateSampleIds)
     $syntheticSampleIds = @(Get-TalkDefaultAsrSyntheticSampleIds -SampleIds $candidateSampleIds)
     $blockingReasons = New-Object System.Collections.Generic.List[string]
+    $selectionBlockingReasons = New-Object System.Collections.Generic.List[string]
 
     if ($Candidate.SampleCount -lt $MinSamples) {
         $blockingReasons.Add("Candidate [$($Candidate.Engine)] sample_count [$($Candidate.SampleCount)] is less than MinSamples [$MinSamples]") | Out-Null
@@ -248,6 +269,22 @@ function New-TalkDefaultAsrCandidateEvidenceStatus {
         }
     }
 
+    $withinLatencyBudget = $true
+    if (-not $Candidate.IsCloudBaseline) {
+        if ($Candidate.FirstPartialMs -gt $LatencyBudget.MaxFirstPartialMs) {
+            $withinLatencyBudget = $false
+            $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] first_partial_ms [$($Candidate.FirstPartialMs)] exceeds MaxFirstPartialMs [$($LatencyBudget.MaxFirstPartialMs)] for the default live dictation path") | Out-Null
+        }
+        if ($Candidate.FinalLatencyMs -gt $LatencyBudget.MaxFinalLatencyMs) {
+            $withinLatencyBudget = $false
+            $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] final_latency_ms [$($Candidate.FinalLatencyMs)] exceeds MaxFinalLatencyMs [$($LatencyBudget.MaxFinalLatencyMs)] for the default live dictation path") | Out-Null
+        }
+        if ($Candidate.Rtf -gt $LatencyBudget.MaxRtf) {
+            $withinLatencyBudget = $false
+            $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] rtf [$($Candidate.Rtf)] exceeds MaxRtf [$($LatencyBudget.MaxRtf)] for the default live dictation path") | Out-Null
+        }
+    }
+
     [pscustomobject]@{
         engine = [string]$Candidate.Engine
         modelId = $Candidate.ModelId
@@ -260,8 +297,10 @@ function New-TalkDefaultAsrCandidateEvidenceStatus {
         duplicateSampleIds = @($duplicateSampleIds)
         sameSampleSet = ([string]::IsNullOrWhiteSpace($BaselineSampleIdSetKey) -or $sampleIdSetKey -eq $BaselineSampleIdSetKey)
         syntheticSampleIds = @($syntheticSampleIds)
-        ready = ($blockingReasons.Count -eq 0)
+        withinLatencyBudget = $withinLatencyBudget
+        ready = ($blockingReasons.Count -eq 0 -and $selectionBlockingReasons.Count -eq 0)
         blockingReasons = @($blockingReasons.ToArray())
+        selectionBlockingReasons = @($selectionBlockingReasons.ToArray())
     }
 }
 
@@ -322,6 +361,7 @@ function Get-TalkDefaultAsrEvidenceStatus {
     $cloudCandidates = @($Comparison.Candidates | Where-Object { $_.IsCloudBaseline })
     $localCandidates = @($Comparison.Candidates | Where-Object { -not $_.IsCloudBaseline })
     $blockingReasons = New-Object System.Collections.Generic.List[string]
+    $latencyBudget = Get-TalkDefaultAsrLatencyBudget
 
     if ($cloudCandidates.Count -eq 0 -and -not $AllowMissingCloudBaseline) {
         $blockingReasons.Add('Task 6 default ASR selection requires a cloud OpenAI-compatible baseline candidate; rerun Invoke-TalkAsrCorpusBenchmark with cloud baseline flags or pass -AllowMissingCloudBaseline for diagnostics only') | Out-Null
@@ -345,13 +385,31 @@ function Get-TalkDefaultAsrEvidenceStatus {
                 -MinSamples $MinSamples `
                 -BaselineSampleIdSetKey $baselineSampleIdSetKey `
                 -BaselineSampleIdSetEngine $baselineSampleIdSetEngine `
-                -AllowSyntheticSampleIds:$AllowSyntheticSampleIds
+                -AllowSyntheticSampleIds:$AllowSyntheticSampleIds `
+                -LatencyBudget $latencyBudget
         }
     )
     foreach ($candidateStatus in $candidateStatuses) {
         foreach ($reason in @($candidateStatus.blockingReasons)) {
             $blockingReasons.Add([string]$reason) | Out-Null
         }
+    }
+
+    $requiredDefaultSampleIds = @(Get-TalkDefaultAsrRequiredDefaultSampleIds)
+    $baselineSampleIds = if ($Comparison.Candidates.Count -gt 0) {
+        @($Comparison.Candidates[0].SampleIds | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    } else {
+        @()
+    }
+    $missingRequiredDefaultSampleIds = @(
+        foreach ($sampleId in $requiredDefaultSampleIds) {
+            if ($baselineSampleIds -notcontains $sampleId) {
+                [string]$sampleId
+            }
+        }
+    )
+    if ($missingRequiredDefaultSampleIds.Count -gt 0) {
+        $blockingReasons.Add(("Talk default ASR selection requires the shared benchmark sample id set to include the full required default sample set; missing [{0}]" -f ($missingRequiredDefaultSampleIds -join ', '))) | Out-Null
     }
 
     $missingLocalModelIds = @(
@@ -364,13 +422,42 @@ function Get-TalkDefaultAsrEvidenceStatus {
         }
     )
 
-    $ready = ($blockingReasons.Count -eq 0)
     $rankedLocalCandidates = @(Sort-TalkDefaultAsrLocalCandidates -Candidates $localCandidates)
-    $selectedLocalCandidate = if ($ready) {
-        $rankedLocalCandidates | Select-Object -First 1
-    } else {
-        $null
+    $eligibleLocalCandidateEngines = @(
+        foreach ($candidateStatus in $candidateStatuses) {
+            if (-not $candidateStatus.isCloudBaseline -and $candidateStatus.ready) {
+                [string]$candidateStatus.engine
+            }
+        }
+    )
+    $eligibleLocalCandidates = @(
+        foreach ($candidate in $rankedLocalCandidates) {
+            if ($eligibleLocalCandidateEngines -contains [string]$candidate.Engine) {
+                $candidate
+            }
+        }
+    )
+    $rejectedCandidates = @(
+        foreach ($candidateStatus in $candidateStatuses) {
+            if ($candidateStatus.isCloudBaseline -or $candidateStatus.ready) {
+                continue
+            }
+            [ordered]@{
+                modelId = $candidateStatus.modelId
+                engine = $candidateStatus.engine
+                blockingReasons = @(
+                    @($candidateStatus.blockingReasons) +
+                    @($candidateStatus.selectionBlockingReasons)
+                )
+            }
+        }
+    )
+    if ($localCandidates.Count -gt 0 -and $eligibleLocalCandidates.Count -eq 0) {
+        $blockingReasons.Add('Talk default ASR selection requires at least one local candidate that satisfies the live default latency budget and evidence gates') | Out-Null
     }
+
+    $ready = ($blockingReasons.Count -eq 0)
+    $selectedLocalCandidate = if ($ready) { $eligibleLocalCandidates | Select-Object -First 1 } else { $null }
 
     [pscustomobject]@{
         schemaVersion = 1
@@ -379,19 +466,19 @@ function Get-TalkDefaultAsrEvidenceStatus {
         comparisonJson = [string]$Comparison.Path
         minSamples = $MinSamples
         requiredLocalModelIds = @($RequiredLocalModelId)
+        requiredDefaultSampleIds = @($requiredDefaultSampleIds)
         candidateCount = @($Comparison.Candidates).Count
         localCandidateCount = $localCandidates.Count
         cloudBaselinePresent = ($cloudCandidates.Count -gt 0)
         cloudBaselineEngines = @($cloudCandidates | ForEach-Object { [string]$_.Engine })
         missingLocalModelIds = @($missingLocalModelIds)
-        sharedSampleIds = if ($ready -and $Comparison.Candidates.Count -gt 0) {
-            @($Comparison.Candidates[0].SampleIds)
-        } else {
-            @()
-        }
+        missingRequiredDefaultSampleIds = @($missingRequiredDefaultSampleIds)
+        sharedSampleIds = @($baselineSampleIds)
         selectedModelId = if ($null -ne $selectedLocalCandidate) { $selectedLocalCandidate.ModelId } else { $null }
         selectedEngine = if ($null -ne $selectedLocalCandidate) { [string]$selectedLocalCandidate.Engine } else { $null }
         candidateStatuses = @($candidateStatuses)
+        eligibleLocalCandidateEngines = @($eligibleLocalCandidateEngines)
+        rejectedCandidates = @($rejectedCandidates)
         rankedLocalCandidates = @($rankedLocalCandidates | ForEach-Object { ConvertTo-TalkDefaultAsrOutputCandidate -Candidate $_ })
         blockingReasons = @($blockingReasons.ToArray() | Select-Object -Unique)
     }
@@ -455,10 +542,17 @@ function Select-TalkDefaultAsrModel {
         -AllowMissingCloudBaseline:$AllowMissingCloudBaseline `
         -AllowSyntheticSampleIds:$AllowSyntheticSampleIds
 
+    $status = Get-TalkDefaultAsrEvidenceStatus `
+        -Comparison $comparison `
+        -MinSamples $MinSamples `
+        -RequiredLocalModelId $RequiredLocalModelId `
+        -AllowMissingCloudBaseline:$AllowMissingCloudBaseline `
+        -AllowSyntheticSampleIds:$AllowSyntheticSampleIds
+
     $localCandidates = @(Sort-TalkDefaultAsrLocalCandidates -Candidates @(
         $comparison.Candidates | Where-Object { -not $_.IsCloudBaseline }
     ))
-    $selectedLocalCandidate = $localCandidates | Select-Object -First 1
+    $selectedLocalCandidate = $localCandidates | Where-Object { $_.ModelId -eq $status.selectedModelId } | Select-Object -First 1
     if ($null -eq $selectedLocalCandidate) {
         throw 'Talk ASR comparison contains no selectable local candidate'
     }
@@ -478,11 +572,13 @@ function Select-TalkDefaultAsrModel {
         outputJson = $outputPath
         minSamples = $MinSamples
         requiredLocalModelIds = @($RequiredLocalModelId)
+        requiredDefaultSampleIds = @($status.requiredDefaultSampleIds)
         globalSelectedEngine = $comparison.SelectedEngine
         selectedModelId = $selectedLocalCandidate.ModelId
         selectedEngine = $selectedLocalCandidate.Engine
         cloudBaselinePresent = ($cloudCandidates.Count -gt 0)
         cloudBaselineEngines = @($cloudCandidates | ForEach-Object { $_.Engine })
+        rejectedCandidates = @($status.rejectedCandidates)
         rankedLocalCandidates = @($localCandidates | ForEach-Object { ConvertTo-TalkDefaultAsrOutputCandidate -Candidate $_ })
     }
 
