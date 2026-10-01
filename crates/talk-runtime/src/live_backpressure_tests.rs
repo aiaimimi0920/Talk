@@ -339,22 +339,43 @@ async fn slow_recognition_does_not_fail_the_default_live_pump() {
 }
 
 #[tokio::test]
-async fn stop_preserves_full_final_response_window_after_slow_transfer() {
+async fn stop_preserves_full_final_response_window_after_delayed_pcm_drain() {
+    struct DelayedPcmSource {
+        source: BacklogSource,
+        first_drain: Cell<bool>,
+    }
+    impl LivePcmSource for DelayedPcmSource {
+        fn stop_capture(&mut self) -> Result<(), TalkError> {
+            self.source.stop_capture()
+        }
+        fn drain_pcm_chunk(
+            &self,
+            cursor: &mut RecordingPcmCursor,
+        ) -> Result<Option<RecordingPcmChunk>, TalkError> {
+            assert!(!self.source.capturing.get());
+            if self.first_drain.replace(false) {
+                // Controlled synchronous PCM preparation, inside the transfer
+                // phase. Do not infer phase timing from an OS TCP buffer size.
+                std::thread::sleep(Duration::from_millis(1100));
+            }
+            self.source.drain_pcm_chunk(cursor)
+        }
+    }
     let (session, resume, peer) = stalled_peer_with_final_delay(
         Duration::from_millis(100),
         Duration::from_secs(2),
-        Duration::from_millis(1700),
+        Duration::from_millis(1500),
     )
     .await;
-    let mut source = BacklogSource::new(1, 2 * 1024 * 1024);
-    let resume_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        resume.send(()).unwrap();
-    });
+    let mut source = DelayedPcmSource {
+        source: BacklogSource::new(1, 3200),
+        first_drain: Cell::new(true),
+    };
+    resume.send(()).unwrap();
     let started = Instant::now();
     let events = session.stop_audio_source(&mut source).await.unwrap();
     println!(
-        "slow_stop_with_full_final_window elapsed_ms={:.3}",
+        "delayed_pcm_stop_with_full_final_window elapsed_ms={:.3}",
         started.elapsed().as_secs_f64() * 1000.0
     );
     assert!(events.last().unwrap().is_final());
@@ -362,13 +383,13 @@ async fn stop_preserves_full_final_response_window_after_slow_transfer() {
         started.elapsed() > Duration::from_secs(2),
         "fixture must exceed a shared two-second budget"
     );
-    assert!(!source.capturing.get());
-    resume_task.await.unwrap();
+    assert!(!source.source.capturing.get());
     let received = tokio::time::timeout(Duration::from_secs(5), peer)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(received.len(), 2);
+    assert_eq!(received[0]["sequence"], 0);
     assert_eq!(received[1]["type"], "stop");
 }
 
@@ -448,17 +469,29 @@ async fn cancel_deadline_drops_a_live_client_with_a_blocked_write() {
     // Test the control-send guard directly: deliberately interrupt a low-level
     // send, leaving the socket's existing write buffer blocked. Live pump
     // ownership prevents this state from being reused in production.
-    let pcm = vec![0; 4 * 1024 * 1024];
-    assert!(tokio::time::timeout(
-        Duration::from_millis(100),
-        session
-            .client
-            .as_mut()
-            .unwrap()
-            .send_audio("backpressure", 0, &pcm)
-    )
-    .await
-    .is_err());
+    // A single large frame may be buffered wholesale on Windows. Use the
+    // same bounded small-chunk workload as the pump test and observe Pending.
+    let pcm = vec![0; 3200];
+    let mut interrupted_sequence = None;
+    for sequence in 0..4096 {
+        match tokio::time::timeout(
+            Duration::from_millis(100),
+            session
+                .client
+                .as_mut()
+                .unwrap()
+                .send_audio("backpressure", sequence, &pcm),
+        )
+        .await
+        {
+            Err(_) => {
+                interrupted_sequence = Some(sequence);
+                break;
+            }
+            Ok(result) => result.unwrap(),
+        }
+    }
+    let interrupted_sequence = interrupted_sequence.expect("fixture did not reach backpressure");
     let started = Instant::now();
     let error = tokio::time::timeout(Duration::from_secs(2), session.cancel())
         .await
@@ -470,6 +503,5 @@ async fn cancel_deadline_drops_a_live_client_with_a_blocked_write() {
     );
     assert!(error.to_string().contains("timed out cancelling"));
     let received = received_after_close(resume, peer).await;
-    assert!(received.iter().all(|message| message["type"] == "audio"));
-    assert!(received.len() <= 1, "no replay after cancellation");
+    assert_only_unique_audio(&received, interrupted_sequence + 1);
 }

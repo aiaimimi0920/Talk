@@ -6,7 +6,7 @@
     "crates/talk-core/tests/config_contract.rs": "785afc3f10f5c3e0bc6bb77c5ca949e0e545ecc5a02fa4e5266a27c8a86b560c",
     "crates/talk-desktop/src/main.rs": "110ebf7ff1938e1ee5ef683468d44961c6681bebc69cdd00d22ac07cd02aba6f",
     "crates/talk-runtime/src/lib.rs": "0a87b4e733b6ce6568c9902bc8e48a943e64a42562c4e5a5a7266a4afe966081",
-    "crates/talk-runtime/src/live_backpressure_tests.rs": "f9654d6ac3924fe5eacd9c6f2b4951daad6f198d0f34f632b43be4f5cc9c2d84",
+    "crates/talk-runtime/src/live_backpressure_tests.rs": "d95e1ec596060ef546c7308853d2147591a9b1046c876c8258e07410d31b39fe",
     "crates/talk-runtime/src/live_stop_tests.rs": "064f8a7d628d25ebfaac790da7d51ef8b060ec93df736b9e61f4d772dc00bbc7",
     "crates/talk-client/tests/backpressure_probe.rs": "7412760f67522a765b212f276f765760564c3fbb93376ab75b35ecbea8e26c2f",
     "crates/talk-client/src/streaming_asr.rs": "4c08b74f060bfd67201c0410334ed97ba08edee271b7c4208b18e2efef76eb41"
@@ -26,18 +26,24 @@
     "peer_requested_tcp_receive_buffer_bytes": 1024,
     "max_small_chunks": 4096,
     "large_backlog_bytes": 2097152,
-    "cancel_guard_backlog_bytes": 4194304
+    "cancel_guard_setup": "at most 4096 small PCM sends; observe a send pending past 100 ms before testing Cancel",
+    "final_window_test": {
+      "controlled_pcm_preparation_ms": 1100,
+      "peer_final_delay_ms": 1500,
+      "phase_budget_ms": 2000,
+      "chunk_bytes": 3200
+    }
   },
   "baseline_observations": [
     "watchdog_expired sequence=371 prior_pcm_bytes=1187200 chunk_bytes=3200 elapsed_ms=501.356"
   ],
   "candidate_observations": [
-    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.805",
-    "stalled_stop chunks_drained=372 elapsed_ms=151.044 error=timed out sending final local streaming ASR audio",
-    "stalled_cancel elapsed_ms=101.420 error=timed out cancelling local streaming ASR session",
-    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=503.373",
-    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=100.867 error=timed out pumping local streaming ASR audio",
-    "slow_stop_with_full_final_window elapsed_ms=2456.236"
+    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.720",
+    "stalled_stop chunks_drained=372 elapsed_ms=151.518 error=timed out sending final local streaming ASR audio",
+    "stalled_cancel elapsed_ms=101.487 error=timed out cancelling local streaming ASR session",
+    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=505.632",
+    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=101.546 error=timed out pumping local streaming ASR audio",
+    "delayed_pcm_stop_with_full_final_window elapsed_ms=2645.997"
   ],
   "negative_control": {
     "change": "replace live pump timeout with 10 seconds, keep one-second test watchdog",
@@ -50,5 +56,38 @@
     "TCP buffers, shared scheduling and debug serialization affect timing; these are individual observations, not percentile estimates.",
     "Windows UI behavior is inferred from its synchronous call path until Windows build/tests run; no real microphone/UI session was exercised.",
     "Async timeouts do not preempt synchronous work; a slow valid peer or scheduler pause can exceed the selected budget."
-  ]
+  ],
+  "initial_linux_observations": [
+    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.805",
+    "stalled_stop chunks_drained=372 elapsed_ms=151.044 error=timed out sending final local streaming ASR audio",
+    "stalled_cancel elapsed_ms=101.420 error=timed out cancelling local streaming ASR session",
+    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=503.373",
+    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=100.867 error=timed out pumping local streaming ASR audio",
+    "slow_stop_with_full_final_window elapsed_ms=2456.236"
+  ],
+  "initial_test_sha256": "f9654d6ac3924fe5eacd9c6f2b4951daad6f198d0f34f632b43be4f5cc9c2d84",
+  "additional_negative_controls": [
+    {
+      "change": "share one 2 s budget across Stop transfer and final response",
+      "result": "expected final-response timeout test failure at 2.00 s; exit 101"
+    },
+    {
+      "change": "relax Cancel deadline to 10 s",
+      "result": "expected outer 2 s watchdog failure; exit 101"
+    }
+  ],
+  "windows_fixture_correction": {
+    "initial_run": "https://github.com/aiaimimi0920/Talk/actions/runs/36903469075",
+    "job_id": 110508065475,
+    "initial_head": "ebcd55c4a10f066bb193ac0dd79c300795b5b599",
+    "failures": [
+      "Single 4 MiB Cancel setup send completed, so it had not reached observed backpressure.",
+      "Paused-peer transfer was buffered; final-response test timed out instead of proving separate phase budgets."
+    ],
+    "changes": [
+      "Use bounded small sends until backpressure is observed.",
+      "Control PCM-preparation time inside the transfer phase and start the peer reading before Stop."
+    ],
+    "production_files_changed": false
+  }
 }

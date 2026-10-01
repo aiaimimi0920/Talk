@@ -37,14 +37,15 @@ not latency percentiles or real recognition speed/accuracy measurements.
 
 | Case | Budget | Observed outcome |
 | --- | --- | --- |
-| Stalled live pump, 3,200-byte chunks | 100 ms | Terminal error in 100.867 ms, at the 372nd drained chunk |
-| Stalled final PCM drain | 150 ms transfer budget | Error in 151.044 ms; capture stayed stopped |
-| Cancel with an existing blocked write | 100 ms | Error in 101.420 ms and connection dropped |
-| Two healthy small live pumps | 100 ms each | Both succeeded in 4.805 ms total |
-| Slow valid peer with 2 MiB accumulated PCM | 2 s configured pump budget | Succeeded in 503.373 ms |
-| Slow final transfer plus 1.7 s final-response delay | Separate 2 s transfer and 2 s response budgets | Succeeded in 2456.236 ms total |
+| Stalled live pump, 3,200-byte chunks | 100 ms | Terminal error in 101.546 ms, at the 372nd drained chunk |
+| Stalled final PCM drain | 150 ms transfer budget | Error in 151.518 ms; capture stayed stopped |
+| Cancel with an existing blocked write | 100 ms | Error in 101.487 ms and connection dropped |
+| Two healthy small live pumps | 100 ms each | Both succeeded in 4.720 ms total |
+| Slow valid peer with 2 MiB accumulated PCM | 2 s configured pump budget | Succeeded in 505.632 ms |
+| Controlled 1.1 s PCM preparation plus 1.5 s final-response delay | Separate 2 s transfer and 2 s response budgets | Succeeded in 2645.997 ms total |
 
-The last case checks that the existing full final-response window is preserved.
+The last case uses a test-only synchronous delay before producing its first PCM
+chunk; it checks that the existing full final-response window is preserved.
 Stop now bounds its transfer phase separately using `final_timeout_ms`, so total
 network waiting can reach twice that setting. A slow recognizer returning after
 150 ms also succeeds with the default 100 ms live pump: the pump does not wait
@@ -56,10 +57,20 @@ one snapshot per pump, continuous partial messages, and existing callback-tail
 ordering. A control with the pump deadline relaxed to 10 s fails the regression
 at its 1 s watchdog. The intended code was restored and checked afterward.
 
-The Cancel guard test deliberately interrupts the low-level send to leave a
-pending write before invoking Cancel; production live-pump ownership prevents
-that socket from being reused. This is a targeted transport fixture, not a
-normal user flow.
+The Cancel guard test deliberately interrupts a low-level send after observing
+backpressure, then invokes Cancel; production live-pump ownership prevents that
+socket from being reused. This is a targeted transport fixture, not a normal
+user flow.
+
+The first [Windows run](https://github.com/aiaimimi0920/Talk/actions/runs/36903469075)
+exposed two fixture assumptions: it buffered a single 4 MiB setup write, and the
+paused-peer fixture did not ensure its delay fell within the transfer phase.
+Cancel now uses bounded small writes until a pending send is observed. The
+final-window test uses controlled PCM preparation instead of inferring transfer
+time from OS buffers. Production code is unchanged. Sharing one 2 s Stop budget
+makes this revised test fail at 2.00 s; relaxing Cancel's deadline makes its 2 s
+watchdog fail. Both controls were restored before the passing full test run.
+The JSON retains the initial observations and the revised source hash.
 
 ## Reproduce locally
 
