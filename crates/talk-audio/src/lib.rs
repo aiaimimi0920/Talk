@@ -458,11 +458,17 @@ impl RecordingSession {
         }
     }
 
-    pub fn cancel(mut self) -> Result<(), TalkError> {
+    /// Stop the input device while retaining captured PCM for a final drain or
+    /// WAV export. This is idempotent and does not write an audio artifact.
+    pub fn stop_capture(&mut self) -> Result<(), TalkError> {
         match &mut self.backend {
             RecordingBackend::Silent { .. } => Ok(()),
-            RecordingBackend::NativeWindows(recording) => recording.cancel(),
+            RecordingBackend::NativeWindows(recording) => recording.stop_capture(),
         }
+    }
+
+    pub fn cancel(mut self) -> Result<(), TalkError> {
+        self.stop_capture()
     }
 
     pub fn finish_probe(mut self) -> Result<AudioSignalProbe, TalkError> {
@@ -1171,7 +1177,9 @@ impl NativeWindowsRecording {
         Ok(self.artifact.clone())
     }
 
-    fn cancel(&mut self) -> Result<(), TalkError> {
+    fn stop_capture(&mut self) -> Result<(), TalkError> {
+        // Dropping the native stream joins its callback thread before the
+        // retained sample buffer is drained by the recognizer.
         self.stream.take();
         Ok(())
     }
@@ -1194,7 +1202,7 @@ impl NativeWindowsRecording {
         &mut self,
         reject_silence: bool,
     ) -> Result<CapturedAudioBuffer, TalkError> {
-        self.stream.take();
+        self.stop_capture()?;
 
         let stream_errors = self
             .stream_errors
@@ -1267,7 +1275,7 @@ impl NativeWindowsRecording {
         ))
     }
 
-    fn cancel(&mut self) -> Result<(), TalkError> {
+    fn stop_capture(&mut self) -> Result<(), TalkError> {
         Err(native_windows_audio_error(
             "native_windows audio backend is only available on Windows",
         ))

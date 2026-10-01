@@ -422,3 +422,32 @@ fn probe_audio_signal_reports_zero_metrics_for_silent_backend() {
     assert_eq!(probe.signal.rms, 0.0);
     assert!(probe.signal.silent);
 }
+
+#[test]
+fn stopping_capture_is_idempotent_and_retains_pcm_for_drain_and_wav_export() {
+    let dir = std::env::temp_dir().join(format!("talk-audio-stop-capture-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let request = AudioCaptureRequest {
+        backend: AudioBackendMode::Silent,
+        temp_dir: dir.clone(),
+        session_id: "stop-capture".to_string(),
+        input_device: None,
+        wav_settings: WavSettings::mono_16khz(),
+        max_recording_seconds: 60,
+        silent_samples: 320,
+    };
+    let mut recording = start_recording(&request).unwrap();
+    recording.stop_capture().unwrap();
+    recording.stop_capture().unwrap();
+    assert!(
+        !dir.join("stop-capture.wav").exists(),
+        "freezing capture must not write a WAV"
+    );
+    let mut cursor = RecordingPcmCursor::default();
+    let chunk = recording.drain_pcm_chunk(&mut cursor).unwrap().unwrap();
+    assert_eq!(chunk.sequence, 0);
+    assert_eq!(chunk.bytes, vec![0; 640]);
+    assert!(recording.drain_pcm_chunk(&mut cursor).unwrap().is_none());
+    let artifact = recording.finish().unwrap();
+    assert_eq!(read_wav_info(&artifact).unwrap().duration_samples, 320);
+}

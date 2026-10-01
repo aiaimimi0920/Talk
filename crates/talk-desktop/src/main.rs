@@ -3121,6 +3121,23 @@ mod windows_app {
             (config, shared.runtime_handle.clone(), active)
         };
 
+        // Accepting Stop fixes the microphone boundary now, before HUD work
+        // or handing final recognition to a scheduled async task.
+        if let ActiveRecordingSource::Live { recording, .. } = &mut active.source {
+            if let Err(error) = recording.stop_capture() {
+                let _ = complete_failed_session(
+                    &config,
+                    active.session,
+                    active.trigger_events,
+                    anyhow::anyhow!(error.to_string()),
+                    false,
+                    |_| {},
+                );
+                let _ = mark_idle_after_terminal_state(hwnd);
+                return;
+            }
+        }
+
         if let Err(error) = active.session.apply(VoiceEvent::TriggerStop) {
             let _ = complete_failed_session(
                 &config,
