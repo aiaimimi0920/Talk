@@ -45,6 +45,7 @@ sample_rate_hz = 16000
 channels = 1
 connect_timeout_ms = 1000
 idle_timeout_ms = 3000
+pump_timeout_ms = 100
 final_timeout_ms = 7000
 
 # Optional: uncomment this block to override the packaged model auto-discovery.

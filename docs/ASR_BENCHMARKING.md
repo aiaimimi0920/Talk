@@ -633,3 +633,7 @@ reproduces callback sample loss under a busy capture mutex and measures the
 bounded UI snapshot approach. It reports shorter critical sections and extra
 copy work explicitly; it does not measure or claim model accuracy or end-to-end
 recognition speed.
+
+The [live streaming backpressure evidence](asr-benchmarks/local-streaming-backpressure-20261001.md)
+records synthetic loopback liveness and cancellation tests. It is not an ASR
+accuracy or model-speed benchmark.
