@@ -5,7 +5,7 @@ use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use std::sync::Mutex;
 use std::time::Duration;
 pub use talk_core::NativeReadinessStatus;
@@ -1041,6 +1041,44 @@ fn live_waveform_trailing_frames(sample_rate_hz: u32) -> usize {
     ((u64::from(sample_rate_hz) * 180) / 1000).max(1) as usize
 }
 
+#[cfg(any(windows, test))]
+fn snapshot_recent_capture_samples(
+    samples: &Mutex<Vec<f32>>,
+    channels: u16,
+    trailing_frames: usize,
+) -> Result<Vec<f32>, TalkError> {
+    if channels == 0 {
+        return Err(TalkError::Audio(
+            "live audio channels must be greater than 0".to_string(),
+        ));
+    }
+    let channel_count = usize::from(channels);
+    let sample_limit = trailing_frames.checked_mul(channel_count).ok_or_else(|| {
+        TalkError::Audio("live audio snapshot is too large for this platform".to_string())
+    })?;
+    // Allocate before taking the capture lock. The UI needs only its bounded
+    // 120/180 ms window, and peak/RMS/waveform work must not block the input
+    // callback's nonblocking attempt to append the next buffer.
+    let mut snapshot = Vec::new();
+    snapshot.try_reserve_exact(sample_limit).map_err(|error| {
+        TalkError::Audio(format!("failed to allocate live audio snapshot: {error}"))
+    })?;
+    let samples = samples
+        .lock()
+        .map_err(|_| native_windows_audio_error("captured sample buffer lock was poisoned"))?;
+    if trailing_frames == 0 {
+        return Ok(snapshot);
+    }
+    if !samples.len().is_multiple_of(channel_count) {
+        return Err(TalkError::Audio(
+            "live audio samples must be frame-aligned with channels".to_string(),
+        ));
+    }
+    let start = samples.len().saturating_sub(sample_limit);
+    snapshot.extend_from_slice(&samples[start..]);
+    Ok(snapshot)
+}
+
 fn audio_signal_duration_seconds(
     sample_rate_hz: u32,
     channels: u16,
@@ -1145,26 +1183,24 @@ impl NativeWindowsRecording {
     }
 
     fn current_level(&self) -> Result<AudioInputLevel, TalkError> {
-        let samples = self
-            .samples
-            .lock()
-            .map_err(|_| native_windows_audio_error("captured sample buffer lock was poisoned"))?;
-        summarize_recent_interleaved_audio_level(
-            &samples,
-            self.channels,
-            live_level_trailing_frames(self.sample_rate_hz),
-        )
+        let trailing_frames = live_level_trailing_frames(self.sample_rate_hz);
+        let samples =
+            snapshot_recent_capture_samples(&self.samples, self.channels, trailing_frames)?;
+        summarize_recent_interleaved_audio_level(&samples, self.channels, trailing_frames)
     }
 
     fn current_waveform(&self, bucket_count: usize) -> Result<Vec<f32>, TalkError> {
-        let samples = self
-            .samples
-            .lock()
-            .map_err(|_| native_windows_audio_error("captured sample buffer lock was poisoned"))?;
+        let trailing_frames = if bucket_count == 0 {
+            0
+        } else {
+            live_waveform_trailing_frames(self.sample_rate_hz)
+        };
+        let samples =
+            snapshot_recent_capture_samples(&self.samples, self.channels, trailing_frames)?;
         summarize_recent_interleaved_audio_waveform(
             &samples,
             self.channels,
-            live_waveform_trailing_frames(self.sample_rate_hz),
+            trailing_frames,
             bucket_count,
         )
     }
@@ -1788,19 +1824,29 @@ where
     T: cpal::Sample,
     f32: cpal::FromSample<T>,
 {
+    append_captured_input_samples(
+        input.iter().map(|sample| f32::from_sample(*sample)),
+        samples,
+        max_samples,
+    );
+}
+
+#[cfg(any(windows, test))]
+fn append_captured_input_samples(
+    input: impl Iterator<Item = f32>,
+    samples: &Mutex<Vec<f32>>,
+    max_samples: usize,
+) -> usize {
     let Ok(mut samples) = samples.try_lock() else {
-        return;
+        return 0;
     };
     let remaining = max_samples.saturating_sub(samples.len());
     if remaining == 0 {
-        return;
+        return 0;
     }
-    samples.extend(
-        input
-            .iter()
-            .take(remaining)
-            .map(|sample| f32::from_sample(*sample)),
-    );
+    let before = samples.len();
+    samples.extend(input.take(remaining));
+    samples.len() - before
 }
 
 #[cfg(windows)]
@@ -2234,3 +2280,6 @@ mod tests {
         assert_eq!(peak, 0.5);
     }
 }
+
+#[cfg(test)]
+mod capture_contention_tests;

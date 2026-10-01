@@ -1,0 +1,340 @@
+{
+  "date": "2026-10-01",
+  "baseline_commit": "c41f6976858e6476c05f5fba89d93e4d5c2c17ed",
+  "source_sha256": {
+    "crates/talk-audio/src/lib.rs": "b1e5a133b58f116c55fb828bb29e0d0650e4c4a9448706754b4654987863f0f9",
+    "crates/talk-audio/src/capture_contention_tests.rs": "b61402770760444ddac0e1aa0cf28a9747a621091759395d186212772b1e654e"
+  },
+  "environment": {
+    "platform": "Linux x86_64 cloud executor",
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "affinity_cpu_count": 9,
+    "rust": "1.95.0",
+    "profile": "release, optimized",
+    "exclusive_cpu": false
+  },
+  "method": {
+    "input": "two seconds of deterministic f32 values (i % 97)/97 per rate/channel condition",
+    "rates_hz": [
+      44100,
+      48000
+    ],
+    "channels": [
+      1,
+      2
+    ],
+    "warmup_iterations_per_condition": 100,
+    "measured_iterations_per_condition": 10000,
+    "waveform_buckets": 9,
+    "level_window_ms": 120,
+    "waveform_window_ms": 180,
+    "iteration_order": [
+      "legacy level",
+      "legacy waveform",
+      "candidate level snapshot+summary",
+      "candidate waveform snapshot+summary"
+    ],
+    "snapshot_timing": "whole snapshot helper including allocation outside mutex and lock/unlock; conservative upper bound on new critical-section duration",
+    "legacy_timing": "summary calculation while mutex held, excluding lock acquisition and returned waveform deallocation",
+    "candidate_total_timing": "snapshot plus summary; waveform output is black-boxed/dropped in the timed region",
+    "input_hardware": "none; synthetic PCM and mutex contention only"
+  },
+  "forced_callback_cases": [
+    {
+      "frames": 256,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 256
+    },
+    {
+      "frames": 256,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 512
+    },
+    {
+      "frames": 441,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 441
+    },
+    {
+      "frames": 441,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 882
+    },
+    {
+      "frames": 480,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 480
+    },
+    {
+      "frames": 480,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 960
+    },
+    {
+      "frames": 960,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 960
+    },
+    {
+      "frames": 960,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 1920
+    },
+    {
+      "frames": 1024,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 1024
+    },
+    {
+      "frames": 1024,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 2048
+    },
+    {
+      "frames": 2048,
+      "channels": 1,
+      "admitted_busy": 0,
+      "admitted_available": 2048
+    },
+    {
+      "frames": 2048,
+      "channels": 2,
+      "admitted_busy": 0,
+      "admitted_available": 4096
+    }
+  ],
+  "timings": [
+    {
+      "metric": "legacy_level_lock",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 5308,
+      "p95_ns": 5348,
+      "max_ns": 224870
+    },
+    {
+      "metric": "legacy_waveform_lock",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 13040,
+      "p95_ns": 15013,
+      "max_ns": 1787065
+    },
+    {
+      "metric": "candidate_level_snapshot_upper_bound",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 321,
+      "p95_ns": 461,
+      "max_ns": 16556
+    },
+    {
+      "metric": "candidate_waveform_snapshot_upper_bound",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 621,
+      "p95_ns": 661,
+      "max_ns": 66601
+    },
+    {
+      "metric": "candidate_level_total",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 5638,
+      "p95_ns": 5839,
+      "max_ns": 322468
+    },
+    {
+      "metric": "candidate_waveform_total",
+      "rate": 44100,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 13671,
+      "p95_ns": 14071,
+      "max_ns": 958620
+    },
+    {
+      "metric": "legacy_level_lock",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 10576,
+      "p95_ns": 10657,
+      "max_ns": 934835
+    },
+    {
+      "metric": "legacy_waveform_lock",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 16986,
+      "p95_ns": 28133,
+      "max_ns": 2376346
+    },
+    {
+      "metric": "candidate_level_snapshot_upper_bound",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 831,
+      "p95_ns": 1032,
+      "max_ns": 141815
+    },
+    {
+      "metric": "candidate_waveform_snapshot_upper_bound",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 1182,
+      "p95_ns": 1322,
+      "max_ns": 77046
+    },
+    {
+      "metric": "candidate_level_total",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 11408,
+      "p95_ns": 11818,
+      "max_ns": 1029138
+    },
+    {
+      "metric": "candidate_waveform_total",
+      "rate": 44100,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 18187,
+      "p95_ns": 24697,
+      "max_ns": 2729150
+    },
+    {
+      "metric": "legacy_level_lock",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 5778,
+      "p95_ns": 5819,
+      "max_ns": 2034790
+    },
+    {
+      "metric": "legacy_waveform_lock",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 14181,
+      "p95_ns": 14753,
+      "max_ns": 2048950
+    },
+    {
+      "metric": "candidate_level_snapshot_upper_bound",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 401,
+      "p95_ns": 551,
+      "max_ns": 78839
+    },
+    {
+      "metric": "candidate_waveform_snapshot_upper_bound",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 671,
+      "p95_ns": 721,
+      "max_ns": 1522204
+    },
+    {
+      "metric": "candidate_level_total",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 6179,
+      "p95_ns": 6410,
+      "max_ns": 2384879
+    },
+    {
+      "metric": "candidate_waveform_total",
+      "rate": 48000,
+      "channels": 1,
+      "iterations": 10000,
+      "p50_ns": 14873,
+      "p95_ns": 15353,
+      "max_ns": 1795588
+    },
+    {
+      "metric": "legacy_level_lock",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 11517,
+      "p95_ns": 11898,
+      "max_ns": 2060858
+    },
+    {
+      "metric": "legacy_waveform_lock",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 18478,
+      "p95_ns": 33210,
+      "max_ns": 2081981
+    },
+    {
+      "metric": "candidate_level_snapshot_upper_bound",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 881,
+      "p95_ns": 1132,
+      "max_ns": 318562
+    },
+    {
+      "metric": "candidate_waveform_snapshot_upper_bound",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 1292,
+      "p95_ns": 1492,
+      "max_ns": 591756
+    },
+    {
+      "metric": "candidate_level_total",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 12399,
+      "p95_ns": 13260,
+      "max_ns": 2091515
+    },
+    {
+      "metric": "candidate_waveform_total",
+      "rate": 48000,
+      "channels": 2,
+      "iterations": 10000,
+      "p50_ns": 19780,
+      "p95_ns": 30496,
+      "max_ns": 3082334
+    }
+  ],
+  "limitations": [
+    "No Windows microphone recording, production drop-frequency estimate, model inference, CER/WER, or end-to-end latency measurement.",
+    "Input try_lock still discards a buffer on a real copy-lock collision. The change removes UI DSP from that exclusion window; it does not promise zero dropped audio.",
+    "Extra snapshot allocation/copy is bounded by the 120/180 ms window. It adds processing; this is not a claim of less total CPU work.",
+    "Shared CPU scheduling produced outliers; values are not hard real-time upper bounds or portable hardware promises."
+  ]
+}
