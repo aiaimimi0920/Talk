@@ -1,12 +1,17 @@
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::borrow::Cow;
+use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 use talk_core::TalkError;
 use tokio::net::TcpStream;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -122,6 +127,8 @@ type LocalStreamingAsrSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub struct LocalStreamingAsrServiceClient {
     socket: LocalStreamingAsrSocket,
+    audio_base64_scratch: String,
+    active_session_id: Option<String>,
 }
 
 impl LocalStreamingAsrServiceClient {
@@ -144,7 +151,11 @@ impl LocalStreamingAsrServiceClient {
                 "failed to connect to local streaming ASR service at {endpoint}: {error}"
             ))
         })?;
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            audio_base64_scratch: String::new(),
+            active_session_id: None,
+        })
     }
 
     pub async fn start(
@@ -160,15 +171,20 @@ impl LocalStreamingAsrServiceClient {
                 "local streaming ASR ready timeout must be greater than 0".to_string(),
             ));
         }
+        let session_id = session_id.into();
+        self.active_session_id = None;
         self.send_client_message(LocalStreamingAsrClientMessage::start(
-            session_id,
+            session_id.clone(),
             sample_rate_hz,
             channels,
             language,
         )?)
         .await?;
         match self.next_server_message(ready_timeout).await? {
-            LocalStreamingAsrServerMessage::Ready(ready) => Ok(ready),
+            LocalStreamingAsrServerMessage::Ready(ready) => {
+                self.active_session_id = Some(session_id);
+                Ok(ready)
+            }
             LocalStreamingAsrServerMessage::Error {
                 session_id,
                 message,
@@ -183,14 +199,17 @@ impl LocalStreamingAsrServiceClient {
 
     pub async fn send_audio(
         &mut self,
-        session_id: impl Into<String>,
+        session_id: impl AsRef<str>,
         sequence: u64,
         pcm_bytes: &[u8],
     ) -> Result<(), TalkError> {
-        self.send_client_message(LocalStreamingAsrClientMessage::audio(
-            session_id, sequence, pcm_bytes,
-        )?)
-        .await
+        let json = serialize_local_streaming_asr_audio_message(
+            session_id.as_ref(),
+            sequence,
+            pcm_bytes,
+            &mut self.audio_base64_scratch,
+        )?;
+        self.send_client_json(json).await
     }
 
     pub async fn stop(&mut self, session_id: impl Into<String>) -> Result<(), TalkError> {
@@ -212,15 +231,44 @@ impl LocalStreamingAsrServiceClient {
                 "local streaming ASR final timeout must be greater than 0".to_string(),
             ));
         }
+        const MAX_MESSAGES_UNTIL_FINAL: usize = 4_096;
+
+        let deadline = Instant::now() + final_timeout;
         let mut events = Vec::new();
+        let mut messages_received = 0usize;
+        let expected_session_id = self.active_session_id.clone();
         loop {
-            let message = self.next_server_message(final_timeout).await?;
-            if let Some(event) = local_streaming_server_message_to_asr_event(message)? {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TalkError::Provider(
+                    "timed out waiting for local streaming ASR service message".to_string(),
+                ));
+            }
+            let message = self
+                .try_next_server_item(remaining, |raw| {
+                    parse_local_streaming_asr_server_event_for_session(
+                        raw,
+                        expected_session_id.as_deref(),
+                    )
+                })
+                .await?
+                .ok_or_else(|| {
+                    TalkError::Provider(
+                        "timed out waiting for local streaming ASR service message".to_string(),
+                    )
+                })?;
+            messages_received += 1;
+            if let Some(event) = message {
                 let is_final = event.is_final();
-                events.push(event);
+                push_coalesced_asr_event(&mut events, event);
                 if is_final {
                     return Ok(events);
                 }
+            }
+            if messages_received >= MAX_MESSAGES_UNTIL_FINAL {
+                return Err(TalkError::Provider(format!(
+                    "local streaming ASR service exceeded {MAX_MESSAGES_UNTIL_FINAL} messages without a final result"
+                )));
             }
         }
     }
@@ -243,14 +291,23 @@ impl LocalStreamingAsrServiceClient {
         }
         let mut events = Vec::new();
         let mut messages_drained = 0usize;
+        let expected_session_id = self.active_session_id.clone();
         loop {
-            let Some(message) = self.try_next_server_message(idle_timeout).await? else {
+            let Some(message) = self
+                .try_next_server_item(idle_timeout, |raw| {
+                    parse_local_streaming_asr_server_event_for_session(
+                        raw,
+                        expected_session_id.as_deref(),
+                    )
+                })
+                .await?
+            else {
                 return Ok(events);
             };
             messages_drained += 1;
-            if let Some(event) = local_streaming_server_message_to_asr_event(message)? {
+            if let Some(event) = message {
                 let is_final = event.is_final();
-                events.push(event);
+                push_coalesced_asr_event(&mut events, event);
                 if is_final {
                     return Ok(events);
                 }
@@ -277,13 +334,30 @@ impl LocalStreamingAsrServiceClient {
         &mut self,
         receive_timeout: Duration,
     ) -> Result<Option<LocalStreamingAsrServerMessage>, TalkError> {
+        self.try_next_server_item(receive_timeout, parse_local_streaming_asr_server_message)
+            .await
+    }
+
+    async fn try_next_server_item<T, F>(
+        &mut self,
+        receive_timeout: Duration,
+        parser: F,
+    ) -> Result<Option<T>, TalkError>
+    where
+        F: Fn(&str) -> Result<T, TalkError>,
+    {
         if receive_timeout.is_zero() {
             return Err(TalkError::InvalidConfig(
                 "local streaming ASR receive timeout must be greater than 0".to_string(),
             ));
         }
+        let deadline = Instant::now() + receive_timeout;
         loop {
-            let next = match tokio::time::timeout(receive_timeout, self.socket.next()).await {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            let next = match tokio::time::timeout(remaining, self.socket.next()).await {
                 Ok(next) => next,
                 Err(_) => return Ok(None),
             };
@@ -299,25 +373,28 @@ impl LocalStreamingAsrServiceClient {
             })?;
             match message {
                 Message::Text(text) => {
-                    return parse_local_streaming_asr_server_message(&text).map(Some);
+                    return parser(&text).map(Some);
                 }
                 Message::Binary(bytes) => {
-                    let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
-                        TalkError::Provider(format!(
-                            "local streaming ASR binary message must be UTF-8 JSON: {error}"
-                        ))
-                    })?;
-                    return parse_local_streaming_asr_server_message(&text).map(Some);
+                    return parser(local_streaming_asr_binary_server_text(bytes.as_ref())?)
+                        .map(Some);
                 }
                 Message::Ping(payload) => {
-                    self.socket
-                        .send(Message::Pong(payload))
-                        .await
-                        .map_err(|error| {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Ok(None);
+                    }
+                    let send_result =
+                        tokio::time::timeout(remaining, self.socket.send(Message::Pong(payload)))
+                            .await;
+                    match send_result {
+                        Ok(result) => result.map_err(|error| {
                             TalkError::Provider(format!(
                                 "failed to answer local streaming ASR ping: {error}"
                             ))
-                        })?;
+                        })?,
+                        Err(_) => return Ok(None),
+                    }
                 }
                 Message::Pong(_) => {}
                 Message::Close(_) => {
@@ -335,6 +412,10 @@ impl LocalStreamingAsrServiceClient {
         message: LocalStreamingAsrClientMessage,
     ) -> Result<(), TalkError> {
         let json = serialize_local_streaming_asr_client_message(&message)?;
+        self.send_client_json(json).await
+    }
+
+    async fn send_client_json(&mut self, json: String) -> Result<(), TalkError> {
         self.socket
             .send(Message::Text(json.into()))
             .await
@@ -346,31 +427,137 @@ impl LocalStreamingAsrServiceClient {
     }
 }
 
+fn push_coalesced_asr_event(events: &mut Vec<StreamingAsrEvent>, event: StreamingAsrEvent) {
+    if let (
+        Some(StreamingAsrEvent::Partial {
+            segment_id: previous_segment_id,
+            ..
+        }),
+        StreamingAsrEvent::Partial { segment_id, .. },
+    ) = (events.last_mut(), &event)
+    {
+        if previous_segment_id == segment_id {
+            *events.last_mut().expect("last event exists") = event;
+            return;
+        }
+    }
+    events.push(event);
+}
+
 #[derive(Debug, Deserialize)]
-struct LocalStreamingAsrServerJsonMessage {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    segment_id: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    engine: Option<String>,
-    #[serde(default)]
-    model: Option<String>,
+struct LocalStreamingAsrServerJsonMessage<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: LocalStreamingAsrJsonString<'a>,
+    #[serde(default, borrow)]
+    session_id: Option<LocalStreamingAsrJsonString<'a>>,
+    #[serde(default, borrow)]
+    segment_id: Option<LocalStreamingAsrJsonString<'a>>,
+    #[serde(default, borrow)]
+    text: Option<LocalStreamingAsrJsonString<'a>>,
+    #[serde(default, borrow)]
+    engine: Option<LocalStreamingAsrJsonString<'a>>,
+    #[serde(default, borrow)]
+    model: Option<LocalStreamingAsrJsonString<'a>>,
     #[serde(default)]
     sample_rate_hz: Option<u32>,
     #[serde(default)]
     channels: Option<u16>,
-    #[serde(default)]
-    message: Option<String>,
+    #[serde(default, borrow)]
+    message: Option<LocalStreamingAsrJsonString<'a>>,
+}
+
+#[derive(Debug)]
+struct LocalStreamingAsrJsonString<'a>(Cow<'a, str>);
+
+impl LocalStreamingAsrJsonString<'_> {
+    fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+
+    fn into_owned(self) -> String {
+        self.0.into_owned()
+    }
+}
+
+impl<'de: 'a, 'a> Deserialize<'de> for LocalStreamingAsrJsonString<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct JsonStringVisitor<'a>(std::marker::PhantomData<&'a str>);
+
+        impl<'de: 'a, 'a> serde::de::Visitor<'de> for JsonStringVisitor<'a> {
+            type Value = LocalStreamingAsrJsonString<'a>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON string")
+            }
+
+            fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LocalStreamingAsrJsonString(Cow::Borrowed(value)))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LocalStreamingAsrJsonString(Cow::Owned(value.to_string())))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(LocalStreamingAsrJsonString(Cow::Owned(value)))
+            }
+        }
+
+        deserializer.deserialize_str(JsonStringVisitor(std::marker::PhantomData))
+    }
 }
 
 pub fn serialize_local_streaming_asr_client_message(
     message: &LocalStreamingAsrClientMessage,
 ) -> Result<String, TalkError> {
+    serialize_local_streaming_asr_json(message)
+}
+
+#[derive(Serialize)]
+struct LocalStreamingAsrAudioJsonMessage<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    session_id: &'a str,
+    sequence: u64,
+    pcm_base64: &'a str,
+}
+
+fn serialize_local_streaming_asr_audio_message(
+    session_id: &str,
+    sequence: u64,
+    pcm_bytes: &[u8],
+    pcm_base64_scratch: &mut String,
+) -> Result<String, TalkError> {
+    validate_local_streaming_session_id_ref(session_id)?;
+    if pcm_bytes.is_empty() {
+        return Err(TalkError::InvalidConfig(
+            "local streaming ASR PCM chunk must not be empty".to_string(),
+        ));
+    }
+
+    pcm_base64_scratch.clear();
+    base64::engine::general_purpose::STANDARD.encode_string(pcm_bytes, pcm_base64_scratch);
+    serialize_local_streaming_asr_json(&LocalStreamingAsrAudioJsonMessage {
+        kind: "audio",
+        session_id,
+        sequence,
+        pcm_base64: pcm_base64_scratch,
+    })
+}
+
+fn serialize_local_streaming_asr_json(message: &impl Serialize) -> Result<String, TalkError> {
     serde_json::to_string(message).map_err(|error| {
         TalkError::Provider(format!(
             "failed to serialize local streaming ASR client message: {error}"
@@ -381,11 +568,7 @@ pub fn serialize_local_streaming_asr_client_message(
 pub fn parse_local_streaming_asr_server_message(
     raw: &str,
 ) -> Result<LocalStreamingAsrServerMessage, TalkError> {
-    let item: LocalStreamingAsrServerJsonMessage = serde_json::from_str(raw).map_err(|error| {
-        TalkError::Provider(format!(
-            "invalid local streaming ASR server json message: {error}"
-        ))
-    })?;
+    let item = deserialize_local_streaming_asr_server_json(raw)?;
     match item.kind.as_str() {
         "ready" => Ok(LocalStreamingAsrServerMessage::Ready(
             LocalStreamingAsrReady {
@@ -423,6 +606,115 @@ pub fn parse_local_streaming_asr_server_message(
     }
 }
 
+#[cfg(test)]
+fn parse_local_streaming_asr_server_event(
+    raw: &str,
+) -> Result<Option<StreamingAsrEvent>, TalkError> {
+    parse_local_streaming_asr_server_event_for_session(raw, None)
+}
+
+fn parse_local_streaming_asr_server_event_for_session(
+    raw: &str,
+    expected_session_id: Option<&str>,
+) -> Result<Option<StreamingAsrEvent>, TalkError> {
+    let item = deserialize_local_streaming_asr_server_json(raw)?;
+    match item.kind.as_str() {
+        "ready" => {
+            required_local_streaming_wire_string(item.engine, "engine", "ready")?;
+            required_local_streaming_wire_string(item.model, "model", "ready")?;
+            required_local_streaming_positive_u32(item.sample_rate_hz, "sample_rate_hz", "ready")?;
+            required_local_streaming_positive_u16(item.channels, "channels", "ready")?;
+            Ok(None)
+        }
+        "partial" => {
+            let session_id = required_local_streaming_session_id_wire(item.session_id, "partial")?;
+            validate_local_streaming_event_session_id(
+                expected_session_id,
+                session_id.as_str(),
+                "partial",
+            )?;
+            StreamingAsrEvent::try_partial(
+                required_local_streaming_wire_string(item.segment_id, "segment_id", "partial")?
+                    .into_owned(),
+                required_local_streaming_wire_string(item.text, "text", "partial")?.into_owned(),
+            )
+            .map(Some)
+        }
+        "final" => {
+            let session_id = required_local_streaming_session_id_wire(item.session_id, "final")?;
+            validate_local_streaming_event_session_id(
+                expected_session_id,
+                session_id.as_str(),
+                "final",
+            )?;
+            StreamingAsrEvent::try_final(
+                required_local_streaming_wire_string(item.segment_id, "segment_id", "final")?
+                    .into_owned(),
+                required_local_streaming_wire_string(item.text, "text", "final")?.into_owned(),
+            )
+            .map(Some)
+        }
+        "error" => {
+            let session_id = required_local_streaming_session_id_wire(item.session_id, "error")?;
+            validate_local_streaming_event_session_id(
+                expected_session_id,
+                session_id.as_str(),
+                "error",
+            )?;
+            let message = required_local_streaming_wire_string(item.message, "message", "error")?;
+            Err(TalkError::Provider(format!(
+                "local streaming ASR service error for session {}: {}",
+                session_id.as_str(),
+                message.as_str()
+            )))
+        }
+        other => Err(TalkError::Provider(format!(
+            "unknown local streaming ASR server message type: {other}"
+        ))),
+    }
+}
+
+fn validate_local_streaming_event_session_id(
+    expected_session_id: Option<&str>,
+    actual_session_id: &str,
+    message_type: &str,
+) -> Result<(), TalkError> {
+    if let Some(expected_session_id) = expected_session_id {
+        if actual_session_id != expected_session_id {
+            return Err(TalkError::Provider(format!(
+                "local streaming ASR {message_type} session_id {actual_session_id} does not match active session {expected_session_id}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn deserialize_local_streaming_asr_server_json(
+    raw: &str,
+) -> Result<LocalStreamingAsrServerJsonMessage<'_>, TalkError> {
+    serde_json::from_str(raw).map_err(|error| {
+        TalkError::Provider(format!(
+            "invalid local streaming ASR server json message: {error}"
+        ))
+    })
+}
+
+#[cfg(test)]
+fn parse_local_streaming_asr_binary_server_message(
+    bytes: &[u8],
+) -> Result<LocalStreamingAsrServerMessage, TalkError> {
+    let text = local_streaming_asr_binary_server_text(bytes)?;
+    parse_local_streaming_asr_server_message(text)
+}
+
+fn local_streaming_asr_binary_server_text(bytes: &[u8]) -> Result<&str, TalkError> {
+    std::str::from_utf8(bytes).map_err(|error| {
+        TalkError::Provider(format!(
+            "local streaming ASR binary message must be UTF-8 JSON: {error}"
+        ))
+    })
+}
+
 pub fn local_streaming_server_message_to_asr_event(
     message: LocalStreamingAsrServerMessage,
 ) -> Result<Option<StreamingAsrEvent>, TalkError> {
@@ -444,6 +736,11 @@ pub fn local_streaming_server_message_to_asr_event(
 }
 
 fn validate_local_streaming_session_id(session_id: String) -> Result<String, TalkError> {
+    validate_local_streaming_session_id_ref(&session_id)?;
+    Ok(session_id)
+}
+
+fn validate_local_streaming_session_id_ref(session_id: &str) -> Result<(), TalkError> {
     if session_id.trim().is_empty() {
         return Err(TalkError::InvalidConfig(
             "local streaming ASR session_id must not be blank".to_string(),
@@ -455,7 +752,7 @@ fn validate_local_streaming_session_id(session_id: String) -> Result<String, Tal
                 .to_string(),
         ));
     }
-    Ok(session_id)
+    Ok(())
 }
 
 fn validate_local_streaming_endpoint(endpoint: &str) -> Result<(), TalkError> {
@@ -537,33 +834,51 @@ fn validate_optional_local_streaming_language(
 }
 
 fn required_local_streaming_session_id(
-    value: Option<String>,
+    value: Option<LocalStreamingAsrJsonString<'_>>,
     message_type: &str,
 ) -> Result<String, TalkError> {
-    let value = required_local_streaming_string(value, "session_id", message_type)?;
-    validate_local_streaming_session_id(value).map_err(|error| {
+    required_local_streaming_session_id_wire(value, message_type)
+        .map(LocalStreamingAsrJsonString::into_owned)
+}
+
+fn required_local_streaming_session_id_wire<'a>(
+    value: Option<LocalStreamingAsrJsonString<'a>>,
+    message_type: &str,
+) -> Result<LocalStreamingAsrJsonString<'a>, TalkError> {
+    let value = required_local_streaming_wire_string(value, "session_id", message_type)?;
+    validate_local_streaming_session_id_ref(value.as_str()).map_err(|error| {
         TalkError::Provider(format!(
             "invalid local streaming ASR {message_type} session_id: {error}"
         ))
-    })
+    })?;
+    Ok(value)
 }
 
 fn required_local_streaming_string(
-    value: Option<String>,
+    value: Option<LocalStreamingAsrJsonString<'_>>,
     field: &str,
     message_type: &str,
 ) -> Result<String, TalkError> {
+    required_local_streaming_wire_string(value, field, message_type)
+        .map(LocalStreamingAsrJsonString::into_owned)
+}
+
+fn required_local_streaming_wire_string<'a>(
+    value: Option<LocalStreamingAsrJsonString<'a>>,
+    field: &str,
+    message_type: &str,
+) -> Result<LocalStreamingAsrJsonString<'a>, TalkError> {
     let Some(value) = value else {
         return Err(TalkError::Provider(format!(
             "local streaming ASR {message_type} message missing {field}"
         )));
     };
-    if value.trim().is_empty() {
+    if value.as_str().trim().is_empty() {
         return Err(TalkError::Provider(format!(
             "local streaming ASR {message_type} message {field} must not be blank"
         )));
     }
-    if value.trim() != value {
+    if value.as_str().trim() != value.as_str() {
         return Err(TalkError::Provider(format!(
             "local streaming ASR {message_type} message {field} must not have leading or trailing whitespace"
         )));
@@ -719,20 +1034,91 @@ pub fn parse_streaming_asr_json_line(line: &str) -> Result<StreamingAsrEvent, Ta
 pub fn final_transcript_from_streaming_asr_events(
     events: &[StreamingAsrEvent],
 ) -> Result<String, TalkError> {
-    events
-        .iter()
-        .rev()
-        .find(|event| event.is_final())
-        .or_else(|| events.last())
-        .map(|event| event.text().to_string())
-        .ok_or_else(|| {
-            TalkError::Provider("external streaming ASR command produced no events".to_string())
-        })
+    let mut final_segments = Vec::<(&str, &str)>::new();
+    let mut final_segment_indices = HashMap::<&str, usize>::new();
+    for event in events.iter().filter(|event| event.is_final()) {
+        if let Some(index) = final_segment_indices.get(event.segment_id()).copied() {
+            final_segments[index].1 = event.text();
+        } else {
+            final_segment_indices.insert(event.segment_id(), final_segments.len());
+            final_segments.push((event.segment_id(), event.text()));
+        }
+    }
+
+    if !final_segments.is_empty() {
+        let mut transcript = String::new();
+        for (_, text) in final_segments {
+            append_streaming_asr_transcript_segment(&mut transcript, text);
+        }
+        return Ok(transcript);
+    }
+
+    // A timeout can leave several open segments without a final event. Keep
+    // the latest revision of every segment in stream order rather than losing
+    // all but the last segment.
+    let mut partial_segments = Vec::<(&str, &str)>::new();
+    let mut partial_segment_indices = HashMap::<&str, usize>::new();
+    for event in events {
+        if let Some(index) = partial_segment_indices.get(event.segment_id()).copied() {
+            partial_segments[index].1 = event.text();
+        } else {
+            partial_segment_indices.insert(event.segment_id(), partial_segments.len());
+            partial_segments.push((event.segment_id(), event.text()));
+        }
+    }
+
+    if partial_segments.is_empty() {
+        return Err(TalkError::Provider(
+            "external streaming ASR command produced no events".to_string(),
+        ));
+    }
+    let mut transcript = String::new();
+    for (_, text) in partial_segments {
+        append_streaming_asr_transcript_segment(&mut transcript, text);
+    }
+    if transcript.is_empty() {
+        return Err(TalkError::Provider(
+            "external streaming ASR command produced only blank events".to_string(),
+        ));
+    }
+    Ok(transcript)
 }
+
+fn append_streaming_asr_transcript_segment(transcript: &mut String, segment: &str) {
+    let segment = segment.trim();
+    if segment.is_empty() {
+        return;
+    }
+    let needs_space = transcript
+        .chars()
+        .next_back()
+        .zip(segment.chars().next())
+        .is_some_and(|(left, right)| {
+            left.is_ascii() && !left.is_ascii_whitespace() && right.is_ascii_alphanumeric()
+        });
+    if needs_space {
+        transcript.push(' ');
+    }
+    transcript.push_str(segment);
+}
+
+pub const DEFAULT_EXTERNAL_STREAMING_ASR_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn run_external_streaming_asr_command(
     command_line: &str,
     audio_path: &Path,
+) -> Result<Vec<StreamingAsrEvent>, TalkError> {
+    run_external_streaming_asr_command_with_timeout(
+        command_line,
+        audio_path,
+        DEFAULT_EXTERNAL_STREAMING_ASR_TIMEOUT,
+    )
+}
+
+pub fn run_external_streaming_asr_command_with_timeout(
+    command_line: &str,
+    audio_path: &Path,
+    timeout: Duration,
 ) -> Result<Vec<StreamingAsrEvent>, TalkError> {
     if command_line.trim().is_empty() {
         return Err(TalkError::InvalidConfig(
@@ -751,22 +1137,70 @@ pub fn run_external_streaming_asr_command(
     let mut command = shell_command(&rendered_command);
     command
         .env("TALK_LOCAL_ASR_AUDIO_FILE", audio_path)
-        .env("TALK_LOCAL_ASR_OUTPUT", "jsonl");
-    let output = command.output().map_err(|error| {
+        .env("TALK_LOCAL_ASR_OUTPUT", "jsonl")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
         TalkError::Provider(format!(
             "failed to run external streaming ASR command: {error}"
         ))
     })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_thread = stdout.map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+    let stderr_thread = stderr.map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    });
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(TalkError::Provider(format!(
+                        "external streaming ASR command timed out after {}ms",
+                        timeout.as_millis()
+                    )));
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => {
+                return Err(TalkError::Provider(format!(
+                    "failed to wait for external streaming ASR command: {error}"
+                )));
+            }
+        }
+    };
+
+    let stdout = stdout_thread
+        .and_then(|thread| thread.join().ok())
+        .unwrap_or_default();
+    let stderr = stderr_thread
+        .and_then(|thread| thread.join().ok())
+        .unwrap_or_default();
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
         return Err(TalkError::Provider(format!(
             "external streaming ASR command exited with {}: {}",
-            output.status,
+            status,
             stderr.trim()
         )));
     }
 
-    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+    let stdout = String::from_utf8(stdout).map_err(|error| {
         TalkError::Provider(format!(
             "external streaming ASR stdout must be UTF-8 JSON lines: {error}"
         ))
@@ -809,4 +1243,294 @@ fn shell_command(command_line: &str) -> Command {
     let mut command = Command::new("sh");
     command.arg("-c").arg(command_line);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        local_streaming_server_message_to_asr_event,
+        parse_local_streaming_asr_binary_server_message, parse_local_streaming_asr_server_event,
+        parse_local_streaming_asr_server_message, serialize_local_streaming_asr_audio_message,
+        serialize_local_streaming_asr_client_message, LocalStreamingAsrClientMessage,
+        LocalStreamingAsrJsonString, LocalStreamingAsrServerJsonMessage,
+        LocalStreamingAsrServerMessage, StreamingAsrEvent,
+    };
+    use std::borrow::Cow;
+
+    #[test]
+    fn streaming_audio_serializer_reuses_base64_capacity_and_matches_owned_message_json() {
+        let pcm_bytes = vec![0x5a; 2_560];
+        let mut base64_scratch = String::new();
+
+        let first = serialize_local_streaming_asr_audio_message(
+            "session-1",
+            7,
+            &pcm_bytes,
+            &mut base64_scratch,
+        )
+        .expect("serialize first borrowed audio message");
+        let expected_first = serialize_local_streaming_asr_client_message(
+            &LocalStreamingAsrClientMessage::audio("session-1", 7, &pcm_bytes)
+                .expect("build first owned audio message"),
+        )
+        .expect("serialize first owned audio message");
+        let scratch_pointer = base64_scratch.as_ptr();
+        let scratch_capacity = base64_scratch.capacity();
+
+        assert_eq!(first, expected_first);
+
+        let second = serialize_local_streaming_asr_audio_message(
+            "session-1",
+            8,
+            &pcm_bytes,
+            &mut base64_scratch,
+        )
+        .expect("serialize second borrowed audio message");
+        let expected_second = serialize_local_streaming_asr_client_message(
+            &LocalStreamingAsrClientMessage::audio("session-1", 8, &pcm_bytes)
+                .expect("build second owned audio message"),
+        )
+        .expect("serialize second owned audio message");
+
+        assert_eq!(base64_scratch.as_ptr(), scratch_pointer);
+        assert_eq!(base64_scratch.capacity(), scratch_capacity);
+        assert_eq!(second, expected_second);
+    }
+
+    #[test]
+    fn streaming_audio_serializer_preserves_session_and_pcm_validation() {
+        let mut base64_scratch = String::new();
+
+        let session_error =
+            serialize_local_streaming_asr_audio_message(" ", 0, &[0, 1], &mut base64_scratch)
+                .expect_err("blank session id must fail");
+        let pcm_error =
+            serialize_local_streaming_asr_audio_message("session-1", 0, &[], &mut base64_scratch)
+                .expect_err("empty PCM must fail");
+
+        assert!(
+            session_error
+                .to_string()
+                .contains("session_id must not be blank"),
+            "error={session_error}"
+        );
+        assert!(
+            pcm_error
+                .to_string()
+                .contains("PCM chunk must not be empty"),
+            "error={pcm_error}"
+        );
+    }
+
+    #[test]
+    fn streaming_server_json_borrows_unescaped_wire_fields() {
+        let item: LocalStreamingAsrServerJsonMessage<'_> = serde_json::from_str(
+            r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"你好"}"#,
+        )
+        .expect("deserialize borrowable server message");
+
+        assert_borrowed_json_string(&item.kind, "partial");
+        assert_borrowed_json_string(
+            item.session_id.as_ref().expect("borrowed session id"),
+            "session-1",
+        );
+        assert_borrowed_json_string(
+            item.segment_id.as_ref().expect("borrowed segment id"),
+            "seg-1",
+        );
+        assert_borrowed_json_string(item.text.as_ref().expect("borrowed text"), "你好");
+
+        let ready: LocalStreamingAsrServerJsonMessage<'_> = serde_json::from_str(
+            r#"{"type":"ready","engine":"sherpa-onnx","model":"zipformer","sample_rate_hz":16000,"channels":1}"#,
+        )
+        .expect("deserialize borrowable ready message");
+        assert_borrowed_json_string(
+            ready.engine.as_ref().expect("borrowed engine"),
+            "sherpa-onnx",
+        );
+        assert_borrowed_json_string(ready.model.as_ref().expect("borrowed model"), "zipformer");
+
+        let error: LocalStreamingAsrServerJsonMessage<'_> = serde_json::from_str(
+            r#"{"type":"error","session_id":"session-1","message":"model is not loaded"}"#,
+        )
+        .expect("deserialize borrowable error message");
+        assert_borrowed_json_string(
+            error
+                .session_id
+                .as_ref()
+                .expect("borrowed error session id"),
+            "session-1",
+        );
+        assert_borrowed_json_string(
+            error.message.as_ref().expect("borrowed error message"),
+            "model is not loaded",
+        );
+    }
+
+    #[test]
+    fn streaming_server_json_preserves_escaped_string_compatibility() {
+        let raw = r#"{"type":"par\u0074ial","session_id":"session-\u0031","segment_id":"seg-\u0031","text":"line\nquoted \"text\""}"#;
+        let item: LocalStreamingAsrServerJsonMessage<'_> =
+            serde_json::from_str(raw).expect("deserialize escaped server message");
+        assert!(matches!(
+            &item.kind.0,
+            Cow::Owned(value) if value == "partial"
+        ));
+
+        assert_eq!(
+            parse_local_streaming_asr_server_message(raw).expect("parse escaped server message"),
+            LocalStreamingAsrServerMessage::Partial {
+                session_id: "session-1".to_string(),
+                segment_id: "seg-1".to_string(),
+                text: "line\nquoted \"text\"".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_local_streaming_asr_server_event(raw)
+                .expect("parse escaped server event message"),
+            Some(StreamingAsrEvent::partial("seg-1", "line\nquoted \"text\""))
+        );
+    }
+
+    #[test]
+    fn streaming_borrowed_event_parser_matches_owned_message_conversion() {
+        for raw in [
+            r#"{"type":"ready","engine":"sherpa-onnx","model":"zipformer","sample_rate_hz":16000,"channels":1}"#,
+            r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"你好"}"#,
+            r#"{"type":"final","session_id":"session-1","segment_id":"seg-1","text":"你好。"}"#,
+        ] {
+            let expected = local_streaming_server_message_to_asr_event(
+                parse_local_streaming_asr_server_message(raw).expect("parse owned server message"),
+            )
+            .expect("convert owned server message");
+
+            assert_eq!(
+                parse_local_streaming_asr_server_event(raw)
+                    .expect("parse borrowed server event message"),
+                expected
+            );
+        }
+
+        let raw = r#"{"type":"error","session_id":"session-1","message":"model is not loaded"}"#;
+        let owned_error = local_streaming_server_message_to_asr_event(
+            parse_local_streaming_asr_server_message(raw).expect("parse owned error message"),
+        )
+        .expect_err("owned error message must fail");
+        let borrowed_error = parse_local_streaming_asr_server_event(raw)
+            .expect_err("borrowed error message must fail");
+        assert_eq!(borrowed_error.to_string(), owned_error.to_string());
+    }
+
+    #[test]
+    fn streaming_borrowed_event_parser_preserves_owned_validation_errors() {
+        for raw in [
+            r#"{"type":"ready","model":"zipformer","sample_rate_hz":16000,"channels":1}"#,
+            r#"{"type":"ready","engine":" ","model":"zipformer","sample_rate_hz":16000,"channels":1}"#,
+            r#"{"type":"ready","engine":"sherpa-onnx","model":" zipformer","sample_rate_hz":16000,"channels":1}"#,
+            r#"{"type":"ready","engine":"sherpa-onnx","model":"zipformer","sample_rate_hz":0,"channels":1}"#,
+            r#"{"type":"ready","engine":"sherpa-onnx","model":"zipformer","sample_rate_hz":16000,"channels":0}"#,
+            r#"{"type":"partial","segment_id":"seg-1","text":"你好"}"#,
+            r#"{"type":"partial","session_id":" ","segment_id":"seg-1","text":"你好"}"#,
+            r#"{"type":"partial","session_id":"session-1","segment_id":" seg-1","text":"你好"}"#,
+            r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":" "}"#,
+            r#"{"type":"final","session_id":"session-1","text":"你好。"}"#,
+            r#"{"type":"final","session_id":"session-1","segment_id":"seg-1","text":"你好。 "}"#,
+            r#"{"type":"error","message":"model is not loaded"}"#,
+            r#"{"type":"error","session_id":"session-1"}"#,
+            r#"{"type":"error","session_id":"session-1","message":" model is not loaded"}"#,
+        ] {
+            let owned_error = parse_local_streaming_asr_server_message(raw)
+                .and_then(local_streaming_server_message_to_asr_event)
+                .expect_err("owned invalid server event must fail");
+            let borrowed_error = parse_local_streaming_asr_server_event(raw)
+                .expect_err("borrowed invalid server event must fail");
+
+            assert_eq!(
+                borrowed_error.to_string(),
+                owned_error.to_string(),
+                "raw={raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_server_json_preserves_unknown_message_type_error() {
+        let error = parse_local_streaming_asr_server_message(
+            r#"{"type":"mystery","session_id":"session-1"}"#,
+        )
+        .expect_err("unknown server message type must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "provider error: unknown local streaming ASR server message type: mystery"
+        );
+    }
+
+    #[test]
+    fn streaming_binary_server_json_matches_text_for_partial_and_final_messages() {
+        for raw in [
+            r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"你好"}"#,
+            r#"{"type":"final","session_id":"session-1","segment_id":"seg-1","text":"你好，世界。"}"#,
+        ] {
+            assert_eq!(
+                parse_local_streaming_asr_binary_server_message(raw.as_bytes())
+                    .expect("parse binary server JSON"),
+                parse_local_streaming_asr_server_message(raw).expect("parse text server JSON")
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_binary_server_json_preserves_invalid_utf8_error_contract() {
+        let error = parse_local_streaming_asr_binary_server_message(&[0xff, 0xfe])
+            .expect_err("invalid UTF-8 binary server message must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("local streaming ASR binary message must be UTF-8 JSON:"),
+            "error={error}"
+        );
+    }
+
+    #[test]
+    fn streaming_binary_server_json_preserves_text_json_error_contract() {
+        let binary_error = parse_local_streaming_asr_binary_server_message(b"{")
+            .expect_err("invalid binary JSON must fail");
+        let text_error =
+            parse_local_streaming_asr_server_message("{").expect_err("invalid text JSON must fail");
+
+        assert_eq!(binary_error.to_string(), text_error.to_string());
+        assert!(
+            binary_error
+                .to_string()
+                .contains("invalid local streaming ASR server json message:"),
+            "error={binary_error}"
+        );
+    }
+
+    #[test]
+    fn streaming_binary_receive_path_borrows_payload_bytes() {
+        let source = include_str!("streaming_asr.rs");
+        let start = source
+            .find("                Message::Binary(bytes) =>")
+            .expect("binary receive branch");
+        let end = source[start..]
+            .find("                Message::Ping(payload) =>")
+            .map(|offset| start + offset)
+            .expect("message branch following binary receive");
+        let binary_branch = &source[start..end];
+
+        assert!(binary_branch.contains("local_streaming_asr_binary_server_text(bytes.as_ref())?"));
+        assert!(binary_branch.contains("return parser("));
+        assert!(!binary_branch.contains(".to_vec()"));
+        assert!(!binary_branch.contains("String::from_utf8("));
+    }
+
+    fn assert_borrowed_json_string(value: &LocalStreamingAsrJsonString<'_>, expected: &str) {
+        assert!(matches!(
+            &value.0,
+            Cow::Borrowed(actual) if *actual == expected
+        ));
+    }
 }

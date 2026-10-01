@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use talk_client::FrontContext;
 use talk_core::{
-    ClipboardBackendMode, OutputMode, ProviderKind, SessionStatus, TalkConfig, VoiceEvent,
-    VoiceMode, VoiceSession,
+    ClipboardBackendMode, OutputMode, ProviderKind, SessionStatus, TalkConfig, TalkError,
+    VoiceEvent, VoiceMode, VoiceSession,
 };
 use talk_insert::{InsertMethod, InsertOutcome};
 use talk_runtime::{
@@ -17,6 +17,7 @@ use talk_runtime::{
     provider_text_processing_credentials_available, run_voice_session,
     run_voice_session_from_audio_artifact_with_insert_hook,
     run_voice_session_from_audio_artifact_with_insert_hooks,
+    run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks,
     run_voice_session_from_local_transcript_with_insert_hooks,
     run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
     runtime_voice_text_result, update_session_log_after_text_processing, validate_faithful_output,
@@ -297,6 +298,38 @@ fn local_transcript_completes_without_openai_credentials() {
     assert_eq!(report.session.output_text(), Some("本地识别已经成功。"));
 }
 
+#[test]
+fn local_transcript_without_openai_credentials_still_applies_faithful_local_canonicalization() {
+    let mut config =
+        config_with_mock_provider("local-transcript-without-provider-key-canonicalized");
+    config.provider.kind = ProviderKind::OpenAiCompatible;
+    config.provider.mock_transcript = None;
+    config.provider.api_key = None;
+    config.provider.api_key_env = Some("TALK_TEST_MISSING_PROVIDER_KEY".to_string());
+
+    let mut session = VoiceSession::new("local-transcript-without-provider-key-canonicalized");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_local_transcript_with_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        "打开 talk 的 rock foster a s r 测".to_string(),
+        Some(VoiceMode::Dictate),
+        |_| RuntimeInsertDirective::UseConfiguredOutput,
+        || {},
+        |_| {},
+    )
+    .expect("local transcript should still receive faithful local canonicalization");
+
+    assert_eq!(report.session.status(), SessionStatus::Completed);
+    assert_eq!(
+        report.session.output_text(),
+        Some("打开 Talk 的 local first ASR 测试")
+    );
+}
+
 #[tokio::test]
 async fn runtime_runs_mock_session_and_reports_phase_sequence() {
     let config = config_with_mock_provider("phase-sequence");
@@ -436,6 +469,58 @@ async fn smart_long_form_session_log_records_route_and_preservation_diagnostics(
     assert_eq!(processing["retention_ratio"], 1.0);
     assert_eq!(processing["normalized_change_ratio"], 0.0);
     assert!(processing.get("preservation_fallback_reason").is_none());
+}
+
+#[tokio::test]
+async fn audio_artifact_route_evidence_is_preserved_for_smart_processing_log() {
+    let config = config_with_mock_provider("audio-artifact-route-evidence");
+    let audio_path = runtime_test_root("audio-artifact-route-evidence")
+        .join("audio")
+        .join("captured.wav");
+    std::fs::create_dir_all(audio_path.parent().expect("audio dir")).expect("create audio dir");
+    std::fs::write(&audio_path, b"fake wav").expect("write fake wav");
+    let transcript =
+        "这是一次较长的会议记录。主持人先介绍项目背景，随后继续说明风险、时间表和后续安排。"
+            .repeat(4);
+
+    let mut session = VoiceSession::new("audio-artifact-route-evidence-session");
+    session.apply(VoiceEvent::TriggerStart).unwrap();
+    session.apply(VoiceEvent::TriggerStop).unwrap();
+
+    let report = run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        audio_path,
+        Some(transcript),
+        Some(VoiceMode::Smart),
+        SmartRouteEvidence {
+            committed_streaming_segment_count: 54,
+        },
+        FrontContext::default(),
+        |_| RuntimeInsertDirective::DryRunOnly,
+        || {},
+        |_| {},
+    )
+    .await
+    .expect("audio-artifact smart session should complete");
+
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read audio-artifact processing log"),
+    )
+    .expect("parse audio-artifact processing log");
+    let processing = log
+        .get("processing")
+        .expect("session log should include processing diagnostics");
+
+    assert_eq!(processing["requested_mode"], "smart");
+    assert_eq!(processing["resolved_mode"], "transcribe");
+    assert_eq!(processing["route_reason"], "long_character_count");
+    assert_eq!(processing["streaming_segment_count"], 54);
+    assert_eq!(
+        processing["faithful_input_char_count"],
+        processing["faithful_output_char_count"]
+    );
 }
 
 #[tokio::test]
@@ -862,7 +947,57 @@ fn complete_failed_session_persists_error_for_pre_recorded_runs() {
         report.log_path.exists(),
         "pre-recorded failure should write log"
     );
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read pre-recorded failure log"),
+    )
+    .expect("parse pre-recorded failure log");
+    assert_eq!(log["error"], "desktop recording failed");
+    assert!(log["processing"].get("failure_kind").is_none());
+    assert_eq!(
+        log["processing"]["failure_chain"],
+        serde_json::json!(["desktop recording failed"])
+    );
     assert_eq!(phases, vec![RuntimePhase::Failed]);
+}
+
+#[test]
+fn complete_failed_session_persists_typed_failure_diagnostics() {
+    let config = config_with_mock_provider("typed-pre-recorded-failure");
+    let mut session = VoiceSession::new("typed-pre-recorded-failure");
+    session
+        .apply(VoiceEvent::TriggerStart)
+        .expect("pre-recorded session should start");
+    session
+        .apply(VoiceEvent::TriggerStop)
+        .expect("pre-recorded session should stop into transcribing");
+    let error = anyhow::Error::new(TalkError::Audio("native callback failed".to_string()))
+        .context("desktop recording failed");
+
+    let report = complete_failed_session(
+        &config,
+        session,
+        vec!["trigger_start", "trigger_stop"],
+        error,
+        false,
+        |_| {},
+    )
+    .expect("typed pre-recorded failure should persist report");
+
+    assert_eq!(report.session.status(), SessionStatus::Failed);
+    assert_eq!(report.session.error(), Some("desktop recording failed"));
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&report.log_path).expect("read typed failure log"),
+    )
+    .expect("parse typed failure log");
+    assert_eq!(log["error"], "desktop recording failed");
+    assert_eq!(log["processing"]["failure_kind"], "audio");
+    assert_eq!(
+        log["processing"]["failure_chain"],
+        serde_json::json!([
+            "desktop recording failed",
+            "audio error: native callback failed"
+        ])
+    );
 }
 
 #[test]

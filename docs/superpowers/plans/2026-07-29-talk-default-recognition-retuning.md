@@ -465,6 +465,21 @@ Run:
 ```
 
 Expected: recorded samples, evidence status, and selected default model are produced from the expanded multilingual prompt set.
+If reusing an existing corpus with `-SkipRecording`, preflight must fail unless
+the current prompt manifest and the staged `corpus.json` still cover the same
+sample-id set.
+When the prompt set expands, refresh the staged corpus with:
+
+```powershell
+.\scripts\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 `
+  -PromptManifest .\examples\asr-real-mic-prompts.json `
+  -CorpusRoot .\.runtime\asr-bench\real-mic-corpus `
+  -RecordOnly `
+  -ResumeExistingCorpus
+```
+
+Expected: the recorder reuses already aligned sample IDs and records only the
+newly required prompt samples before rewriting `corpus.json`.
 
 - [ ] **Step 5: Publish the improved Talk product release**
 

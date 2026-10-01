@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$CorpusManifest,
-    [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
     [string]$ModelRoot,
     [string]$OutputRoot,
     [string]$AsrBenchExe,
@@ -21,7 +21,7 @@ param(
     [string]$EvidenceStatusJson,
     [string]$ConfigPath,
     [int]$MinSamples = 3,
-    [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
     [switch]$AllowMissingCloudBaseline,
     [switch]$AllowSyntheticSampleIds,
     [switch]$SkipApply,
@@ -62,6 +62,9 @@ $workflowEntryNoBackup = [bool]$NoBackup
 $workflowEntryPlanOnly = [bool]$PlanOnly
 $workflowEntryPassThru = [bool]$PassThru
 
+$script:TalkAsrDefaultWorkflowDefaultCloudOpenAiCompatibleEndpoint = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+$script:TalkAsrDefaultWorkflowDefaultCloudOpenAiCompatibleModel = 'qwen3-asr-flash'
+
 foreach ($dependencyName in @(
     'Invoke-TalkAsrCorpusBenchmark.ps1',
     'Select-TalkDefaultAsrModel.ps1',
@@ -97,6 +100,175 @@ function Resolve-TalkAsrDefaultWorkflowOptionalPath {
     }
 
     Resolve-TalkAsrDefaultWorkflowPath -Path $Path
+}
+
+function Get-TalkAsrDefaultWorkflowHomeDirectory {
+    $userProfile = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+        return $userProfile
+    }
+
+    $home = [Environment]::GetEnvironmentVariable('HOME', 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($home)) {
+        return $home
+    }
+
+    $null
+}
+
+function Test-TalkAsrDefaultWorkflowDashScopeEndpoint {
+    param([string]$Endpoint)
+
+    if ([string]::IsNullOrWhiteSpace($Endpoint)) {
+        return $false
+    }
+
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Endpoint, [System.UriKind]::Absolute, [ref]$uri)) {
+        return $false
+    }
+
+    ($uri.Scheme -eq 'https') -and ($uri.Host -eq 'dashscope.aliyuncs.com')
+}
+
+function Resolve-TalkAsrDefaultWorkflowLegacyDashScopeApiKeyJsonPath {
+    param([string]$CloudOpenAiCompatibleEndpoint)
+
+    if (-not (Test-TalkAsrDefaultWorkflowDashScopeEndpoint -Endpoint $CloudOpenAiCompatibleEndpoint)) {
+        return $null
+    }
+
+    $homeDirectory = Get-TalkAsrDefaultWorkflowHomeDirectory
+    if ([string]::IsNullOrWhiteSpace($homeDirectory)) {
+        return $null
+    }
+
+    $credentialPath = Join-Path $homeDirectory '.neuro\qwen-platform\qwen-dashscope-openai\api-key\manual-live.json'
+    if (Test-Path -LiteralPath $credentialPath -PathType Leaf) {
+        return [System.IO.Path]::GetFullPath($credentialPath)
+    }
+
+    $null
+}
+
+function Read-TalkAsrDefaultWorkflowApiKeyFromJsonPath {
+    param([string]$ApiKeyJsonPath)
+
+    if ([string]::IsNullOrWhiteSpace($ApiKeyJsonPath)) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $ApiKeyJsonPath -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $json = Get-Content -LiteralPath $ApiKeyJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+
+    foreach ($fieldName in @('apiKey', 'api_key', 'key')) {
+        $property = $json.PSObject.Properties[$fieldName]
+        if ($null -eq $property) {
+            continue
+        }
+        $value = [string]$property.Value
+        if (-not [string]::IsNullOrWhiteSpace($value) -and $value.Trim() -eq $value) {
+            return $value
+        }
+    }
+
+    $null
+}
+
+function Get-TalkAsrDefaultWorkflowCloudApiKeySource {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariableName,
+        [string]$CloudOpenAiCompatibleEndpoint
+    )
+
+    $environmentValue = [Environment]::GetEnvironmentVariable($EnvironmentVariableName, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($environmentValue)) {
+        return [pscustomobject]@{
+            Available = $true
+            Source = 'environment'
+            Value = $environmentValue
+        }
+    }
+
+    $legacyJsonPath = Resolve-TalkAsrDefaultWorkflowLegacyDashScopeApiKeyJsonPath `
+        -CloudOpenAiCompatibleEndpoint $CloudOpenAiCompatibleEndpoint
+    $legacyJsonValue = Read-TalkAsrDefaultWorkflowApiKeyFromJsonPath -ApiKeyJsonPath $legacyJsonPath
+    if (-not [string]::IsNullOrWhiteSpace($legacyJsonValue)) {
+        return [pscustomobject]@{
+            Available = $true
+            Source = 'legacy_json'
+            Value = $legacyJsonValue
+        }
+    }
+
+    [pscustomobject]@{
+        Available = $false
+        Source = 'missing'
+        Value = $null
+    }
+}
+
+function Resolve-TalkAsrDefaultWorkflowCloudBaseline {
+    param(
+        [string]$CloudOpenAiCompatibleEndpoint,
+        [string]$CloudOpenAiCompatibleModel,
+        [Parameter(Mandatory = $true)][string]$CloudOpenAiCompatibleApiKeyEnv
+    )
+
+    $effectiveEndpoint = $CloudOpenAiCompatibleEndpoint
+    $effectiveModel = $CloudOpenAiCompatibleModel
+    $apiKeyProbeEndpoint = if ([string]::IsNullOrWhiteSpace($effectiveEndpoint)) {
+        $script:TalkAsrDefaultWorkflowDefaultCloudOpenAiCompatibleEndpoint
+    } else {
+        $effectiveEndpoint
+    }
+    $apiKeySource = Get-TalkAsrDefaultWorkflowCloudApiKeySource `
+        -EnvironmentVariableName $CloudOpenAiCompatibleApiKeyEnv `
+        -CloudOpenAiCompatibleEndpoint $apiKeyProbeEndpoint
+
+    if ([string]::IsNullOrWhiteSpace($effectiveEndpoint) -and [string]::IsNullOrWhiteSpace($effectiveModel)) {
+        if ($apiKeySource.Available) {
+            $effectiveEndpoint = $script:TalkAsrDefaultWorkflowDefaultCloudOpenAiCompatibleEndpoint
+            $effectiveModel = $script:TalkAsrDefaultWorkflowDefaultCloudOpenAiCompatibleModel
+        }
+    }
+
+    [pscustomobject]@{
+        Endpoint = $effectiveEndpoint
+        Model = $effectiveModel
+        ApiKeySource = $apiKeySource
+    }
+}
+
+function Invoke-TalkAsrDefaultWorkflowWithCloudApiKeySource {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariableName,
+        [Parameter(Mandatory = $true)]$CloudApiKeySource,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+
+    $originalValue = [Environment]::GetEnvironmentVariable($EnvironmentVariableName, 'Process')
+    $injected = $false
+    if ([string]::IsNullOrWhiteSpace($originalValue) -and $CloudApiKeySource.Source -eq 'legacy_json') {
+        [Environment]::SetEnvironmentVariable($EnvironmentVariableName, [string]$CloudApiKeySource.Value, 'Process')
+        $injected = $true
+    }
+
+    try {
+        & $ScriptBlock
+    }
+    finally {
+        if ($injected) {
+            [Environment]::SetEnvironmentVariable($EnvironmentVariableName, $originalValue, 'Process')
+        }
+    }
 }
 
 function Get-TalkAsrDefaultWorkflowOptionalProperty {
@@ -235,7 +407,7 @@ function New-TalkAsrDefaultModelWorkflowPlan {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,
@@ -256,24 +428,33 @@ function New-TalkAsrDefaultModelWorkflowPlan {
         [switch]$SkipApply
     )
 
-    $benchmarkPlan = Invoke-TalkAsrCorpusBenchmark `
-        -CorpusManifest $CorpusManifest `
-        -ModelId $ModelId `
-        -ModelRoot $ModelRoot `
-        -OutputRoot $OutputRoot `
-        -AsrBenchExe $AsrBenchExe `
-        -LocalAsrDaemonExe $LocalAsrDaemonExe `
+    $cloudBaseline = Resolve-TalkAsrDefaultWorkflowCloudBaseline `
         -CloudOpenAiCompatibleEndpoint $CloudOpenAiCompatibleEndpoint `
         -CloudOpenAiCompatibleModel $CloudOpenAiCompatibleModel `
-        -CloudOpenAiCompatibleTransport $CloudOpenAiCompatibleTransport `
-        -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
-        -Bind $Bind `
-        -ChunkMs $ChunkMs `
-        -ConnectTimeoutMs $ConnectTimeoutMs `
-        -ReadyTimeoutMs $ReadyTimeoutMs `
-        -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
-        -FinalTimeoutMs $FinalTimeoutMs `
-        -PlanOnly
+        -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv
+    $benchmarkPlan = Invoke-TalkAsrDefaultWorkflowWithCloudApiKeySource `
+        -EnvironmentVariableName $CloudOpenAiCompatibleApiKeyEnv `
+        -CloudApiKeySource $cloudBaseline.ApiKeySource `
+        -ScriptBlock {
+            Invoke-TalkAsrCorpusBenchmark `
+                -CorpusManifest $CorpusManifest `
+                -ModelId $ModelId `
+                -ModelRoot $ModelRoot `
+                -OutputRoot $OutputRoot `
+                -AsrBenchExe $AsrBenchExe `
+                -LocalAsrDaemonExe $LocalAsrDaemonExe `
+                -CloudOpenAiCompatibleEndpoint $cloudBaseline.Endpoint `
+                -CloudOpenAiCompatibleModel $cloudBaseline.Model `
+                -CloudOpenAiCompatibleTransport $CloudOpenAiCompatibleTransport `
+                -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
+                -Bind $Bind `
+                -ChunkMs $ChunkMs `
+                -ConnectTimeoutMs $ConnectTimeoutMs `
+                -ReadyTimeoutMs $ReadyTimeoutMs `
+                -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
+                -FinalTimeoutMs $FinalTimeoutMs `
+                -PlanOnly
+        }
 
     $comparisonJson = Resolve-TalkAsrDefaultWorkflowComparisonJson -BenchmarkPlanOrResult $benchmarkPlan
     $selectionJsonPath = Resolve-TalkAsrDefaultWorkflowSelectionJson `
@@ -303,7 +484,7 @@ function Invoke-TalkAsrDefaultModelWorkflow {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,
@@ -323,7 +504,7 @@ function Invoke-TalkAsrDefaultModelWorkflow {
         [string]$EvidenceStatusJson,
         [string]$ConfigPath,
         [int]$MinSamples = 3,
-        [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
         [switch]$AllowMissingCloudBaseline,
         [switch]$AllowSyntheticSampleIds,
         [switch]$SkipApply,
@@ -356,25 +537,34 @@ function Invoke-TalkAsrDefaultModelWorkflow {
             -SkipApply:$SkipApply
     }
 
-    $benchmarkResult = Invoke-TalkAsrCorpusBenchmark `
-        -CorpusManifest $CorpusManifest `
-        -ModelId $ModelId `
-        -ModelRoot $ModelRoot `
-        -OutputRoot $OutputRoot `
-        -AsrBenchExe $AsrBenchExe `
-        -LocalAsrDaemonExe $LocalAsrDaemonExe `
+    $cloudBaseline = Resolve-TalkAsrDefaultWorkflowCloudBaseline `
         -CloudOpenAiCompatibleEndpoint $CloudOpenAiCompatibleEndpoint `
         -CloudOpenAiCompatibleModel $CloudOpenAiCompatibleModel `
-        -CloudOpenAiCompatibleTransport $CloudOpenAiCompatibleTransport `
-        -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
-        -Bind $Bind `
-        -ChunkMs $ChunkMs `
-        -ConnectTimeoutMs $ConnectTimeoutMs `
-        -ReadyTimeoutMs $ReadyTimeoutMs `
-        -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
-        -FinalTimeoutMs $FinalTimeoutMs `
-        -StartupTimeoutSeconds $StartupTimeoutSeconds `
-        -PassThru
+        -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv
+    $benchmarkResult = Invoke-TalkAsrDefaultWorkflowWithCloudApiKeySource `
+        -EnvironmentVariableName $CloudOpenAiCompatibleApiKeyEnv `
+        -CloudApiKeySource $cloudBaseline.ApiKeySource `
+        -ScriptBlock {
+            Invoke-TalkAsrCorpusBenchmark `
+                -CorpusManifest $CorpusManifest `
+                -ModelId $ModelId `
+                -ModelRoot $ModelRoot `
+                -OutputRoot $OutputRoot `
+                -AsrBenchExe $AsrBenchExe `
+                -LocalAsrDaemonExe $LocalAsrDaemonExe `
+                -CloudOpenAiCompatibleEndpoint $cloudBaseline.Endpoint `
+                -CloudOpenAiCompatibleModel $cloudBaseline.Model `
+                -CloudOpenAiCompatibleTransport $CloudOpenAiCompatibleTransport `
+                -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
+                -Bind $Bind `
+                -ChunkMs $ChunkMs `
+                -ConnectTimeoutMs $ConnectTimeoutMs `
+                -ReadyTimeoutMs $ReadyTimeoutMs `
+                -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
+                -FinalTimeoutMs $FinalTimeoutMs `
+                -StartupTimeoutSeconds $StartupTimeoutSeconds `
+                -PassThru
+        }
 
     $comparisonJson = Resolve-TalkAsrDefaultWorkflowComparisonJson -BenchmarkPlanOrResult $benchmarkResult
     if ([string]::IsNullOrWhiteSpace($comparisonJson)) {
@@ -395,6 +585,10 @@ function Invoke-TalkAsrDefaultModelWorkflow {
         -AllowSyntheticSampleIds:$AllowSyntheticSampleIds `
         -StatusOnly
     Write-TalkAsrDefaultWorkflowJson -Path $evidenceStatusJsonPath -Value $evidenceStatus
+    if (-not [bool]$evidenceStatus.ready -and
+        (Test-Path -LiteralPath $selectionJsonPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $selectionJsonPath -Force
+    }
 
     $selection = Select-TalkDefaultAsrModel `
         -ComparisonJson $comparisonJson `

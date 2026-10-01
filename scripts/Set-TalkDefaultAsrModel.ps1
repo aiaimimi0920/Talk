@@ -148,6 +148,20 @@ function Convert-TalkDefaultModelNewLines {
     ($Text -replace "`r`n|`n|`r", $NewLine)
 }
 
+function Remove-TalkDefaultModelEvidenceMetadataCommentBlocks {
+    param([Parameter(Mandatory = $true)][string]$ConfigText)
+
+    $lineBreakPattern = '(?:\r\n|\n|\r)'
+    $metadataBlockPattern = '(?ms)^[ \t]*# Talk evidence-selected default local ASR model\.' +
+        $lineBreakPattern +
+        '^[ \t]*# selected_model_id = ".*?"' +
+        $lineBreakPattern +
+        '^[ \t]*# selection_json = ".*?"' +
+        $lineBreakPattern + '?'
+
+    [regex]::Replace($ConfigText, $metadataBlockPattern, '')
+}
+
 function Test-TalkDefaultModelSherpaInstall {
     [CmdletBinding()]
     param(
@@ -192,23 +206,24 @@ function Set-TalkDefaultModelLocalDaemonBlock {
         $normalizedSnippet
     ) -join $newLine
     $replacement = $replacement + $newLine
+    $sanitizedConfigText = Remove-TalkDefaultModelEvidenceMetadataCommentBlocks -ConfigText $ConfigText
 
     $activeBlockPattern = '(?ms)^[ \t]*\[speculative\.streaming_service\.local_daemon\][\s\S]*?(?=^[ \t]*\[[^\r\n]+\]|\z)'
-    if ([regex]::IsMatch($ConfigText, $activeBlockPattern)) {
+    if ([regex]::IsMatch($sanitizedConfigText, $activeBlockPattern)) {
         return [regex]::Replace(
-            $ConfigText,
+            $sanitizedConfigText,
             $activeBlockPattern,
             [System.Text.RegularExpressions.MatchEvaluator] { param($match) $replacement }
         )
     }
 
-    $separator = if ($ConfigText.EndsWith("`r`n") -or $ConfigText.EndsWith("`n")) {
+    $separator = if ($sanitizedConfigText.EndsWith("`r`n") -or $sanitizedConfigText.EndsWith("`n")) {
         $newLine
     } else {
         $newLine + $newLine
     }
 
-    $ConfigText.TrimEnd("`r", "`n") + $separator + $replacement
+    $sanitizedConfigText.TrimEnd("`r", "`n") + $separator + $replacement
 }
 
 function Write-TalkDefaultModelUtf8NoBomText {

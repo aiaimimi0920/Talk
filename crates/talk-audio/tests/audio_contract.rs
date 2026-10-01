@@ -124,7 +124,7 @@ fn write_captured_wav_downmixes_and_resamples_to_requested_pcm_wav() {
         ],
     };
 
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write converted captured wav");
 
     let info = read_wav_info(&artifact).expect("read wav info");
@@ -132,6 +132,37 @@ fn write_captured_wav_downmixes_and_resamples_to_requested_pcm_wav() {
     assert_eq!(info.channels, 1);
     assert_eq!(info.bits_per_sample, 16);
     assert_eq!(info.duration_samples, 2);
+}
+
+#[test]
+fn write_captured_wav_preserves_antiphase_multichannel_speech_energy() {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "talk-audio-antiphase-downmix-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let artifact = AudioArtifact::new(dir.join("captured.wav"), "audio/wav");
+    let source = CapturedAudioBuffer {
+        sample_rate_hz: 16_000,
+        channels: 2,
+        samples: vec![0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5],
+    };
+
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
+        .expect("write phase-safe captured wav");
+
+    let mut reader = hound::WavReader::open(&artifact.path).expect("open captured wav");
+    let peak = reader
+        .samples::<i16>()
+        .map(|sample| i32::from(sample.expect("read captured sample")).abs())
+        .max()
+        .unwrap_or_default();
+    assert!(
+        peak > i32::from(i16::MAX) / 2,
+        "anti-phase input must retain speech energy after mono downmix, peak={peak}"
+    );
 }
 
 #[test]
@@ -150,7 +181,7 @@ fn write_captured_wav_rejects_non_frame_aligned_source_samples() {
         samples: vec![0.25, 0.75, 0.10],
     };
 
-    let error = write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    let error = write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect_err("non-frame-aligned captured audio must fail");
 
     assert!(
@@ -181,7 +212,7 @@ fn write_captured_wav_normalizes_quiet_valid_capture() {
         samples: vec![0.3; 1_600],
     };
 
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write normalized captured wav");
 
     let summary = summarize_prepared_wav_signal(&artifact.path).expect("summarize prepared wav");
@@ -207,7 +238,7 @@ fn write_captured_wav_preserves_weak_capture_below_reject_threshold() {
         samples: vec![0.03; 1_600],
     };
 
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write weak captured wav");
 
     let summary = summarize_prepared_wav_signal(&artifact.path).expect("summarize prepared wav");
@@ -345,6 +376,11 @@ fn start_recording_silent_backend_reports_zero_live_level_before_finish() {
     );
     let waveform = recording.current_waveform(6).expect("silent live waveform");
     assert_eq!(waveform, vec![0.0; 6]);
+    let mut waveform_buffer = [1.0; 6];
+    recording
+        .current_waveform_into(&mut waveform_buffer)
+        .expect("silent live waveform into caller buffer");
+    assert_eq!(waveform_buffer, [0.0; 6]);
 }
 
 #[test]
@@ -382,6 +418,41 @@ fn recording_session_drains_raw_pcm_chunks_without_waiting_for_finish() {
         .drain_pcm_chunk(&mut cursor)
         .expect("second drain should succeed")
         .is_none());
+}
+
+#[test]
+fn cloned_streaming_pcm_source_drains_without_moving_the_recording_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "talk-audio-cloned-streaming-pcm-silent-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let recording = start_recording(&AudioCaptureRequest {
+        backend: AudioBackendMode::Silent,
+        temp_dir: dir,
+        session_id: "silent-cloned-streaming-pcm".to_string(),
+        input_device: None,
+        wav_settings: WavSettings::mono_16khz(),
+        max_recording_seconds: 60,
+        silent_samples: 320,
+    })
+    .expect("start silent recording");
+    let source = recording
+        .streaming_pcm_source()
+        .expect("create streaming PCM source");
+    let cloned_source = source.clone();
+    let mut cursor = RecordingPcmCursor::default();
+
+    let chunk = cloned_source
+        .drain_pcm_chunk(&mut cursor)
+        .expect("drain cloned streaming PCM source")
+        .expect("silent source should expose one PCM chunk");
+
+    assert_eq!(chunk.sequence, 0);
+    assert_eq!(chunk.bytes.len(), 320 * 2);
+    recording
+        .cancel()
+        .expect("recording remains independently owned");
 }
 
 #[test]

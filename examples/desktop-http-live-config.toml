@@ -8,8 +8,8 @@ mode = "toggle"
 toggle_shortcut = "RightAlt"
 
 [desktop.shortcuts]
-translate_shortcut = "RightAlt+/"
-ask_shortcut = "RightAlt+Space"
+translate_shortcut = "RightCtrl+/"
+ask_shortcut = "RightCtrl+Space"
 
 [audio]
 backend = "native_windows"

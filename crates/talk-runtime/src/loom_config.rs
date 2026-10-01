@@ -1,4 +1,24 @@
+use std::sync::OnceLock;
+use std::time::Duration;
 use talk_core::TalkConfig;
+
+/// Fail fast when the Loom host is unreachable instead of hanging startup.
+const LOOM_HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
+/// Bound the whole request so a stalled or half-open connection cannot hang
+/// the startup configuration path indefinitely (`reqwest::Client::new()` has
+/// no timeout at all).
+const LOOM_HTTP_REQUEST_TIMEOUT_SECS: u64 = 15;
+
+fn shared_loom_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(LOOM_HTTP_CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(LOOM_HTTP_REQUEST_TIMEOUT_SECS))
+            .build()
+            .expect("static Loom HTTP client configuration must be valid")
+    })
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct LoomClaim {
@@ -24,7 +44,7 @@ struct PutTalkConfigRequest<'a> {
 }
 
 pub async fn is_talk_managed(base_url: &str, auth_token: Option<&str>) -> Result<bool, String> {
-    let client = reqwest::Client::new();
+    let client = shared_loom_http_client();
     let mut request = client.get(format!(
         "{}/v1/configuration/claims?app=talk",
         base_url.trim_end_matches('/')
@@ -48,7 +68,7 @@ pub async fn read_talk_config(
     base_url: &str,
     auth_token: Option<&str>,
 ) -> Result<LoomTalkConfigResponse, String> {
-    let client = reqwest::Client::new();
+    let client = shared_loom_http_client();
     let mut request = client.get(format!(
         "{}/v1/configuration/apps/talk",
         base_url.trim_end_matches('/')
@@ -78,7 +98,7 @@ pub async fn write_talk_config(
     expected_revision: u64,
     config: &TalkConfig,
 ) -> Result<LoomTalkConfigResponse, String> {
-    let client = reqwest::Client::new();
+    let client = shared_loom_http_client();
     let mut request = client
         .put(format!(
             "{}/v1/configuration/apps/talk",

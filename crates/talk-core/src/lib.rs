@@ -136,8 +136,9 @@ pub struct TalkConfig {
 
 impl TalkConfig {
     pub fn from_toml_str(raw: &str) -> Result<Self, TalkError> {
-        let config: Self =
+        let mut config: Self =
             toml::from_str(raw).map_err(|error| TalkError::InvalidConfig(error.to_string()))?;
+        normalize_legacy_desktop_shortcuts(&mut config);
         config.validate()?;
         Ok(config)
     }
@@ -233,52 +234,52 @@ impl TalkConfig {
                 .trim()
                 .eq_ignore_ascii_case("streaming_service")
         {
-            let Some(service) = self.speculative.streaming_service.as_ref() else {
+            if let Some(service) = self.speculative.streaming_service.as_ref() {
+                if let Err(message) = validate_websocket_loopback_endpoint(
+                    &service.endpoint,
+                    "speculative.streaming_service.endpoint",
+                ) {
+                    problems.push(message);
+                }
+                if service.sample_rate_hz == 0 {
+                    problems.push(
+                        "speculative.streaming_service.sample_rate_hz must be greater than 0"
+                            .to_string(),
+                    );
+                }
+                if service.channels == 0 {
+                    problems.push(
+                        "speculative.streaming_service.channels must be greater than 0".to_string(),
+                    );
+                }
+                if service.connect_timeout_ms == 0 {
+                    problems.push(
+                        "speculative.streaming_service.connect_timeout_ms must be greater than 0"
+                            .to_string(),
+                    );
+                }
+                if service.idle_timeout_ms == 0 {
+                    problems.push(
+                        "speculative.streaming_service.idle_timeout_ms must be greater than 0"
+                            .to_string(),
+                    );
+                }
+                if service.final_timeout_ms == 0 {
+                    problems.push(
+                        "speculative.streaming_service.final_timeout_ms must be greater than 0"
+                            .to_string(),
+                    );
+                }
+                validate_speculative_local_asr_daemon_config(
+                    service.local_daemon.as_ref(),
+                    &mut problems,
+                );
+            } else {
                 problems.push(
                     "speculative.streaming_service must be set when local_asr is streaming_service"
                         .to_string(),
                 );
-                return Err(TalkError::InvalidConfig(problems.join("; ")));
-            };
-            if let Err(message) = validate_websocket_loopback_endpoint(
-                &service.endpoint,
-                "speculative.streaming_service.endpoint",
-            ) {
-                problems.push(message);
             }
-            if service.sample_rate_hz == 0 {
-                problems.push(
-                    "speculative.streaming_service.sample_rate_hz must be greater than 0"
-                        .to_string(),
-                );
-            }
-            if service.channels == 0 {
-                problems.push(
-                    "speculative.streaming_service.channels must be greater than 0".to_string(),
-                );
-            }
-            if service.connect_timeout_ms == 0 {
-                problems.push(
-                    "speculative.streaming_service.connect_timeout_ms must be greater than 0"
-                        .to_string(),
-                );
-            }
-            if service.idle_timeout_ms == 0 {
-                problems.push(
-                    "speculative.streaming_service.idle_timeout_ms must be greater than 0"
-                        .to_string(),
-                );
-            }
-            if service.final_timeout_ms == 0 {
-                problems.push(
-                    "speculative.streaming_service.final_timeout_ms must be greater than 0"
-                        .to_string(),
-                );
-            }
-            validate_speculative_local_asr_daemon_config(
-                service.local_daemon.as_ref(),
-                &mut problems,
-            );
         }
         if path_is_blank(&self.audio.temp_dir) {
             problems.push("audio.temp_dir must not be empty".to_string());
@@ -675,6 +676,25 @@ fn desktop_shortcut_values_are_not_unique(config: &TalkConfig) -> bool {
         }
     }
     false
+}
+
+fn normalize_legacy_desktop_shortcuts(config: &mut TalkConfig) {
+    if shortcut_identity(&config.trigger.toggle_shortcut) != shortcut_identity("RightAlt") {
+        return;
+    }
+
+    let translate_shortcut = config.desktop.shortcuts.translate_shortcut.as_deref();
+    let ask_shortcut = config.desktop.shortcuts.ask_shortcut.as_deref();
+    if translate_shortcut
+        .is_none_or(|value| shortcut_identity(value) != shortcut_identity("RightAlt+/"))
+        || ask_shortcut
+            .is_none_or(|value| shortcut_identity(value) != shortcut_identity("RightAlt+Space"))
+    {
+        return;
+    }
+
+    config.desktop.shortcuts.translate_shortcut = Some("RightCtrl+/".to_string());
+    config.desktop.shortcuts.ask_shortcut = Some("RightCtrl+Space".to_string());
 }
 
 fn shortcut_identity(value: &str) -> String {
@@ -1188,7 +1208,7 @@ fn default_speculative_max_patch_age_ms() -> u64 {
 }
 
 fn default_speculative_max_auto_patch_edit_ratio() -> f32 {
-    0.25
+    0.35
 }
 
 fn default_clipboard_backend() -> ClipboardBackendMode {

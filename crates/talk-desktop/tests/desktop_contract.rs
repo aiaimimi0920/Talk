@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs;
 use std::path::PathBuf;
 use talk_core::NativeReadinessStatus;
@@ -18,8 +19,8 @@ use talk_desktop::{
     desktop_copy_popup_editor_content_rect, desktop_copy_popup_editor_frame_rect,
     desktop_copy_popup_metrics, desktop_copy_popup_model,
     desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
-    desktop_copy_popup_position, desktop_document_recorrection_decision,
-    desktop_document_recorrection_generation_is_current,
+    desktop_copy_popup_position, desktop_direct_control_paste_focus_handle,
+    desktop_document_recorrection_decision, desktop_document_recorrection_generation_is_current,
     desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
     desktop_failure_cleanup_plan, desktop_final_correction_processing_mode,
     desktop_hud_activation_policy, desktop_hud_audio_meter_model,
@@ -48,25 +49,37 @@ use talk_desktop::{
     desktop_live_correction_processing_mode, desktop_live_correction_target_apply_allowed,
     desktop_live_correction_timing_log, desktop_live_correction_worker_policy,
     desktop_live_smart_route_lock, desktop_live_smart_transcribe_evidence,
-    desktop_mode_dropdown_model, desktop_mode_output_policy, desktop_mode_text_pane_layout,
-    desktop_mode_text_result_model, desktop_mode_text_result_popup_text, desktop_output_plan,
-    desktop_overlay_scale_factor_for_dpi, desktop_packaged_local_asr_daemon_launch_plan,
+    desktop_live_streaming_segmenter_config, desktop_mix_rgb, desktop_mode_dropdown_model,
+    desktop_mode_output_policy, desktop_mode_text_pane_layout, desktop_mode_text_result_model,
+    desktop_mode_text_result_popup_text, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
+    desktop_packaged_local_asr_daemon_launch_plan,
     desktop_packaged_local_asr_daemon_launch_plan_with_config,
     desktop_preferred_paste_shortcut_for_process_name, desktop_preferred_paste_shortcut_for_target,
     desktop_product_local_asr_daemon_launch_plan_with_config,
     desktop_product_local_asr_model_available, desktop_product_local_asr_startup_timeout_ms,
-    desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
-    desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
-    desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
-    desktop_speculative_local_asr_route, desktop_speculative_pipeline_enabled,
-    desktop_speculative_replacement_selection_count, desktop_speculative_transcript_view_model,
-    desktop_streaming_effective_segment_count, desktop_streaming_final_correction_job_enabled,
-    desktop_streaming_hud_transcript, desktop_streaming_hud_transcript_parts,
+    desktop_resolve_product_local_asr_model_root, desktop_runtime_insert_directive_for_mode,
+    desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
+    desktop_shortcut_help_metrics_for_entry_count, desktop_shortcut_help_model,
+    desktop_shortcut_help_position, desktop_speculative_cloud_correction_enabled,
+    desktop_speculative_correction_job_model, desktop_speculative_local_asr_route,
+    desktop_speculative_pipeline_enabled, desktop_speculative_replacement_selection_count,
+    desktop_speculative_transcript_view_model, desktop_streaming_effective_segment_count,
+    desktop_streaming_effective_segment_count_owned,
+    desktop_streaming_final_correction_job_enabled, desktop_streaming_hud_transcript,
+    desktop_streaming_hud_transcript_parts, desktop_streaming_hud_transcript_parts_for_auto_follow,
+    desktop_streaming_hud_transcript_parts_owned, desktop_streaming_hud_transcript_parts_text,
+    desktop_streaming_hud_transcript_parts_with_fallback_text,
+    desktop_streaming_hud_transcript_parts_with_fallback_text_owned,
+    desktop_streaming_hud_transcript_summary,
+    desktop_streaming_hud_transcript_summary_apply_fallback_text,
+    desktop_streaming_hud_transcript_summary_owned,
+    desktop_streaming_hud_transcript_summary_with_fallback_text_owned,
     desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_segment_cache_text,
     desktop_streaming_stop_aggregate, desktop_streaming_stop_aggregate_with_pending,
     desktop_streaming_stop_policy, desktop_streaming_stop_reconciliation_plan,
     desktop_streaming_stop_tail_decision, desktop_streaming_stop_tail_target_unchanged,
-    desktop_streaming_stop_tail_text, desktop_text_lifecycle_view_model,
+    desktop_streaming_stop_tail_text, desktop_target_matched_context_for_paste,
+    desktop_text_lifecycle_view_model, desktop_ui_color_tokens, desktop_ui_derived_colors,
     foreground_target_refresh_requested, foreground_target_stability_satisfied,
     hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
     idle_status_detail, live_streaming_local_segment_plan,
@@ -83,27 +96,27 @@ use talk_desktop::{
     DesktopDocumentRecorrectionDecision, DesktopFailureCleanupPlan, DesktopHudGeometry,
     DesktopHudGeometryUpdatePlan, DesktopHudMetrics, DesktopHudPresentation, DesktopHudVisualState,
     DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic, DesktopListeningHudAction,
-    DesktopLiveCorrectionAnchorPolicy, DesktopLiveCorrectionBacklogItem,
-    DesktopLiveCorrectionEligibility, DesktopLiveCorrectionPresentation,
-    DesktopLiveCorrectionSegment, DesktopLiveStreamingLocalSegmentPlan,
-    DesktopLocalAsrDaemonLaunchPlan, DesktopModeDropdownEntry, DesktopModeDropdownModel,
-    DesktopModeOutputPolicy, DesktopModeTextPane, DesktopModeTextPaneLayout,
-    DesktopModeTextResultModel, DesktopOutputPlan, DesktopOutputStrategy,
-    DesktopOverlayActivationPolicy, DesktopOverlayPosition, DesktopOverlayRect,
-    DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective, DesktopRuntimeInsertPlan,
-    DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
-    DesktopSpeculativeCorrectionJobModel, DesktopSpeculativeCorrectionOutputTarget,
-    DesktopSpeculativeLocalAsrRoute, DesktopSpeculativePipelineConfig,
-    DesktopSpeculativeTranscriptState, DesktopStreamingHudTranscriptParts,
-    DesktopStreamingStopPolicy, DesktopStreamingStopReconciliationPlan,
-    DesktopStreamingStopTailDecision, DesktopTextLifecycleState, DesktopTextLifecycleViewModel,
-    ForegroundFocusCaptureSource, ForegroundInsertTarget, ForegroundTargetReleaseReason,
-    ForegroundTargetStabilityProgress, HotkeyBindingState, LastSessionStatus,
-    LowLevelHotkeyTracker, LowLevelHotkeyTransition, NativeBackendSnapshot,
-    NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor, SpeculativePatchApplication,
-    SpeculativePatchCandidate, StatusSnapshot, ToggleDesktopHotkeyRouter,
-    ToggleDesktopHotkeyRouterPendingHold, WindowsHotkeyBindingRegistrationPlan,
-    WindowsHotkeyBindingStrategy,
+    DesktopListeningHudPartialTextLayout, DesktopLiveCorrectionAnchorPolicy,
+    DesktopLiveCorrectionBacklogItem, DesktopLiveCorrectionEligibility,
+    DesktopLiveCorrectionPresentation, DesktopLiveCorrectionSegment,
+    DesktopLiveStreamingLocalSegmentPlan, DesktopLocalAsrDaemonLaunchPlan,
+    DesktopModeDropdownEntry, DesktopModeDropdownModel, DesktopModeOutputPolicy,
+    DesktopModeTextPane, DesktopModeTextPaneLayout, DesktopModeTextResultModel, DesktopOutputPlan,
+    DesktopOutputStrategy, DesktopOverlayActivationPolicy, DesktopOverlayPosition,
+    DesktopOverlayRect, DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective,
+    DesktopRuntimeInsertPlan, DesktopShortcutHelpEntry, DesktopShortcutHelpMetrics,
+    DesktopShortcutHelpModel, DesktopSpeculativeCorrectionJobModel,
+    DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
+    DesktopSpeculativePipelineConfig, DesktopSpeculativeTranscriptState,
+    DesktopStreamingHudTranscriptParts, DesktopStreamingStopPolicy,
+    DesktopStreamingStopReconciliationPlan, DesktopStreamingStopTailDecision,
+    DesktopTextLifecycleState, DesktopTextLifecycleViewModel, ForegroundFocusCaptureSource,
+    ForegroundInsertTarget, ForegroundTargetReleaseReason, ForegroundTargetStabilityProgress,
+    HotkeyBindingState, LastSessionStatus, LowLevelHotkeyTracker, LowLevelHotkeyTransition,
+    NativeBackendSnapshot, NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor,
+    SpeculativePatchApplication, SpeculativePatchCandidate, StatusSnapshot,
+    ToggleDesktopHotkeyRouter, ToggleDesktopHotkeyRouterPendingHold,
+    WindowsHotkeyBindingRegistrationPlan, WindowsHotkeyBindingStrategy,
 };
 use talk_runtime::{RuntimePhase, SpeculativeRuntimeEvent};
 
@@ -151,8 +164,9 @@ fn hud_geometry_update_reshapes_when_size_or_radius_changes() {
 }
 
 #[test]
-fn corrected_hud_exposes_white_insertable_text_lifecycle() {
+fn corrected_hud_exposes_canonical_insertable_text_lifecycle() {
     let model = desktop_hud_view_model_for_corrected_text("你好！");
+    let colors = desktop_ui_color_tokens();
 
     assert_eq!(model.detail.as_deref(), Some("你好！"));
     assert_eq!(
@@ -161,7 +175,7 @@ fn corrected_hud_exposes_white_insertable_text_lifecycle() {
     );
     assert_eq!(
         desktop_text_lifecycle_view_model(DesktopTextLifecycleState::Corrected, "你好！").text_rgb,
-        Some([245, 247, 250])
+        Some(colors.text_rgb)
     );
 }
 
@@ -188,6 +202,56 @@ fn speculative_patch_applies_when_anchor_matches_and_edit_is_small() {
     assert_eq!(
         decide_speculative_patch_application(&anchor, &candidate, 2_000, 0.25),
         SpeculativePatchApplication::Apply
+    );
+}
+
+#[test]
+fn speculative_patch_applies_distributed_faithful_replay_correction() {
+    let anchor = SpeculativeInsertAnchor::new(
+        100,
+        Some(200),
+        "seg-replay",
+        "今天下午三点半， 我们掀开项目例会， 确认 talk 的默认识别模型， 然后把多语言测试结果同步给",
+        1_000,
+    )
+    .unwrap();
+    let candidate = SpeculativePatchCandidate::new(
+        100,
+        Some(200),
+        "seg-replay",
+        "今天下午三点半我们先开项目例会，确认 Talk 的默认识别模型，然后把多语言测试结果同步给 Neuro 团队。",
+        1_400,
+    )
+    .unwrap();
+
+    assert_eq!(
+        decide_speculative_patch_application(&anchor, &candidate, 2_000, 0.35),
+        SpeculativePatchApplication::Apply
+    );
+}
+
+#[test]
+fn speculative_patch_defers_broad_replay_correction() {
+    let anchor = SpeculativeInsertAnchor::new(
+        100,
+        Some(200),
+        "seg-replay",
+        "请把 neo talk 的千问三 ASR flush 结果保存到 SIPA 的 user",
+        1_000,
+    )
+    .unwrap();
+    let candidate = SpeculativePatchCandidate::new(
+        100,
+        Some(200),
+        "seg-replay",
+        "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。",
+        1_400,
+    )
+    .unwrap();
+
+    assert_eq!(
+        decide_speculative_patch_application(&anchor, &candidate, 2_000, 0.35),
+        SpeculativePatchApplication::DeferToPopup
     );
 }
 
@@ -271,6 +335,309 @@ fn streaming_hud_skips_blank_segments_before_falling_back_to_placeholder() {
 }
 
 #[test]
+fn streaming_hud_uses_latest_raw_asr_text_when_no_segmented_parts_exist() {
+    let parts = desktop_streaming_hud_transcript_parts_with_fallback_text(
+        &[],
+        &[],
+        Some("  你好呀  "),
+        Some("local ASR unavailable"),
+    );
+
+    assert_eq!(
+        parts,
+        DesktopStreamingHudTranscriptParts {
+            corrected_prefix: String::new(),
+            pre_recognized_tail: "你好呀".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_hud_prefers_segmented_parts_over_latest_raw_asr_fallback() {
+    let parts = desktop_streaming_hud_transcript_parts_with_fallback_text(
+        &[],
+        &[("seg-1", "打开 Talk 的 local first ASR 测试")],
+        Some("你好呀"),
+        Some("local ASR unavailable"),
+    );
+
+    assert_eq!(
+        parts,
+        DesktopStreamingHudTranscriptParts {
+            corrected_prefix: String::new(),
+            pre_recognized_tail: "打开 Talk 的 local first ASR 测试".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_hud_uses_status_fallback_when_no_segmented_or_live_asr_text_exists() {
+    let parts = desktop_streaming_hud_transcript_parts_with_fallback_text(
+        &[],
+        &[],
+        None,
+        Some("  downloading local ASR model...  "),
+    );
+
+    assert_eq!(
+        parts,
+        DesktopStreamingHudTranscriptParts {
+            corrected_prefix: String::new(),
+            pre_recognized_tail: "downloading local ASR model...".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_hud_prefers_latest_raw_asr_text_over_status_fallback() {
+    let parts = desktop_streaming_hud_transcript_parts_with_fallback_text(
+        &[],
+        &[],
+        Some("你好呀"),
+        Some("downloading local ASR model..."),
+    );
+
+    assert_eq!(
+        parts,
+        DesktopStreamingHudTranscriptParts {
+            corrected_prefix: String::new(),
+            pre_recognized_tail: "你好呀".to_string(),
+        }
+    );
+}
+
+#[test]
+fn streaming_hud_owned_pending_segments_match_borrowed_semantics() {
+    let corrected_segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "Hello, ".to_string(),
+            corrected_text: Some("Hello,".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "world".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+    let owned_pending = vec![
+        ("seg-2".to_string(), "old".to_string()),
+        ("seg-2".to_string(), "world updated".to_string()),
+        ("seg-3".to_string(), "!".to_string()),
+    ];
+    let borrowed_pending = owned_pending
+        .iter()
+        .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        desktop_streaming_hud_transcript_parts_owned(&corrected_segments, &owned_pending),
+        desktop_streaming_hud_transcript_parts(&corrected_segments, &borrowed_pending)
+    );
+    assert_eq!(
+        desktop_streaming_hud_transcript_summary_owned(&corrected_segments, &owned_pending),
+        desktop_streaming_hud_transcript_summary(&corrected_segments, &borrowed_pending)
+    );
+    assert_eq!(
+        desktop_streaming_hud_transcript_parts_with_fallback_text_owned(
+            &corrected_segments,
+            &owned_pending,
+            Some("raw fallback"),
+            Some("status fallback"),
+        ),
+        desktop_streaming_hud_transcript_parts_with_fallback_text(
+            &corrected_segments,
+            &borrowed_pending,
+            Some("raw fallback"),
+            Some("status fallback"),
+        )
+    );
+}
+
+#[test]
+fn streaming_hud_direct_fold_matches_materialized_stop_semantics() {
+    let corrected_segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: " \tHello ".to_string(),
+            corrected_text: Some("   Hello,".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-2".to_string(),
+            local_text: "old".to_string(),
+            corrected_text: Some("  ".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3".to_string(),
+            local_text: "local".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-3#2".to_string(),
+            local_text: " again".to_string(),
+            corrected_text: Some("again!".to_string()),
+            insert_anchor: None,
+        },
+    ];
+    let pending = [
+        ("seg-2", "older"),
+        ("seg-2", "world"),
+        ("seg-2", " \t"),
+        ("seg-4", "first"),
+        ("seg-4", " \t"),
+        ("seg-blank", " \t"),
+        ("seg-4", "last"),
+        ("seg-5", "suppressed by later blank"),
+        ("seg-5", " \t"),
+    ];
+
+    let summary = desktop_streaming_hud_transcript_summary(&corrected_segments, &pending);
+    assert_eq!(
+        summary.parts,
+        desktop_streaming_hud_transcript_parts(&corrected_segments, &pending)
+    );
+    let hud_text = format!(
+        "{}{}",
+        summary.parts.corrected_prefix, summary.parts.pre_recognized_tail
+    );
+
+    assert_eq!(summary.parts.corrected_prefix, " \tHello,");
+    assert_eq!(summary.parts.pre_recognized_tail, "worldlocal again!last");
+    assert_eq!(
+        hud_text,
+        desktop_streaming_stop_aggregate_with_pending(&corrected_segments, &pending, "", "")
+    );
+    assert_eq!(summary.effective_segment_count, 5);
+    assert_eq!(
+        summary.effective_segment_count,
+        desktop_streaming_effective_segment_count(&corrected_segments, &pending)
+    );
+}
+
+#[test]
+fn streaming_hud_summary_fallback_does_not_change_effective_segment_count() {
+    let empty_pending = Vec::<(String, String)>::new();
+    let fallback_summary = desktop_streaming_hud_transcript_summary_with_fallback_text_owned(
+        &[],
+        &empty_pending,
+        Some("  latest ASR  "),
+        Some("status fallback"),
+    );
+    assert_eq!(fallback_summary.effective_segment_count, 0);
+    assert_eq!(fallback_summary.parts.corrected_prefix, "");
+    assert_eq!(fallback_summary.parts.pre_recognized_tail, "latest ASR");
+
+    let pending = vec![("seg-1".to_string(), "segmented".to_string())];
+    let segmented_summary = desktop_streaming_hud_transcript_summary_with_fallback_text_owned(
+        &[],
+        &pending,
+        Some("latest ASR"),
+        Some("status fallback"),
+    );
+    assert_eq!(segmented_summary.effective_segment_count, 1);
+    assert_eq!(segmented_summary.parts.corrected_prefix, "");
+    assert_eq!(segmented_summary.parts.pre_recognized_tail, "segmented");
+}
+
+#[test]
+fn streaming_hud_summary_can_apply_fallback_without_rebuilding_segments() {
+    let pending = Vec::<(String, String)>::new();
+    let summary = desktop_streaming_hud_transcript_summary_owned(&[], &pending);
+    let reused = desktop_streaming_hud_transcript_summary_apply_fallback_text(
+        summary,
+        Some("  latest ASR  "),
+        Some("status fallback"),
+    );
+    let direct = desktop_streaming_hud_transcript_summary_with_fallback_text_owned(
+        &[],
+        &pending,
+        Some("  latest ASR  "),
+        Some("status fallback"),
+    );
+
+    assert_eq!(reused, direct);
+    assert_eq!(reused.effective_segment_count, 0);
+    assert_eq!(reused.parts.pre_recognized_tail, "latest ASR");
+}
+
+#[test]
+fn streaming_hud_transcript_parts_text_borrows_single_side_and_owns_both() {
+    let prefix_only = DesktopStreamingHudTranscriptParts {
+        corrected_prefix: "corrected".to_string(),
+        pre_recognized_tail: String::new(),
+    };
+    let prefix_text = desktop_streaming_hud_transcript_parts_text(&prefix_only);
+    assert_eq!(prefix_text.as_ref(), "corrected");
+    assert!(matches!(&prefix_text, Cow::Borrowed(_)));
+
+    let tail_only = DesktopStreamingHudTranscriptParts {
+        corrected_prefix: String::new(),
+        pre_recognized_tail: "pending".to_string(),
+    };
+    let tail_text = desktop_streaming_hud_transcript_parts_text(&tail_only);
+    assert_eq!(tail_text.as_ref(), "pending");
+    assert!(matches!(&tail_text, Cow::Borrowed(_)));
+
+    let both = DesktopStreamingHudTranscriptParts {
+        corrected_prefix: "corrected".to_string(),
+        pre_recognized_tail: "pending".to_string(),
+    };
+    let combined_text = desktop_streaming_hud_transcript_parts_text(&both);
+    assert_eq!(combined_text.as_ref(), "correctedpending");
+    assert!(matches!(&combined_text, Cow::Owned(_)));
+
+    let empty = DesktopStreamingHudTranscriptParts {
+        corrected_prefix: String::new(),
+        pre_recognized_tail: String::new(),
+    };
+    let empty_text = desktop_streaming_hud_transcript_parts_text(&empty);
+    assert_eq!(empty_text.as_ref(), "");
+    assert!(matches!(&empty_text, Cow::Borrowed(_)));
+}
+
+#[test]
+fn streaming_hud_hot_path_does_not_materialize_effective_segment_vector() {
+    let source = include_str!("../src/lib.rs");
+    let start = source
+        .find("fn desktop_streaming_hud_transcript_parts_iter")
+        .expect("streaming HUD transcript iterator helper");
+    let end = source[start..]
+        .find("pub fn desktop_streaming_hud_transcript_parts_with_fallback_text")
+        .map(|offset| start + offset)
+        .expect("function following streaming HUD transcript iterator helper");
+    let helper_source = &source[start..end];
+
+    assert!(helper_source.contains("fn desktop_streaming_hud_transcript_summary_iter"));
+    assert!(helper_source.contains("desktop_for_each_effective_streaming_segment("));
+    assert!(!helper_source.contains("desktop_streaming_effective_segments_iter("));
+    assert!(!helper_source.contains("Vec<DesktopEffectiveStreamingSegment>"));
+}
+
+#[test]
+fn streaming_effective_segment_iteration_uses_indexes_instead_of_nested_scans() {
+    let source = include_str!("../src/lib.rs");
+    let start = source
+        .find("fn desktop_for_each_effective_streaming_segment")
+        .expect("effective streaming segment visitor");
+    let end = source[start..]
+        .find("fn desktop_streaming_source_segment_id")
+        .map(|offset| start + offset)
+        .expect("function following effective streaming segment visitor");
+    let helper_source = &source[start..end];
+
+    assert!(helper_source.contains("let mut pending_index = HashMap::with_capacity("));
+    assert!(helper_source.contains("let corrected_segment_ids = corrected_segments"));
+    assert!(!helper_source.contains(".skip(index + 1)"));
+    assert!(!helper_source.contains(".filter_map("));
+    assert!(!helper_source.contains(".any(|segment| segment.segment_id == pending_segment_id)"));
+}
+
+#[test]
 fn desktop_speculative_pipeline_is_disabled_by_default() {
     assert!(!desktop_speculative_pipeline_enabled(
         &DesktopSpeculativePipelineConfig::default()
@@ -306,6 +673,7 @@ fn desktop_speculative_cloud_correction_requires_provider_text_processor_mode() 
 
 #[test]
 fn text_lifecycle_marks_audio_and_pre_recognition_as_not_insertable_until_corrected() {
+    let colors = desktop_ui_color_tokens();
     assert_eq!(
         desktop_text_lifecycle_view_model(DesktopTextLifecycleState::AudioWave, "你好"),
         DesktopTextLifecycleViewModel {
@@ -318,7 +686,7 @@ fn text_lifecycle_marks_audio_and_pre_recognition_as_not_insertable_until_correc
         desktop_text_lifecycle_view_model(DesktopTextLifecycleState::PreRecognized, "你好"),
         DesktopTextLifecycleViewModel {
             text: Some("你好".to_string()),
-            text_rgb: Some([245, 190, 72]),
+            text_rgb: Some(colors.signal_yellow_rgb),
             insertable_to_target: false,
         }
     );
@@ -326,7 +694,7 @@ fn text_lifecycle_marks_audio_and_pre_recognition_as_not_insertable_until_correc
         desktop_text_lifecycle_view_model(DesktopTextLifecycleState::Corrected, "你好。"),
         DesktopTextLifecycleViewModel {
             text: Some("你好。".to_string()),
-            text_rgb: Some([245, 247, 250]),
+            text_rgb: Some(colors.text_rgb),
             insertable_to_target: true,
         }
     );
@@ -718,7 +1086,7 @@ fn mode_text_result_model_uses_single_pane_for_transcribe_and_document() {
                 label: "文本".to_string(),
                 text: "你好。".to_string(),
                 lifecycle: DesktopTextLifecycleState::Corrected,
-                text_rgb: [245, 247, 250],
+                text_rgb: desktop_ui_color_tokens().text_rgb,
                 insertable_to_target: true,
             }],
         }
@@ -756,14 +1124,14 @@ fn mode_text_result_model_uses_dual_panes_for_generate_and_command() {
                     label: "转录".to_string(),
                     text: "生成一段春天的散文".to_string(),
                     lifecycle: DesktopTextLifecycleState::Corrected,
-                    text_rgb: [245, 247, 250],
+                    text_rgb: desktop_ui_color_tokens().text_rgb,
                     insertable_to_target: true,
                 },
                 DesktopModeTextPane {
                     label: "结果".to_string(),
                     text: "春风拂过原野，万物在温柔的光里醒来。".to_string(),
                     lifecycle: DesktopTextLifecycleState::Corrected,
-                    text_rgb: [245, 247, 250],
+                    text_rgb: desktop_ui_color_tokens().text_rgb,
                     insertable_to_target: true,
                 },
             ],
@@ -792,7 +1160,7 @@ fn mode_text_result_model_marks_pre_recognition_panes_yellow_and_not_insertable(
             label: "转录".to_string(),
             text: "打开记事本".to_string(),
             lifecycle: DesktopTextLifecycleState::PreRecognized,
-            text_rgb: [245, 190, 72],
+            text_rgb: desktop_ui_color_tokens().signal_yellow_rgb,
             insertable_to_target: false,
         }
     );
@@ -1051,6 +1419,33 @@ fn recording_hud_can_show_corrected_detail_without_leaving_listening_state() {
         Some(DesktopTextLifecycleState::Corrected)
     );
     assert_eq!(model.detail.as_deref(), Some("云端已经校正"));
+}
+
+#[test]
+fn streaming_hud_auto_follow_trims_old_prefix_before_the_window_turns_unresponsive() {
+    let parts = DesktopStreamingHudTranscriptParts {
+        corrected_prefix: "这是已经纠正过的前文".repeat(80),
+        pre_recognized_tail: "这是当前还在继续识别的尾句".repeat(8),
+    };
+
+    let trimmed = desktop_streaming_hud_transcript_parts_for_auto_follow(&parts, 320);
+
+    assert!(trimmed.corrected_prefix.len() < parts.corrected_prefix.len());
+    assert_eq!(trimmed.pre_recognized_tail, parts.pre_recognized_tail);
+    assert!(!trimmed.corrected_prefix.is_empty());
+}
+
+#[test]
+fn desktop_live_streaming_segmenter_rebalances_for_longer_clauses_without_excessive_split_punctuation(
+) {
+    let config = desktop_live_streaming_segmenter_config();
+
+    assert_eq!(config.punctuation_pause_ms, 300);
+    assert_eq!(config.soft_pause_ms, 620);
+    assert_eq!(config.min_clause_chars, 4);
+    assert_eq!(config.min_final_chars, 10);
+    assert_eq!(config.max_chunk_chars, 40);
+    assert_eq!(config.correction_context_chars, 96);
 }
 
 #[test]
@@ -1641,6 +2036,43 @@ fn streaming_stop_aggregate_preserves_and_counts_pending_only_nonblank_segments(
         desktop_streaming_effective_segment_count(&segments, &pending),
         2
     );
+    let owned_pending = pending
+        .iter()
+        .map(|(segment_id, text)| (segment_id.to_string(), text.to_string()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        desktop_streaming_effective_segment_count_owned(&segments, &owned_pending),
+        2
+    );
+}
+
+#[test]
+fn streaming_effective_segment_count_uses_latest_pending_identity_without_materializing_text() {
+    let segments = vec![
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-1".to_string(),
+            local_text: "".to_string(),
+            corrected_text: Some("第一句。".to_string()),
+            insert_anchor: None,
+        },
+        DesktopLiveCorrectionSegment {
+            segment_id: "seg-blank".to_string(),
+            local_text: "  ".to_string(),
+            corrected_text: None,
+            insert_anchor: None,
+        },
+    ];
+    let pending = [
+        ("seg-1", "旧草稿"),
+        ("seg-2", "旧第二句"),
+        ("seg-2", "第二句。"),
+        ("seg-empty", " \t"),
+    ];
+
+    assert_eq!(
+        desktop_streaming_effective_segment_count(&segments, &pending),
+        2
+    );
 }
 
 #[test]
@@ -1923,15 +2355,112 @@ fn thinking_text_wave_offsets_are_per_character_and_advance_over_time() {
 }
 
 #[test]
-fn thinking_palette_uses_hook_theme_signal_over_a_dark_terminal_panel() {
-    let palette = desktop_hud_thinking_palette();
+fn neuro_ui_tokens_match_the_canonical_design_source() {
+    let colors = desktop_ui_color_tokens();
 
-    assert_eq!(palette.track_start_rgb, [11, 14, 18]);
-    assert_eq!(palette.track_end_rgb, [20, 24, 30]);
-    assert_eq!(palette.fill_start_rgb, [163, 204, 0]);
-    assert_eq!(palette.fill_end_rgb, [217, 255, 56]);
-    assert_eq!(palette.fill_head_rgb, [239, 255, 146]);
-    assert_eq!(palette.text_rgb, [247, 252, 230]);
+    assert_eq!(colors.signal_yellow_rgb, [217, 255, 56]);
+    assert_eq!(colors.signal_green_rgb, [34, 197, 94]);
+    assert_eq!(colors.info_blue_rgb, [6, 182, 212]);
+    assert_eq!(colors.danger_red_rgb, [244, 63, 94]);
+    assert_eq!(colors.background_rgb, [6, 8, 13]);
+    assert_eq!(colors.surface_rgb, [9, 12, 17]);
+    assert_eq!(colors.panel_rgb, [14, 18, 24]);
+    assert_eq!(colors.rail_rgb, [7, 10, 15]);
+    assert_eq!(colors.control_rgb, [17, 23, 32]);
+    assert_eq!(colors.control_hover_rgb, [24, 34, 44]);
+    assert_eq!(colors.text_rgb, [247, 248, 239]);
+    assert_eq!(colors.text_muted_rgb, [146, 154, 159]);
+    assert_eq!(colors.focus_surface_rgb, [243, 245, 241]);
+    assert_eq!(colors.focus_ink_rgb, [32, 37, 43]);
+    assert_eq!(colors.focus_muted_rgb, [101, 107, 114]);
+}
+
+#[test]
+fn neuro_ui_derived_colors_follow_the_canonical_mix_formulas() {
+    let colors = desktop_ui_color_tokens();
+    let derived = desktop_ui_derived_colors();
+    let white = [255, 255, 255];
+    let black = [0, 0, 0];
+
+    assert_eq!(
+        derived.line_rgb,
+        desktop_mix_rgb(white, colors.panel_rgb, 12)
+    );
+    assert_eq!(
+        derived.grid_rgb,
+        desktop_mix_rgb(white, colors.background_rgb, 5)
+    );
+    assert_eq!(
+        derived.signal_yellow_hover_rgb,
+        desktop_mix_rgb(white, colors.signal_yellow_rgb, 14)
+    );
+    assert_eq!(
+        derived.signal_yellow_pressed_rgb,
+        desktop_mix_rgb(black, colors.signal_yellow_rgb, 18)
+    );
+    assert_eq!(
+        derived.signal_yellow_soft_rgb,
+        desktop_mix_rgb(colors.signal_yellow_rgb, colors.panel_rgb, 14)
+    );
+    assert_eq!(
+        derived.signal_yellow_line_rgb,
+        desktop_mix_rgb(colors.signal_yellow_rgb, derived.line_rgb, 42)
+    );
+    assert_eq!(
+        derived.on_signal_yellow_rgb,
+        desktop_mix_rgb(colors.signal_yellow_rgb, black, 14)
+    );
+    assert_eq!(
+        derived.signal_green_hover_rgb,
+        desktop_mix_rgb(white, colors.signal_green_rgb, 14)
+    );
+    assert_eq!(
+        derived.signal_green_pressed_rgb,
+        desktop_mix_rgb(black, colors.signal_green_rgb, 18)
+    );
+    assert_eq!(
+        derived.signal_green_soft_rgb,
+        desktop_mix_rgb(colors.signal_green_rgb, colors.panel_rgb, 14)
+    );
+    assert_eq!(
+        derived.signal_green_line_rgb,
+        desktop_mix_rgb(colors.signal_green_rgb, derived.line_rgb, 42)
+    );
+    assert_eq!(derived.on_signal_green_rgb, colors.focus_ink_rgb);
+    assert_eq!(
+        derived.info_blue_soft_rgb,
+        desktop_mix_rgb(colors.info_blue_rgb, colors.panel_rgb, 12)
+    );
+    assert_eq!(
+        derived.info_blue_line_rgb,
+        desktop_mix_rgb(colors.info_blue_rgb, derived.line_rgb, 42)
+    );
+    assert_eq!(derived.on_info_blue_rgb, colors.focus_ink_rgb);
+    assert_eq!(
+        derived.danger_red_soft_rgb,
+        desktop_mix_rgb(colors.danger_red_rgb, colors.panel_rgb, 12)
+    );
+    assert_eq!(
+        derived.danger_red_line_rgb,
+        desktop_mix_rgb(colors.danger_red_rgb, derived.line_rgb, 42)
+    );
+    assert_eq!(derived.on_danger_red_rgb, colors.focus_ink_rgb);
+}
+
+#[test]
+fn thinking_palette_resolves_from_neuro_semantic_tokens() {
+    let palette = desktop_hud_thinking_palette();
+    let colors = desktop_ui_color_tokens();
+    let derived = desktop_ui_derived_colors();
+
+    assert_eq!(palette.track_start_rgb, colors.surface_rgb);
+    assert_eq!(palette.track_end_rgb, colors.control_rgb);
+    assert_eq!(palette.fill_start_rgb, derived.signal_yellow_pressed_rgb);
+    assert_eq!(palette.fill_end_rgb, colors.signal_yellow_rgb);
+    assert_eq!(palette.fill_head_rgb, derived.signal_yellow_hover_rgb);
+    assert_eq!(palette.border_rgb, derived.signal_yellow_line_rgb);
+    assert_eq!(palette.text_rgb, colors.text_rgb);
+    assert_eq!(palette.text_shadow_rgb, colors.background_rgb);
 }
 
 #[test]
@@ -2136,6 +2665,36 @@ fn listening_hud_keeps_a_full_cjk_line_in_the_available_row_before_wrapping() {
         ),
         80
     );
+}
+
+#[test]
+fn listening_hud_raw_line_count_matches_the_wrapped_visible_lines() {
+    // The layout counts wrapped lines without materializing them, so pin the
+    // count against the wrapper that actually produces the drawn lines.
+    for text in [
+        "short",
+        "line one\nline two\nline three",
+        "trailing newline\n",
+        &"识".repeat(200),
+        &"mixed 混合 content that has to wrap several times over ".repeat(6),
+    ] {
+        let layout = desktop_listening_hud_partial_text_layout(340, 88, 96, Some(text))
+            .expect("layout for non-empty text");
+        let wrapped = desktop_listening_hud_visible_lines(
+            "",
+            text,
+            &DesktopListeningHudPartialTextLayout {
+                line_count: layout.raw_line_count,
+                ..layout
+            },
+            0,
+        );
+        assert_eq!(
+            wrapped.len(),
+            layout.raw_line_count,
+            "raw line count disagrees with wrapped lines for {text:?}"
+        );
+    }
 }
 
 #[test]
@@ -4178,17 +4737,50 @@ fn shell_state_exposes_start_when_idle_and_stop_when_recording() {
     let idle = ShellState::idle();
     assert!(idle.can_start_session());
     assert!(!idle.can_stop_session());
+    assert!(!idle.can_cancel_session());
 
-    let recording = idle.begin_recording().expect("idle should start recording");
+    let preparing = idle
+        .begin_local_asr_preparation()
+        .expect("idle should begin local ASR preparation");
+    assert!(!preparing.can_start_session());
+    assert!(!preparing.can_stop_session());
+    assert!(preparing.can_cancel_session());
+    assert!(preparing.is_preparing_local_asr());
+
+    let recording = preparing
+        .begin_recording()
+        .expect("preparing should start recording");
     assert!(!recording.can_start_session());
     assert!(recording.can_stop_session());
+    assert!(recording.can_cancel_session());
 }
 
 #[test]
 fn shell_ignores_duplicate_start_requests_while_busy() {
     let idle = ShellState::idle();
-    let recording = idle.begin_recording().expect("idle should start recording");
+    let preparing = idle
+        .begin_local_asr_preparation()
+        .expect("idle should begin preparation");
+    assert!(preparing.begin_local_asr_preparation().is_none());
+    let recording = preparing
+        .begin_recording()
+        .expect("preparing should start recording");
     assert!(recording.begin_recording().is_none());
+}
+
+#[test]
+fn tray_menu_model_enables_cancel_while_preparing_local_asr() {
+    let state = ShellState::idle()
+        .begin_local_asr_preparation()
+        .expect("idle state should become preparing");
+    let config = ConfigAvailability::ready();
+    let hotkey =
+        HotkeyBindingState::active(parse_hotkey("Ctrl+Alt+F24").expect("parse Ctrl+Alt+F24"));
+    let menu = tray_menu_model(&state, &config, &hotkey, None);
+
+    assert!(!menu.start_enabled);
+    assert!(!menu.stop_enabled);
+    assert!(menu.cancel_enabled);
 }
 
 #[test]
@@ -4591,6 +5183,17 @@ fn shortcut_help_overlay_uses_non_activating_bottom_card_contract() {
 }
 
 #[test]
+fn shortcut_help_height_expands_to_keep_all_action_rows_inside_the_window() {
+    let metrics = desktop_shortcut_help_metrics_for_entry_count(8);
+    let last_row_bottom = 52 + ((8 - 1) * 38) + 28;
+
+    assert_eq!(metrics.width, 420);
+    assert_eq!(metrics.height, 362);
+    assert!(last_row_bottom <= metrics.height - 16);
+    assert_eq!(metrics.bottom_margin, 36);
+}
+
+#[test]
 fn toggle_router_defers_right_alt_until_release_when_longer_chords_share_the_prefix() {
     let config = TalkConfig {
         trigger: TriggerConfig {
@@ -4892,6 +5495,142 @@ fn tray_menu_model_allows_recovery_when_hotkey_registration_failed() {
 }
 
 #[test]
+fn standard_edit_target_prefers_direct_control_paste_over_global_shortcut() {
+    let target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x101,
+            focus_handle: Some(0x202),
+            primary_focus_handle: Some(0x202),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0x202),
+        automation_control_type: Some("Edit".to_string()),
+        automation_framework_id: Some("Win32".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+
+    assert_eq!(
+        desktop_direct_control_paste_focus_handle(Some(&target)),
+        Some(0x202)
+    );
+}
+
+#[test]
+fn browser_target_keeps_keyboard_paste_shortcut_fallback() {
+    let target = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x101,
+            focus_handle: Some(0x202),
+            primary_focus_handle: Some(0x202),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Chrome_RenderWidgetHostHWND".to_string()),
+        caret_window_handle: None,
+        automation_control_type: Some("Document".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: false,
+    };
+
+    assert_eq!(
+        desktop_direct_control_paste_focus_handle(Some(&target)),
+        None
+    );
+}
+
+#[test]
+fn restored_standard_edit_context_becomes_the_effective_paste_target_after_foreground_restore() {
+    let insert_target = ForegroundInsertTarget {
+        window_handle: 0x101,
+        focus_handle: Some(0x202),
+        primary_focus_handle: Some(0x202),
+        fallback_focus_handle: None,
+        focus_capture_source: None,
+    };
+    let current = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x303,
+            focus_handle: Some(0x404),
+            primary_focus_handle: Some(0x404),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Chrome_RenderWidgetHostHWND".to_string()),
+        caret_window_handle: None,
+        automation_control_type: Some("Document".to_string()),
+        automation_framework_id: Some("Chrome".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: false,
+    };
+    let restored = DesktopInsertTargetContext {
+        target: Some(insert_target),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0x202),
+        automation_control_type: Some("Edit".to_string()),
+        automation_framework_id: Some("Win32".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+
+    let effective = desktop_target_matched_context_for_paste(
+        Some(insert_target),
+        Some(&current),
+        Some(&restored),
+    );
+
+    assert_eq!(effective, Some(&restored));
+    assert_eq!(
+        desktop_direct_control_paste_focus_handle(effective),
+        Some(0x202)
+    );
+}
+
+#[test]
+fn unrelated_restored_context_is_ignored_for_target_specific_paste_behavior() {
+    let insert_target = ForegroundInsertTarget {
+        window_handle: 0x101,
+        focus_handle: Some(0x202),
+        primary_focus_handle: Some(0x202),
+        fallback_focus_handle: None,
+        focus_capture_source: None,
+    };
+    let unrelated = DesktopInsertTargetContext {
+        target: Some(ForegroundInsertTarget {
+            window_handle: 0x303,
+            focus_handle: Some(0x404),
+            primary_focus_handle: Some(0x404),
+            fallback_focus_handle: None,
+            focus_capture_source: None,
+        }),
+        focus_class_name: Some("Edit".to_string()),
+        caret_window_handle: Some(0x404),
+        automation_control_type: Some("Edit".to_string()),
+        automation_framework_id: Some("Win32".to_string()),
+        automation_runtime_id: None,
+        automation_is_keyboard_focusable: Some(true),
+        automation_supports_text_pattern: true,
+        automation_supports_value_pattern: true,
+    };
+
+    assert_eq!(
+        desktop_target_matched_context_for_paste(Some(insert_target), None, Some(&unrelated)),
+        None
+    );
+}
+
+#[test]
 fn startup_status_message_reports_invalid_shortcut_without_crashing_shell() {
     let hotkey =
         HotkeyBindingState::invalid_config("Ctrl + + Space", "shortcut contains an empty segment");
@@ -4922,6 +5661,26 @@ fn tray_menu_model_disables_start_when_config_is_unavailable() {
     assert_eq!(
         idle_status_detail(&config, &hotkey, None).as_deref(),
         Some("failed to parse config")
+    );
+}
+
+#[test]
+fn tray_menu_model_exposes_nonblocking_startup_loading_state() {
+    let state = ShellState::idle();
+    let config = ConfigAvailability::loading();
+    let hotkey = HotkeyBindingState::Unconfigured;
+    let menu = tray_menu_model(&state, &config, &hotkey, None);
+
+    assert!(!menu.start_enabled);
+    assert!(!menu.stop_enabled);
+    assert!(!menu.cancel_enabled);
+    assert!(menu.reload_config_enabled);
+    assert!(menu.open_config_enabled);
+    assert_eq!(menu.hotkey_label, "Config loading");
+    assert_eq!(config_status_message(&config), Some("Talk: loading config"));
+    assert_eq!(
+        idle_status_detail(&config, &hotkey, None).as_deref(),
+        Some("loading Talk configuration and checking native backends")
     );
 }
 
@@ -4962,6 +5721,8 @@ fn status_report_includes_current_and_last_session_details() {
             summary: "cancelled".to_string(),
             detail: Some("user cancelled during recording".to_string()),
         }),
+        local_asr_status: None,
+        local_asr_detail: None,
         native_readiness: None,
     };
 
@@ -4986,6 +5747,8 @@ fn status_report_includes_configured_native_backend_readiness() {
         hotkey_label: "Ctrl+Alt+F24".to_string(),
         hotkey_detail: None,
         last_session: None,
+        local_asr_status: None,
+        local_asr_detail: None,
         native_readiness: Some(NativeReadinessSnapshot {
             audio: NativeBackendSnapshot {
                 configured_backend: "native_windows".to_string(),
@@ -5012,6 +5775,30 @@ fn status_report_includes_configured_native_backend_readiness() {
     assert!(report.contains("Clipboard backend: native_windows"));
     assert!(report.contains("Clipboard backend readiness: ready"));
     assert!(report.contains("Clipboard backend detail: Windows clipboard path is callable"));
+}
+
+#[test]
+fn status_report_includes_local_asr_bootstrap_state_and_detail() {
+    let snapshot = StatusSnapshot {
+        current_summary: "Talk: idle".to_string(),
+        current_detail: None,
+        config_path: "C:\\Talk\\dev-config.toml".to_string(),
+        logs_dir: "C:\\Talk\\.runtime\\talk\\logs".to_string(),
+        hotkey_label: "RightAlt".to_string(),
+        hotkey_detail: None,
+        last_session: None,
+        local_asr_status: Some("fallback".to_string()),
+        local_asr_detail: Some(
+            "using model root C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro\\Talk\\.runtime\\models\\sherpa-onnx; packaged daemon did not become ready".to_string(),
+        ),
+        native_readiness: None,
+    };
+
+    let report = build_status_report(&snapshot);
+    assert!(report.contains("Local ASR: fallback"));
+    assert!(report.contains(
+        "Local ASR detail: using model root C:\\Users\\Public\\nas_home\\AI\\GameEditor\\Neuro\\Talk\\.runtime\\models\\sherpa-onnx; packaged daemon did not become ready"
+    ));
 }
 
 #[test]
@@ -5339,7 +6126,35 @@ fn packaged_local_asr_daemon_launch_plan_finds_release_internal_daemon() {
             executable_path: daemon_path,
             bind: "127.0.0.1:53171".to_string(),
             args: vec!["--bind".to_string(), "127.0.0.1:53171".to_string()],
+            hotwords_content_hash: None,
         }
+    );
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_tracks_hotword_content_changes_at_the_same_path() {
+    let hotwords_dir = unique_temp_dir("talk-desktop-local-asr-hotwords-content-hash");
+    fs::create_dir_all(&hotwords_dir).expect("create hotwords dir");
+    let hotwords_path = hotwords_dir.join("hotwords.txt");
+    fs::write(&hotwords_path, "Talk :1.5\n").expect("write initial hotwords");
+    let config = sherpa_daemon_config_with(
+        Some("modified_beam_search"),
+        None,
+        Some(hotwords_path.clone()),
+        None,
+    );
+
+    let (_release_dir, initial_plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-hotwords-hash-a", &config);
+    fs::write(&hotwords_path, "Talk :2.0\n").expect("update hotwords");
+    let (_release_dir, updated_plan) =
+        packaged_daemon_launch_plan_for("talk-desktop-local-asr-hotwords-hash-b", &config);
+
+    assert_eq!(initial_plan.args, updated_plan.args);
+    assert!(initial_plan.hotwords_content_hash.is_some());
+    assert_ne!(
+        initial_plan.hotwords_content_hash, updated_plan.hotwords_content_hash,
+        "same-path hotword edits must invalidate the managed daemon launch plan"
     );
 }
 
@@ -5613,6 +6428,54 @@ fn packaged_local_asr_daemon_launch_plan_generates_hotwords_file_from_words() {
 }
 
 #[test]
+fn packaged_local_asr_daemon_launch_plan_auto_prefers_product_default_zipformer_over_paraformer() {
+    let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-prefers-zipformer");
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    let sherpa_root = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let paraformer_dir = sherpa_root.join("paraformer-bilingual-zh-en");
+    let zipformer_dir = sherpa_root.join("zipformer-zh-en-punct-int8-480ms");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    fs::create_dir_all(&paraformer_dir).expect("create paraformer dir");
+    fs::create_dir_all(&zipformer_dir).expect("create zipformer dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    fs::write(paraformer_dir.join("tokens.txt"), b"tokens").expect("write paraformer tokens");
+    fs::write(paraformer_dir.join("encoder.int8.onnx"), b"encoder")
+        .expect("write paraformer encoder");
+    fs::write(paraformer_dir.join("decoder.int8.onnx"), b"decoder")
+        .expect("write paraformer decoder");
+    fs::write(zipformer_dir.join("tokens.txt"), b"tokens").expect("write zipformer tokens");
+    fs::write(zipformer_dir.join("encoder.int8.onnx"), b"encoder")
+        .expect("write zipformer encoder");
+    fs::write(zipformer_dir.join("decoder.onnx"), b"decoder").expect("write zipformer decoder");
+    fs::write(zipformer_dir.join("joiner.int8.onnx"), b"joiner").expect("write zipformer joiner");
+    let executable_path = release_dir.join("talk-desktop.exe");
+
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+
+    assert!(plan.args.iter().any(|arg| arg == "transducer"));
+    assert!(plan
+        .args
+        .iter()
+        .any(|arg| arg == "zipformer-zh-en-punct-int8-480ms"));
+    assert!(!plan.args.iter().any(|arg| arg == "paraformer"));
+    assert!(!plan
+        .args
+        .iter()
+        .any(|arg| arg == "paraformer-bilingual-zh-en"));
+}
+
+#[test]
 fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_multilingual_zipformer_model() {
     let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-model");
     let release_dir = temp_dir.join("release");
@@ -5664,10 +6527,15 @@ fn packaged_local_asr_daemon_launch_plan_auto_uses_installed_multilingual_zipfor
         .iter()
         .any(|arg| arg.ends_with("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx")));
     assert!(!plan.args.iter().any(|arg| arg == "dry-run"));
+    assert!(
+        !plan.args.iter().any(|arg| arg == "--hotwords-file"),
+        "auto defaults must stay greedy when no BPE metadata is available, args={:?}",
+        plan.args
+    );
 }
 
 #[test]
-fn packaged_local_asr_daemon_launch_plan_auto_carries_low_latency_defaults_and_bpe_metadata() {
+fn packaged_local_asr_daemon_launch_plan_auto_carries_product_defaults_and_bpe_metadata() {
     let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-model-defaults");
     let release_dir = temp_dir.join("release");
     let internal_dir = release_dir.join(".internal");
@@ -5675,7 +6543,56 @@ fn packaged_local_asr_daemon_launch_plan_auto_carries_low_latency_defaults_and_b
         .join(".runtime")
         .join("models")
         .join("sherpa-onnx")
-        .join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
+        .join("zipformer-zh-en-punct-int8-480ms");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    fs::create_dir_all(&model_dir).expect("create model dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+    fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
+    fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+    fs::write(model_dir.join("bpe.vocab"), b"<blk>\nTalk\nNeuro\n").expect("write bpe vocab");
+    let executable_path = release_dir.join("talk-desktop.exe");
+
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--enable-endpoint", "true"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--endpoint-reset", "true"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--modeling-unit", "bpe"]));
+    assert!(plan
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--bpe-vocab" && pair[1].ends_with("bpe.vocab") }));
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_does_not_inject_default_hotwords_for_multilingual_zipformer(
+) {
+    let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-hotwords");
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    let model_root = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let model_dir =
+        model_root.join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
     fs::create_dir_all(&internal_dir).expect("create internal dir");
     fs::create_dir_all(&model_dir).expect("create model dir");
     let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
@@ -5707,22 +6624,148 @@ fn packaged_local_asr_daemon_launch_plan_auto_carries_low_latency_defaults_and_b
     .expect("valid launch plan")
     .expect("packaged daemon should be found");
 
-    assert!(plan
-        .args
-        .windows(2)
-        .any(|pair| pair == ["--enable-endpoint", "true"]));
-    assert!(plan
-        .args
-        .windows(2)
-        .any(|pair| pair == ["--endpoint-reset", "true"]));
-    assert!(plan
-        .args
-        .windows(2)
-        .any(|pair| pair == ["--modeling-unit", "cjkchar+bpe"]));
-    assert!(plan
-        .args
-        .windows(2)
-        .any(|pair| { pair[0] == "--bpe-vocab" && pair[1].ends_with("bpe.vocab") }));
+    assert_eq!(
+        arg_value_after(&plan.args, "--decoding-method"),
+        Some("greedy_search"),
+        "automatic model discovery must preserve the measured greedy decoder, args={:?}",
+        plan.args
+    );
+    assert!(
+        arg_value_after(&plan.args, "--hotwords-file").is_none(),
+        "default discovery must not inject corpus-specific hotwords, args={:?}",
+        plan.args
+    );
+    assert!(!model_root.join("talk-hotwords.txt").exists());
+    assert!(!model_root.join("talk-generated-hotwords.txt").exists());
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_does_not_rewrite_unconfigured_hotword_files() {
+    let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-hotwords-upgrade");
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    let model_root = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let model_dir =
+        model_root.join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    fs::create_dir_all(&model_dir).expect("create model dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(
+        model_dir.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"encoder",
+    )
+    .expect("write encoder");
+    fs::write(
+        model_dir.join("decoder-epoch-75-avg-11-chunk-16-left-128.onnx"),
+        b"decoder",
+    )
+    .expect("write decoder");
+    fs::write(
+        model_dir.join("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"joiner",
+    )
+    .expect("write joiner");
+    fs::write(model_dir.join("bpe.vocab"), b"<blk>\nTalk\nNeuro\n").expect("write bpe vocab");
+    let words_file = model_root.join("talk-hotwords.txt");
+    fs::write(&words_file, "Talk\nNeuro\nqwen3 asr flash\ncustom phrase\n")
+        .expect("write stale managed words file");
+    let original_words = fs::read_to_string(&words_file).expect("read original words file");
+    let executable_path = release_dir.join("talk-desktop.exe");
+
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--decoding-method"),
+        Some("greedy_search"),
+        "an unrelated words file must not change the automatic decoder, args={:?}",
+        plan.args
+    );
+    assert!(arg_value_after(&plan.args, "--hotwords-file").is_none());
+    assert_eq!(
+        fs::read_to_string(&words_file).expect("read untouched words file"),
+        original_words
+    );
+    assert!(!model_root.join("talk-generated-hotwords.txt").exists());
+}
+
+#[test]
+fn packaged_local_asr_daemon_launch_plan_does_not_refresh_unconfigured_hotword_scores() {
+    let temp_dir = unique_temp_dir("talk-desktop-local-asr-auto-hotwords-refresh-scores");
+    let release_dir = temp_dir.join("release");
+    let internal_dir = release_dir.join(".internal");
+    let model_root = release_dir
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let model_dir =
+        model_root.join("sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10");
+    fs::create_dir_all(&internal_dir).expect("create internal dir");
+    fs::create_dir_all(&model_dir).expect("create model dir");
+    let daemon_path = internal_dir.join("talk-local-asr-sherpa.exe");
+    fs::write(&daemon_path, b"fake exe").expect("write daemon marker");
+    fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(
+        model_dir.join("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"encoder",
+    )
+    .expect("write encoder");
+    fs::write(
+        model_dir.join("decoder-epoch-75-avg-11-chunk-16-left-128.onnx"),
+        b"decoder",
+    )
+    .expect("write decoder");
+    fs::write(
+        model_dir.join("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"),
+        b"joiner",
+    )
+    .expect("write joiner");
+    fs::write(model_dir.join("bpe.vocab"), b"<blk>\nTalk\nNeuro\n").expect("write bpe vocab");
+    let words_file = model_root.join("talk-hotwords.txt");
+    fs::write(
+        &words_file,
+        concat!(
+            "# stale managed hotwords from an older release\n",
+            "qwen3 asr flash\n",
+            "local first ASR テスト :1.5\n",
+            "C:\\Users\\Public\\Talk\\logs\n",
+            "custom phrase :2.4\n"
+        ),
+    )
+    .expect("write stale managed words file");
+    let original_words = fs::read_to_string(&words_file).expect("read original words file");
+    let executable_path = release_dir.join("talk-desktop.exe");
+
+    let plan = desktop_packaged_local_asr_daemon_launch_plan_with_config(
+        &executable_path,
+        "ws://127.0.0.1:53171/asr",
+        None,
+    )
+    .expect("valid launch plan")
+    .expect("packaged daemon should be found");
+
+    assert_eq!(
+        arg_value_after(&plan.args, "--decoding-method"),
+        Some("greedy_search"),
+        "unconfigured hotword contents must not alter automatic decoding, args={:?}",
+        plan.args
+    );
+    assert!(arg_value_after(&plan.args, "--hotwords-file").is_none());
+    assert_eq!(
+        fs::read_to_string(&words_file).expect("read untouched words file"),
+        original_words
+    );
+    assert!(!model_root.join("talk-generated-hotwords.txt").exists());
 }
 
 #[test]
@@ -5763,10 +6806,19 @@ fn product_local_asr_launch_plan_uses_extracted_worker_and_app_data_model_root()
     .expect("product worker should be available");
 
     assert_eq!(plan.executable_path, worker_path);
+    assert!(plan.args.iter().any(|arg| arg == "transducer"));
+    assert!(plan
+        .args
+        .iter()
+        .any(|arg| arg == "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"));
     assert!(plan
         .args
         .iter()
         .any(|arg| arg.ends_with("encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx")));
+    assert!(plan
+        .args
+        .iter()
+        .any(|arg| arg.ends_with("joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx")));
     fs::remove_dir_all(temp_dir).expect("remove product launch fixture");
 }
 
@@ -5783,6 +6835,69 @@ fn product_local_asr_model_availability_accepts_an_installed_legacy_zipformer() 
 
     assert!(desktop_product_local_asr_model_available(&model_root));
     fs::remove_dir_all(temp_dir).expect("remove legacy product model fixture");
+}
+
+#[test]
+fn product_local_asr_model_root_reuses_nearby_repo_sidecar_model_before_download() {
+    let temp_dir = unique_temp_dir("talk-desktop-product-local-asr-root-sidecar");
+    let neuro_root = temp_dir.join("Neuro");
+    let release_dir = neuro_root
+        .join("release")
+        .join("Talk")
+        .join("talk-accuracy-20260729-r28");
+    let executable_path = release_dir.join("Talk.exe");
+    let data_root = temp_dir.join("AppData").join("Local").join("Talk");
+    let sidecar_model_root = neuro_root
+        .join("Talk")
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let sidecar_paraformer_dir = sidecar_model_root.join("paraformer-bilingual-zh-en");
+    fs::create_dir_all(&release_dir).expect("create release dir");
+    fs::create_dir_all(&sidecar_paraformer_dir).expect("create sidecar model dir");
+    fs::write(&executable_path, b"fake exe").expect("write executable marker");
+    fs::write(sidecar_paraformer_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+    fs::write(sidecar_paraformer_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+    fs::write(sidecar_paraformer_dir.join("decoder.int8.onnx"), b"decoder").expect("write decoder");
+
+    let resolved = desktop_resolve_product_local_asr_model_root(&executable_path, &data_root);
+
+    assert_eq!(resolved, sidecar_model_root);
+    fs::remove_dir_all(temp_dir).expect("remove sidecar model fixture");
+}
+
+#[test]
+fn product_local_asr_model_root_keeps_primary_appdata_model_when_it_is_ready() {
+    let temp_dir = unique_temp_dir("talk-desktop-product-local-asr-root-primary");
+    let neuro_root = temp_dir.join("Neuro");
+    let release_dir = neuro_root
+        .join("release")
+        .join("Talk")
+        .join("talk-accuracy-20260729-r28");
+    let executable_path = release_dir.join("Talk.exe");
+    let data_root = temp_dir.join("AppData").join("Local").join("Talk");
+    let primary_model_root = data_root.join("models").join("sherpa-onnx");
+    let primary_paraformer_dir = primary_model_root.join("paraformer-bilingual-zh-en");
+    let sidecar_model_root = neuro_root
+        .join("Talk")
+        .join(".runtime")
+        .join("models")
+        .join("sherpa-onnx");
+    let sidecar_paraformer_dir = sidecar_model_root.join("paraformer-bilingual-zh-en");
+    fs::create_dir_all(&release_dir).expect("create release dir");
+    fs::create_dir_all(&primary_paraformer_dir).expect("create primary model dir");
+    fs::create_dir_all(&sidecar_paraformer_dir).expect("create sidecar model dir");
+    fs::write(&executable_path, b"fake exe").expect("write executable marker");
+    for dir in [&primary_paraformer_dir, &sidecar_paraformer_dir] {
+        fs::write(dir.join("tokens.txt"), b"tokens").expect("write tokens");
+        fs::write(dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+        fs::write(dir.join("decoder.int8.onnx"), b"decoder").expect("write decoder");
+    }
+
+    let resolved = desktop_resolve_product_local_asr_model_root(&executable_path, &data_root);
+
+    assert_eq!(resolved, primary_model_root);
+    fs::remove_dir_all(temp_dir).expect("remove primary model fixture");
 }
 
 #[test]
@@ -5965,6 +7080,7 @@ fn desktop_insert_target_diagnostic_captures_window_focus_and_restore_attempt_de
         target_window_exists: Some(true),
         target_focus_exists: Some(false),
         focus_restore_requested: true,
+        restore_applied: true,
         post_insert_release_reason: Some(ForegroundTargetReleaseReason::TargetStable),
         post_insert_wait_duration_ms: Some(210),
         post_insert_poll_count: Some(7),

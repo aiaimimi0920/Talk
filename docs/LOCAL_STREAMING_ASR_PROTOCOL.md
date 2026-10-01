@@ -160,7 +160,8 @@ content-addressed directory and is not visible beside `Talk.exe`.
 The worker and its required native libraries are embedded in `Talk.exe` during
 product publishing.
 
-Talk then bootstraps the pinned Zipformer model in
+Talk then bootstraps the pinned Chinese/English punctuation Zipformer model
+`zipformer-zh-en-punct-int8-480ms` in
 `%LOCALAPPDATA%\Talk\models\sherpa-onnx`. Download, archive digest, safe
 extraction, required-file validation, and atomic installation all happen before
 the local route is marked ready. Bootstrap status is exposed as `downloading`,

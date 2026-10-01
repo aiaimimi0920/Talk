@@ -71,11 +71,15 @@ jobs:
 
       - name: Resolve release tag
         shell: powershell
+        env:
+          TALK_EVENT_NAME: ${{ github.event_name }}
+          TALK_REQUESTED_TAG: ${{ github.event.inputs.tag }}
+          TALK_REF_NAME: ${{ github.ref_name }}
         run: |
-          if ("${{ github.event_name }}" -eq 'workflow_dispatch') {
-            $tag = "${{ github.event.inputs.tag }}"
+          if ($env:TALK_EVENT_NAME -eq 'workflow_dispatch') {
+            $tag = $env:TALK_REQUESTED_TAG
           } else {
-            $tag = "${{ github.ref_name }}"
+            $tag = $env:TALK_REF_NAME
           }
 
           if ([string]::IsNullOrWhiteSpace($tag)) {

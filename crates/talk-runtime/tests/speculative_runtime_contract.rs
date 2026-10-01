@@ -111,7 +111,7 @@ fn speculative_runtime_treats_punctuated_idle_partial_as_correction_ready() {
 }
 
 #[test]
-fn speculative_runtime_adds_pause_boundary_punctuation_before_correction() {
+fn speculative_runtime_keeps_soft_pause_commits_unpunctuated_for_longer_natural_sentences() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
 
@@ -128,11 +128,11 @@ fn speculative_runtime_adds_pause_boundary_punctuation_before_correction() {
         vec![
             SpeculativeRuntimeEvent::LocalSegmentCommitted {
                 segment_id: "seg-1".to_string(),
-                text: "第一句话没有标点，".to_string(),
+                text: "第一句话没有标点".to_string(),
             },
             SpeculativeRuntimeEvent::CorrectionRequested {
                 segment_id: "seg-1".to_string(),
-                local_text: "第一句话没有标点，".to_string(),
+                local_text: "第一句话没有标点".to_string(),
                 context_before: String::new(),
             },
         ]
@@ -233,12 +233,48 @@ fn speculative_runtime_length_cap_break_backs_up_to_latin_word_boundary() {
 }
 
 #[test]
-fn speculative_runtime_pause_boundary_uses_ascii_comma_for_latin_ending_clause() {
+fn speculative_runtime_length_cap_keeps_backed_up_word_prefix_in_the_next_count() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig {
+        max_chunk_chars: 10,
+        correction_context_chars: 0,
+        ..SegmenterConfig::default()
+    };
+    let source = "alpha beta gamma delta epsilon zeta eta theta";
+
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", source),
+            0,
+            &config,
+        )
+        .unwrap();
+    let committed = events
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        committed,
+        vec![
+            "alpha beta",
+            " gamma delta",
+            " epsilon",
+            " zeta eta",
+            " theta"
+        ]
+    );
+    assert_eq!(committed.concat(), source);
+}
+
+#[test]
+fn speculative_runtime_keeps_latin_ending_soft_pause_clause_without_synthetic_ascii_comma() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
 
-    // A clause that contains CJK but ends in a Latin token must get an ASCII
-    // comma (keyed off the boundary character, not "any CJK char").
     let events = state
         .accept_asr_event_with_segmentation(
             StreamingAsrEvent::partial("seg-1", "打开显卡 gpu"),
@@ -253,18 +289,17 @@ fn speculative_runtime_pause_boundary_uses_ascii_comma_for_latin_ending_clause()
             [
                 SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. },
                 SpeculativeRuntimeEvent::CorrectionRequested { local_text, .. },
-            ] if text == "打开显卡 gpu," && local_text == "打开显卡 gpu,"
+            ] if text == "打开显卡 gpu" && local_text == "打开显卡 gpu"
         ),
         "events = {events:?}"
     );
 }
 
 #[test]
-fn speculative_runtime_pause_boundary_uses_fullwidth_comma_for_cjk_ending_clause() {
+fn speculative_runtime_keeps_cjk_ending_soft_pause_clause_without_synthetic_fullwidth_comma() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
 
-    // A clause containing Latin but ending in CJK must get a full-width comma.
     let events = state
         .accept_asr_event_with_segmentation(
             StreamingAsrEvent::partial("seg-1", "gpu 已经打开了"),
@@ -279,7 +314,7 @@ fn speculative_runtime_pause_boundary_uses_fullwidth_comma_for_cjk_ending_clause
             [
                 SpeculativeRuntimeEvent::LocalSegmentCommitted { text, .. },
                 SpeculativeRuntimeEvent::CorrectionRequested { .. },
-            ] if text == "gpu 已经打开了，"
+            ] if text == "gpu 已经打开了"
         ),
         "events = {events:?}"
     );
@@ -551,6 +586,164 @@ fn speculative_runtime_reports_invalidated_segments_when_revision_shrinks() {
 }
 
 #[test]
+fn speculative_runtime_invalidates_many_revised_segments_without_dropping_other_sources() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment(
+                "seg-1",
+                "第一句。第二句。第三句。第四句。第五句。第六句。",
+            ),
+            0,
+            &config,
+        )
+        .unwrap();
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-other", "保留内容。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "全新句子。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    assert!(revised.iter().any(|event| matches!(
+        event,
+        SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. }
+            if context_before == "保留内容。"
+    )));
+    assert!(revised.iter().any(|event| matches!(
+        event,
+        SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids }
+            if segment_ids == &vec![
+                "seg-1#2".to_string(),
+                "seg-1#3".to_string(),
+                "seg-1#4".to_string(),
+                "seg-1#5".to_string(),
+                "seg-1#6".to_string(),
+            ]
+    )));
+}
+
+#[test]
+fn speculative_runtime_reuses_truncated_boundaries_after_revision() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第二句。第三句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "新第一句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let second = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "新第一句。新第二句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let third = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "新第一句。新第二句。新第三句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        revised.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { segment_id: correction_id, .. },
+            SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids },
+        ] if segment_id == "seg-1"
+            && text == "新第一句。"
+            && correction_id == "seg-1"
+            && segment_ids == &vec!["seg-1#2".to_string(), "seg-1#3".to_string()]
+    ));
+    assert!(matches!(
+        second.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { segment_id: correction_id, .. },
+        ] if segment_id == "seg-1#2"
+            && text == "新第二句。"
+            && correction_id == "seg-1#2"
+    ));
+    assert!(matches!(
+        third.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { segment_id: correction_id, .. },
+        ] if segment_id == "seg-1#3"
+            && text == "新第三句。"
+            && correction_id == "seg-1#3"
+    ));
+}
+
+#[test]
+fn speculative_runtime_single_revision_preserves_interleaved_context_order() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第二句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+    state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-other", "后续来源。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "第一句。第三句。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        revised.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id: correction_id,
+                context_before,
+                ..
+            },
+        ] if segment_id == "seg-1#2"
+            && text == "第三句。"
+            && correction_id == "seg-1#2"
+            && context_before == "第一句。\n后续来源。"
+    ));
+}
+
+#[test]
 fn speculative_runtime_ignores_stale_shorter_prefix_hypothesis() {
     let mut state = SpeculativeRuntimeState::default();
     let config = SegmenterConfig::default();
@@ -576,6 +769,128 @@ fn speculative_runtime_ignores_stale_shorter_prefix_hypothesis() {
         stale.is_empty(),
         "stale shorter hypothesis events = {stale:?}"
     );
+}
+
+#[test]
+fn speculative_runtime_normalizes_padded_hypotheses_across_fast_paths() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let first = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "  第一句。  "),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    let identical = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", " 第一句。 "),
+            0,
+            &config,
+        )
+        .unwrap();
+    let stale = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "  第一句  "),
+            0,
+            &config,
+        )
+        .unwrap();
+    let appended = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "  第一句。第二句。  "),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+    let revised = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-1", "  第一句。第三句。  "),
+            config.punctuation_pause_ms,
+            &config,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        first.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { .. },
+        ] if segment_id == "seg-1" && text == "第一句。"
+    ));
+    assert!(identical.is_empty());
+    assert!(stale.is_empty());
+    assert!(matches!(
+        appended.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { .. },
+        ] if segment_id == "seg-1#2" && text == "第二句。"
+    ));
+    assert!(matches!(
+        revised.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text },
+            SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. },
+        ] if segment_id == "seg-1#2"
+            && text == "第三句。"
+            && context_before == "第一句。"
+    ));
+}
+
+#[test]
+fn speculative_segmentation_hot_path_borrows_event_strings_until_owned_state_boundaries() {
+    let source = include_str!("../src/speculative.rs");
+    let accept_start = source
+        .find("    pub fn accept_asr_event_with_segmentation")
+        .expect("segmented ASR event handler");
+    let reconcile_start = source[accept_start..]
+        .find("    fn reconcile_source_for_segmentation")
+        .map(|offset| accept_start + offset)
+        .expect("source reconciliation helper");
+    let accept_source = &source[accept_start..reconcile_start];
+
+    assert!(accept_source.contains("let source_segment_id = event.segment_id();"));
+    assert!(accept_source.contains("let source_text = event.text().trim();"));
+    assert!(accept_source.contains("let text = &source_text[tail_start_byte..];"));
+    assert!(!accept_source.contains("event.segment_id().to_string()"));
+    assert!(!accept_source.contains("event.text().trim().to_string()"));
+    assert!(!accept_source.contains("source_text[tail_start_byte..].to_string()"));
+    assert!(accept_source.contains("let mut events = Vec::with_capacity(event_capacity);"));
+    assert!(accept_source.contains(".saturating_mul(2)"));
+    assert!(accept_source.contains("usize::from(!invalidated_ids.is_empty())"));
+    assert!(accept_source.contains("(!invalidated_ids.is_empty()).then(HashSet::new)"));
+    assert!(accept_source.contains("if let Some(reemitted_ids) = reemitted_ids.as_mut()"));
+    assert!(!accept_source.contains("let mut reemitted_ids: HashSet<String> = HashSet::new()"));
+
+    let invalidate_start = source[reconcile_start..]
+        .find("    fn invalidate_revised_source_segments")
+        .map(|offset| reconcile_start + offset)
+        .expect("revision invalidation helper");
+    let reconcile_source = &source[reconcile_start..invalidate_start];
+    let append_check = reconcile_source
+        .find("source_text.strip_prefix(committed_text)")
+        .expect("borrowed append fast path");
+    let revision_ownership = reconcile_source
+        .find("committed_text.to_owned()")
+        .expect("revision-only ownership boundary");
+
+    assert!(append_check < revision_ownership);
+    assert!(!reconcile_source.contains("committed_text.trim().to_string()"));
+
+    let next_id_start = source[invalidate_start..]
+        .find("    fn next_runtime_segment_id")
+        .map(|offset| invalidate_start + offset)
+        .expect("runtime segment id helper");
+    let invalidate_source = &source[invalidate_start..next_id_start];
+    assert!(!invalidate_source.contains(".cloned()"));
+    assert!(invalidate_source.contains("boundary_count"));
+    assert!(invalidate_source.contains(".truncate(retained_count)"));
+    assert!(invalidate_source.contains("if let [invalidated_id] = invalidated_ids.as_slice()"));
+    assert!(invalidate_source.contains(".rposition("));
+    assert!(invalidate_source.contains("self.committed_segment_ids.remove(index)"));
+    assert!(invalidate_source.contains("collect::<HashSet<_>>()"));
 }
 
 #[test]
@@ -627,6 +942,51 @@ fn speculative_runtime_requests_three_ordered_clause_corrections_for_example_sen
             ("seg-1#3".to_string(), "明天我们去上海玩。".to_string()),
         ]
     );
+}
+
+#[test]
+fn speculative_runtime_does_not_recommit_earlier_internal_clause_boundaries_from_partial_growth() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig::default();
+
+    let first = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "你好，"),
+            0,
+            &config,
+        )
+        .unwrap();
+    let second = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::partial("seg-1", "你好，今天我们去北京玩，"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    let first_corrections = first
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested { local_text, .. } => {
+                Some(local_text.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let second_corrections = second
+        .iter()
+        .filter_map(|event| match event {
+            SpeculativeRuntimeEvent::CorrectionRequested {
+                segment_id,
+                local_text,
+                ..
+            } => Some((segment_id.as_str(), local_text.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(first_corrections, vec!["你好，"]);
+    assert_eq!(second_corrections, vec![("seg-1#2", "今天我们去北京玩，")]);
 }
 
 #[test]
@@ -770,6 +1130,76 @@ fn speculative_runtime_includes_bounded_previous_local_context_for_correction() 
             context_before: "很长。".to_string(),
         }
     );
+}
+
+#[test]
+fn speculative_runtime_bounded_context_preserves_tail_newline_boundaries() {
+    let mut state = SpeculativeRuntimeState::default();
+    let config = SegmenterConfig {
+        correction_context_chars: 4,
+        ..SegmenterConfig::default()
+    };
+
+    for (segment_id, text) in [("seg-1", "甲。"), ("seg-2", "乙。")] {
+        state
+            .accept_asr_event_with_segmentation(
+                StreamingAsrEvent::final_segment(segment_id, text),
+                0,
+                &config,
+            )
+            .unwrap();
+    }
+    let events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-3", "丙。"),
+            0,
+            &config,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        events.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { .. },
+            SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. },
+        ] if context_before == "。\n乙。"
+    ));
+
+    let one_char_events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-4", "丁。"),
+            0,
+            &SegmenterConfig {
+                correction_context_chars: 1,
+                ..SegmenterConfig::default()
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        one_char_events.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { .. },
+            SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. },
+        ] if context_before == "。"
+    ));
+
+    let no_context_events = state
+        .accept_asr_event_with_segmentation(
+            StreamingAsrEvent::final_segment("seg-5", "戊。"),
+            0,
+            &SegmenterConfig {
+                correction_context_chars: 0,
+                ..SegmenterConfig::default()
+            },
+        )
+        .unwrap();
+    assert!(matches!(
+        no_context_events.as_slice(),
+        [
+            SpeculativeRuntimeEvent::LocalSegmentCommitted { .. },
+            SpeculativeRuntimeEvent::CorrectionRequested { context_before, .. },
+        ] if context_before.is_empty()
+    ));
 }
 
 fn correction_event_count(events: &[SpeculativeRuntimeEvent]) -> usize {
@@ -1199,7 +1629,8 @@ final_timeout_ms = 1000
         vec![StreamingAsrEvent::partial("seg-1", "你好")]
     );
 
-    let final_events = live_session.stop(recording).await.unwrap();
+    let final_events = live_session.stop(&recording).await.unwrap();
+    let artifact = recording.finish().unwrap();
     let received = tokio::time::timeout(Duration::from_secs(1), server)
         .await
         .unwrap()
@@ -1215,4 +1646,177 @@ final_timeout_ms = 1000
     assert_eq!(received[0]["type"], "start");
     assert_eq!(received[1]["type"], "audio");
     assert_eq!(received[2]["type"], "stop");
+    assert!(
+        artifact.path.exists(),
+        "finalized recording should be persisted"
+    );
+}
+
+#[tokio::test]
+async fn live_streaming_service_session_catches_up_multiple_buffered_chunks_per_pump() {
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::Value;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use std::time::{Duration, Instant};
+    use talk_audio::{start_recording, AudioCaptureRequest, WavSettings};
+    use talk_core::AudioBackendMode;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/asr", listener.local_addr().unwrap());
+    let audio_messages_before_stop = Arc::new(AtomicUsize::new(0));
+    let server_audio_messages_before_stop = Arc::clone(&audio_messages_before_stop);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut websocket = accept_async(stream).await.unwrap();
+
+        let start = websocket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&start).unwrap()["type"],
+            "start"
+        );
+        websocket
+            .send(Message::Text(
+                r#"{"type":"ready","engine":"sherpa-onnx","model":"zipformer-streaming-zh","sample_rate_hz":16000,"channels":1}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+
+        loop {
+            let message = websocket
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_text()
+                .unwrap();
+            let message = serde_json::from_str::<Value>(&message).unwrap();
+            match message["type"].as_str().unwrap() {
+                "audio" => {
+                    server_audio_messages_before_stop.fetch_add(1, Ordering::SeqCst);
+                }
+                "stop" => {
+                    websocket
+                        .send(Message::Text(
+                            r#"{"type":"final","session_id":"live-streaming-runtime-session-catch-up","segment_id":"seg-1","text":"你好。"}"#
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                    break;
+                }
+                other => panic!("unexpected streaming message type: {other}"),
+            }
+        }
+    });
+
+    let root = std::env::temp_dir().join(format!(
+        "talk-runtime-live-streaming-service-catch-up-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let audio_dir = root.join("audio").display().to_string().replace('\\', "/");
+    let log_dir = root.join("logs").display().to_string().replace('\\', "/");
+    let config = TalkConfig::from_toml_str(&format!(
+        r#"
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = "{audio_dir}"
+
+[provider]
+kind = "mock"
+mock_transcript = "provider should not be used"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+
+[logging]
+dir = "{log_dir}"
+
+[speculative]
+enabled = true
+local_asr = "streaming_service"
+cloud_correction = "disabled"
+
+[speculative.streaming_service]
+endpoint = "{endpoint}"
+sample_rate_hz = 16000
+channels = 1
+connect_timeout_ms = 1000
+idle_timeout_ms = 1000
+final_timeout_ms = 1000
+"#
+    ))
+    .unwrap();
+    let recording = start_recording(&AudioCaptureRequest {
+        backend: AudioBackendMode::Silent,
+        temp_dir: root.join("audio"),
+        session_id: "live-streaming-runtime-session-catch-up".to_string(),
+        input_device: None,
+        wav_settings: WavSettings::mono_16khz(),
+        max_recording_seconds: 15,
+        // Five 80 ms streaming chunks worth of PCM are immediately available.
+        silent_samples: 1_280 * 5,
+    })
+    .unwrap();
+
+    let mut live_session = LocalStreamingAsrLiveSession::start(
+        &config,
+        "live-streaming-runtime-session-catch-up",
+        Some("zh"),
+    )
+    .await
+    .unwrap();
+    let partial_events = live_session
+        .pump_available_audio(&recording, Duration::from_millis(100))
+        .await
+        .unwrap();
+    assert!(partial_events.is_empty());
+
+    let wait_deadline = Instant::now() + Duration::from_millis(250);
+    while audio_messages_before_stop.load(Ordering::SeqCst) < 4 && Instant::now() < wait_deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(
+        audio_messages_before_stop.load(Ordering::SeqCst),
+        4,
+        "one live pump should catch up multiple buffered PCM chunks instead of leaking seconds of backlog"
+    );
+
+    let final_events = live_session.stop(&recording).await.unwrap();
+    let artifact = recording.finish().unwrap();
+    tokio::time::timeout(Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        final_events,
+        vec![StreamingAsrEvent::final_segment("seg-1", "你好。")]
+    );
+    assert!(
+        artifact.path.exists(),
+        "finalized recording should be persisted"
+    );
 }

@@ -2,8 +2,10 @@ use bzip2::write::BzEncoder;
 use bzip2::Compression;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Barrier};
 use talk_desktop::{
-    default_zipformer_model_spec, install_model_from_reader, validate_installed_model, ModelSpec,
+    default_product_local_asr_model_spec, install_model_from_reader, validate_installed_model,
+    ModelSpec,
 };
 use tar::{Builder, Header};
 
@@ -95,33 +97,30 @@ fn fixture_spec(archive: &[u8]) -> ModelSpec {
 }
 
 #[test]
-fn exposes_the_evidence_selected_zipformer_catalog_entry() {
-    let spec = default_zipformer_model_spec();
+fn exposes_the_evidence_selected_product_local_asr_catalog_entry() {
+    let spec = default_product_local_asr_model_spec();
 
-    assert_eq!(
-        spec.id,
-        "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"
-    );
+    assert_eq!(spec.id, "zipformer-zh-en-punct-int8-480ms");
     assert_eq!(
         spec.url,
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2"
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2"
     );
     assert_eq!(
         spec.archive_name,
-        "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2"
+        "sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2"
     );
     assert_eq!(
         spec.sha256,
-        "28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4"
+        "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74"
     );
     assert!(spec.url.starts_with("https://"));
     assert_eq!(
         spec.required_files,
         vec![
             "tokens.txt",
-            "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
-            "decoder-epoch-75-avg-11-chunk-16-left-128.onnx",
-            "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx",
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "joiner.int8.onnx",
         ]
     );
 }
@@ -152,6 +151,98 @@ fn installs_a_hash_verified_model_and_writes_a_marker() {
 }
 
 #[test]
+fn reuses_a_valid_installed_model_without_replacing_its_directory() {
+    let archive = archive_with_files(&[
+        ("fixture/tokens.txt", b"tokens"),
+        ("fixture/encoder.onnx", b"encoder"),
+        ("fixture/decoder.onnx", b"decoder"),
+        ("fixture/joiner.onnx", b"joiner"),
+    ]);
+    let spec = fixture_spec(&archive);
+    let root = unique_temp_dir("talk-model-bootstrap-reuse");
+    let installed = install_model_from_reader(&spec, Cursor::new(&archive), &root)
+        .expect("install fixture model");
+    let sentinel = installed.join("keep-existing-install.txt");
+    std::fs::write(&sentinel, b"keep").expect("write installed model sentinel");
+
+    let reused = install_model_from_reader(&spec, Cursor::new(b"not-an-archive"), &root)
+        .expect("reuse valid fixture model without reading another archive");
+
+    assert_eq!(reused, installed);
+    assert_eq!(std::fs::read(&sentinel).expect("read sentinel"), b"keep");
+    validate_installed_model(&spec, &reused).expect("validate reused model");
+    std::fs::remove_dir_all(root).expect("remove model fixture");
+}
+
+#[test]
+fn concurrent_model_installations_converge_on_one_valid_destination() {
+    const WORKERS: usize = 8;
+    let archive = Arc::new(archive_with_files(&[
+        ("fixture/tokens.txt", b"tokens"),
+        ("fixture/encoder.onnx", b"encoder"),
+        ("fixture/decoder.onnx", b"decoder"),
+        ("fixture/joiner.onnx", b"joiner"),
+    ]));
+    let spec = Arc::new(fixture_spec(&archive));
+    let root = Arc::new(unique_temp_dir("talk-model-bootstrap-concurrent"));
+    let barrier = Arc::new(Barrier::new(WORKERS));
+    let workers = (0..WORKERS)
+        .map(|_| {
+            let archive = Arc::clone(&archive);
+            let spec = Arc::clone(&spec);
+            let root = Arc::clone(&root);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                install_model_from_reader(&spec, Cursor::new(archive.as_slice()), &root)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for worker in workers {
+        let installed = worker
+            .join()
+            .expect("model installation worker must not panic")
+            .expect("concurrent model installation must succeed");
+        assert_eq!(installed, root.join("fixture-model"));
+    }
+    validate_installed_model(&spec, &root.join("fixture-model"))
+        .expect("validate concurrently installed model");
+    let leftovers = std::fs::read_dir(root.as_path())
+        .expect("list model root")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(".fixture-model."))
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "leftover model staging paths: {leftovers:?}"
+    );
+    std::fs::remove_dir_all(root.as_path()).expect("remove model fixture");
+}
+
+#[test]
+fn installs_required_model_files_from_nested_directories() {
+    let archive = archive_with_files(&[
+        ("fixture/config/tokens.txt", b"tokens"),
+        ("fixture/models/encoder.onnx", b"encoder"),
+        ("fixture/models/decoder.onnx", b"decoder"),
+        ("fixture/models/transducer/joiner.onnx", b"joiner"),
+        ("fixture/metadata/notes.txt", b"not required"),
+    ]);
+    let spec = fixture_spec(&archive);
+    let root = unique_temp_dir("talk-model-bootstrap-nested");
+
+    let installed = install_model_from_reader(&spec, Cursor::new(&archive), &root)
+        .expect("install nested fixture model");
+
+    validate_installed_model(&spec, &installed).expect("validate nested model");
+    assert!(installed.join("config/tokens.txt").is_file());
+    assert!(installed.join("models/transducer/joiner.onnx").is_file());
+    std::fs::remove_dir_all(root).expect("remove nested model fixture");
+}
+
+#[test]
 fn rejects_an_archive_with_the_wrong_sha256() {
     let archive = archive_with_files(&[("fixture/tokens.txt", b"tokens")]);
     let mut spec = fixture_spec(&archive);
@@ -163,6 +254,29 @@ fn rejects_an_archive_with_the_wrong_sha256() {
 
     assert!(error.contains("SHA-256"), "unexpected error: {error}");
     assert!(!root.join("fixture-model").exists());
+}
+
+#[test]
+fn rejects_model_catalog_path_components_that_can_escape_the_model_root() {
+    let archive = archive_with_files(&[("fixture/tokens.txt", b"tokens")]);
+    let root = unique_temp_dir("talk-model-bootstrap-catalog-traversal");
+
+    for (id, archive_name) in [
+        ("../escape", "fixture.tar.bz2"),
+        ("fixture-model", "../escape.tar.bz2"),
+        ("nested/model", "fixture.tar.bz2"),
+    ] {
+        let mut spec = fixture_spec(&archive);
+        spec.id = id.to_string();
+        spec.archive_name = archive_name.to_string();
+        let error = install_model_from_reader(&spec, Cursor::new(&archive), &root)
+            .expect_err("unsafe catalog path component must fail");
+        assert!(
+            error.contains("safe path component"),
+            "unexpected error: {error}"
+        );
+    }
+    assert!(!root.join("escape").exists());
 }
 
 #[test]

@@ -114,11 +114,11 @@ function Test-TalkReleaseBundleZip {
         hasMarkdownFences = ($readmeText -match '```powershell')
         hasEscapedBacktickDamage = (Test-TalkReleaseBundleReadmeBacktickDamage -ReadmeText $readmeText)
     }
-    if (-not $readme.hasLaunchCommand -or -not $readme.hasHotkeyProbeCommand -or -not $readme.hasAudioOverridePath -or -not $readme.hasMarkdownFences) {
-        throw 'README.md is missing required launch, hotkey probe, audio override, or markdown fence content'
-    }
     if ($readme.hasEscapedBacktickDamage) {
         throw 'README.md appears to contain PowerShell backtick escape damage'
+    }
+    if (-not $readme.hasLaunchCommand -or -not $readme.hasHotkeyProbeCommand -or -not $readme.hasAudioOverridePath -or -not $readme.hasMarkdownFences) {
+        throw 'README.md is missing required launch, hotkey probe, audio override, or markdown fence content'
     }
 
     $checksumFailures = New-Object 'System.Collections.Generic.List[string]'
@@ -144,7 +144,7 @@ function Test-TalkReleaseBundleZip {
             $checksumFailures.Add("hash mismatch: $relativePath expected=$expectedHash actual=$actualHash") | Out-Null
             return
         }
-        $script:checked++
+        $checked++
     }
     if ($checksumFailures.Count -gt 0) {
         throw ('checksum verification failed: ' + ($checksumFailures.ToArray() -join '; '))

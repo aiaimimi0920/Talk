@@ -155,7 +155,14 @@ This will start in:
 
 The real-microphone workflow in
 `scripts/Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1` will treat these
-categories as first-class evidence, not optional manual notes.
+categories as first-class evidence, not optional manual notes. Reusing a
+previously recorded corpus with `-SkipRecording` will only be allowed when the
+current prompt manifest and the existing corpus manifest cover the same
+sample-id set; stale corpora become a hard blocker instead of silently
+reusing partial evidence. To keep operator refresh work bounded, record-only
+refresh runs will also support reusing the aligned subset of an existing corpus
+and capturing only the newly required sample IDs before rewriting the corpus
+manifest in prompt order.
 
 The result is that future model-default changes are anchored to the same
 multilingual product target instead of a minimal smoke set.

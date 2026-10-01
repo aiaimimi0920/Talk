@@ -16,8 +16,8 @@ pub use speculative::{
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use talk_audio::{
-    capture_audio, AudioCaptureRequest, RecordingPcmChunk, RecordingPcmCursor, RecordingSession,
-    WavSettings,
+    capture_audio, AudioCaptureRequest, RecordingPcmChunk, RecordingPcmCursor, RecordingPcmSource,
+    RecordingSession, WavSettings,
 };
 use talk_client::{
     final_transcript_from_streaming_asr_events, run_external_streaming_asr_command, FrontContext,
@@ -27,10 +27,11 @@ use talk_client::{
 };
 use talk_core::{
     ClipboardBackendMode, OutputMode, ProviderKind, SessionStatus,
-    SpeculativeStreamingServiceConfig, TalkConfig, TriggerMode, VoiceEvent, VoiceEventKind,
-    VoiceMode, VoiceSession,
+    SpeculativeStreamingServiceConfig, TalkConfig, TalkError, TriggerMode, VoiceEvent,
+    VoiceEventKind, VoiceMode, VoiceSession,
 };
 use talk_hotkey::{HotkeyAction, HotkeyStateMachine};
+pub use talk_insert::flush_pending_clipboard_restore;
 use talk_insert::{
     ClipboardFallbackInserter, ClipboardPasteInserter, ClipboardRestorePolicy, DryRunInserter,
     InsertMethod, InsertOutcome, TextInserter, WindowsClipboardBackend, WindowsPasteShortcut,
@@ -38,7 +39,8 @@ use talk_insert::{
 use uuid::Uuid;
 pub use voice_processing::{
     analyze_smart_voice_mode, count_non_whitespace, count_sentence_boundaries,
-    infer_smart_voice_mode, smart_transcribe_fallback_is_stable, validate_faithful_output,
+    infer_smart_voice_mode, postprocess_faithful_transcription_output,
+    smart_transcribe_fallback_is_stable, validate_faithful_output,
     voice_mode_requires_faithful_output, FaithfulOutputFallbackReason, FaithfulOutputValidation,
     SmartLeadingIntent, SmartRouteEvidence, SmartRouteReason, SmartVoiceRouteAnalysis,
 };
@@ -105,13 +107,21 @@ struct RuntimeVoiceModeResolution {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeProcessedOutput {
     pub text: String,
+    pub provider_output_text: String,
     pub faithful_validation: Option<FaithfulOutputValidation>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct RuntimeProcessingDiagnostics {
     resolution: RuntimeVoiceModeResolution,
     faithful_validation: Option<FaithfulOutputValidation>,
+    failure: Option<RuntimeFailureDiagnostics>,
+}
+
+#[derive(Debug)]
+struct RuntimeFailureDiagnostics {
+    kind: Option<&'static str>,
+    chain: Vec<String>,
 }
 
 fn load_config(path: &Path) -> Result<TalkConfig> {
@@ -339,11 +349,45 @@ where
 
 pub async fn run_voice_session_from_audio_artifact_with_insert_hooks<F, G, H>(
     config: &TalkConfig,
-    mut session: VoiceSession,
+    session: VoiceSession,
     trigger_events: Vec<&'static str>,
     audio_path: PathBuf,
     mock_text: Option<String>,
     mode_override: Option<VoiceMode>,
+    context: FrontContext,
+    before_insert: G,
+    after_insert: H,
+    phase_callback: F,
+) -> Result<VoiceRunReport>
+where
+    F: FnMut(RuntimePhase),
+    G: Fn(&RuntimeInsertContext) -> RuntimeInsertDirective,
+    H: Fn(),
+{
+    run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks(
+        config,
+        session,
+        trigger_events,
+        audio_path,
+        mock_text,
+        mode_override,
+        SmartRouteEvidence::default(),
+        context,
+        before_insert,
+        after_insert,
+        phase_callback,
+    )
+    .await
+}
+
+pub async fn run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks<F, G, H>(
+    config: &TalkConfig,
+    session: VoiceSession,
+    trigger_events: Vec<&'static str>,
+    audio_path: PathBuf,
+    mock_text: Option<String>,
+    mode_override: Option<VoiceMode>,
+    route_evidence: SmartRouteEvidence,
     context: FrontContext,
     before_insert: G,
     after_insert: H,
@@ -370,12 +414,56 @@ where
             );
         }
     };
+    finish_session_from_transcript(
+        config,
+        session,
+        trigger_events,
+        transcript,
+        mode_override,
+        route_evidence,
+        context,
+        |output, insert_context| {
+            insert_output_with_hooks(
+                config,
+                output,
+                insert_context,
+                &before_insert,
+                &after_insert,
+            )
+        },
+        phase_callback,
+    )
+    .await
+}
+
+/// Shared "TranscriptReady -> resolve mode -> process -> insert -> persist"
+/// tail used by every voice-session entry point once a transcript exists.
+async fn finish_session_from_transcript<F, I>(
+    config: &TalkConfig,
+    mut session: VoiceSession,
+    trigger_events: Vec<&'static str>,
+    transcript: String,
+    mode_override: Option<VoiceMode>,
+    route_evidence: SmartRouteEvidence,
+    context: FrontContext,
+    insert: I,
+    mut phase_callback: F,
+) -> Result<VoiceRunReport>
+where
+    F: FnMut(RuntimePhase),
+    I: Fn(&str, &RuntimeInsertContext) -> Result<InsertOutcome>,
+{
     session.apply(VoiceEvent::TranscriptReady {
         text: transcript.clone(),
     })?;
     phase_callback(RuntimePhase::Processing);
 
-    let resolution = resolve_runtime_voice_mode(config, mode_override, Some(&transcript));
+    let resolution = resolve_runtime_voice_mode_with_evidence(
+        config,
+        mode_override,
+        Some(&transcript),
+        route_evidence,
+    );
     let processed_output = match process_output_with_diagnostics(
         config,
         transcript.clone(),
@@ -399,27 +487,46 @@ where
             );
         }
     };
+    finish_session_with_processed_output(
+        config,
+        session,
+        trigger_events,
+        &transcript,
+        resolution,
+        processed_output,
+        insert,
+        phase_callback,
+    )
+}
+
+/// Shared "ProcessedTextReady -> insert -> InsertSucceeded -> persist log"
+/// tail; kept synchronous so local-transcript sessions can reuse it.
+fn finish_session_with_processed_output<F, I>(
+    config: &TalkConfig,
+    mut session: VoiceSession,
+    trigger_events: Vec<&'static str>,
+    transcript: &str,
+    resolution: RuntimeVoiceModeResolution,
+    processed_output: RuntimeProcessedOutput,
+    insert: I,
+    mut phase_callback: F,
+) -> Result<VoiceRunReport>
+where
+    F: FnMut(RuntimePhase),
+    I: Fn(&str, &RuntimeInsertContext) -> Result<InsertOutcome>,
+{
     let RuntimeProcessedOutput {
         text: output,
         faithful_validation,
+        ..
     } = processed_output;
-    let processing_diagnostics = RuntimeProcessingDiagnostics {
-        resolution,
-        faithful_validation,
-    };
     session.apply(VoiceEvent::ProcessedTextReady {
         text: output.clone(),
     })?;
     phase_callback(RuntimePhase::Inserting);
 
-    let insert_context = runtime_insert_context(resolution, &transcript, &output);
-    let outcome = match insert_output_with_hooks(
-        config,
-        &output,
-        &insert_context,
-        &before_insert,
-        &after_insert,
-    ) {
+    let insert_context = runtime_insert_context(resolution, transcript, &output);
+    let outcome = match insert(&output, &insert_context) {
         Ok(outcome) => outcome,
         Err(error) => {
             return persist_failed_session_with_resolution(
@@ -442,7 +549,11 @@ where
         &session,
         Some(&outcome),
         &trigger_events,
-        Some(processing_diagnostics),
+        Some(RuntimeProcessingDiagnostics {
+            resolution,
+            faithful_validation,
+            failure: None,
+        }),
     )?;
 
     Ok(VoiceRunReport {
@@ -488,7 +599,7 @@ where
 
 pub async fn run_voice_session_from_transcript_with_route_evidence_and_insert_hooks<F, G, H>(
     config: &TalkConfig,
-    mut session: VoiceSession,
+    session: VoiceSession,
     trigger_events: Vec<&'static str>,
     transcript: String,
     mode_override: Option<VoiceMode>,
@@ -517,94 +628,26 @@ where
         );
     }
 
-    session.apply(VoiceEvent::TranscriptReady {
-        text: transcript.clone(),
-    })?;
-    phase_callback(RuntimePhase::Processing);
-
-    let resolution = resolve_runtime_voice_mode_with_evidence(
+    finish_session_from_transcript(
         config,
+        session,
+        trigger_events,
+        transcript,
         mode_override,
-        Some(&transcript),
         route_evidence,
-    );
-    let processed_output = match process_output_with_diagnostics(
-        config,
-        transcript.clone(),
-        Some(resolution.processing_mode),
         context,
+        |output, insert_context| {
+            insert_output_with_hooks(
+                config,
+                output,
+                insert_context,
+                &before_insert,
+                &after_insert,
+            )
+        },
+        phase_callback,
     )
     .await
-    {
-        Ok(output) => output,
-        Err(error) => {
-            return persist_failed_session_with_resolution(
-                config,
-                session,
-                &trigger_events,
-                error,
-                false,
-                resolution,
-                |phase| {
-                    phase_callback(phase);
-                },
-            );
-        }
-    };
-    let RuntimeProcessedOutput {
-        text: output,
-        faithful_validation,
-    } = processed_output;
-    let processing_diagnostics = RuntimeProcessingDiagnostics {
-        resolution,
-        faithful_validation,
-    };
-    session.apply(VoiceEvent::ProcessedTextReady {
-        text: output.clone(),
-    })?;
-    phase_callback(RuntimePhase::Inserting);
-
-    let insert_context = runtime_insert_context(resolution, &transcript, &output);
-    let outcome = match insert_output_with_hooks(
-        config,
-        &output,
-        &insert_context,
-        &before_insert,
-        &after_insert,
-    ) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return persist_failed_session_with_resolution(
-                config,
-                session,
-                &trigger_events,
-                error,
-                true,
-                resolution,
-                |phase| {
-                    phase_callback(phase);
-                },
-            );
-        }
-    };
-    session.apply(VoiceEvent::InsertSucceeded)?;
-    phase_callback(RuntimePhase::Completed);
-    let log_path = persist_session_log(
-        config,
-        &session,
-        Some(&outcome),
-        &trigger_events,
-        Some(processing_diagnostics),
-    )?;
-
-    Ok(VoiceRunReport {
-        session,
-        outcome: Some(outcome),
-        trigger_events,
-        log_path,
-        requested_mode: resolution.requested_mode,
-        smart_routed_mode: resolution.smart_routed_mode,
-    })
 }
 
 pub fn run_voice_session_from_local_transcript_with_insert_hooks<F, G, H>(
@@ -665,64 +708,36 @@ where
         );
     }
 
-    session.apply(VoiceEvent::TranscriptReady {
-        text: transcript.clone(),
-    })?;
-    session.apply(VoiceEvent::ProcessedTextReady {
-        text: transcript.clone(),
-    })?;
-    phase_callback(RuntimePhase::Inserting);
-
     let resolution = resolve_runtime_voice_mode_with_evidence(
         config,
         mode_override,
         Some(&transcript),
         route_evidence,
     );
-    let insert_context = runtime_insert_context(resolution, &transcript, &transcript);
-    let outcome = match insert_output_with_hooks(
-        config,
-        &transcript,
-        &insert_context,
-        &before_insert,
-        &after_insert,
-    ) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return persist_failed_session_with_resolution(
-                config,
-                session,
-                &trigger_events,
-                error,
-                true,
-                resolution,
-                |phase| {
-                    phase_callback(phase);
-                },
-            );
-        }
-    };
-    session.apply(VoiceEvent::InsertSucceeded)?;
-    phase_callback(RuntimePhase::Completed);
-    let log_path = persist_session_log(
-        config,
-        &session,
-        Some(&outcome),
-        &trigger_events,
-        Some(RuntimeProcessingDiagnostics {
-            resolution,
-            faithful_validation: None,
-        }),
-    )?;
+    let processed_output =
+        finalize_processed_output(&transcript, transcript.clone(), resolution.processing_mode)?;
 
-    Ok(VoiceRunReport {
+    session.apply(VoiceEvent::TranscriptReady {
+        text: transcript.clone(),
+    })?;
+    finish_session_with_processed_output(
+        config,
         session,
-        outcome: Some(outcome),
         trigger_events,
-        log_path,
-        requested_mode: resolution.requested_mode,
-        smart_routed_mode: resolution.smart_routed_mode,
-    })
+        &transcript,
+        resolution,
+        processed_output,
+        |output, insert_context| {
+            insert_output_with_hooks(
+                config,
+                output,
+                insert_context,
+                &before_insert,
+                &after_insert,
+            )
+        },
+        phase_callback,
+    )
 }
 
 trait StreamingPcmSource {
@@ -742,6 +757,19 @@ impl StreamingPcmSource for RecordingSession {
 
     fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<()> {
         RecordingSession::discard_consumed_pcm(self, cursor).map_err(Into::into)
+    }
+}
+
+impl StreamingPcmSource for RecordingPcmSource {
+    fn drain_pcm_chunk(
+        &self,
+        cursor: &mut RecordingPcmCursor,
+    ) -> Result<Option<RecordingPcmChunk>> {
+        RecordingPcmSource::drain_pcm_chunk(self, cursor).map_err(Into::into)
+    }
+
+    fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<()> {
+        RecordingPcmSource::discard_consumed_pcm(self, cursor).map_err(Into::into)
     }
 }
 
@@ -822,41 +850,57 @@ where
         if max_chunks.is_some_and(|limit| sent_chunks >= limit) {
             break;
         }
-        let cursor_before_drain = cursor.clone();
+        let cursor_before_drain = cursor.checkpoint();
         let Some(chunk) = source.drain_pcm_chunk(cursor)? else {
             break;
         };
         if chunk.sample_rate_hz != expected_sample_rate_hz || chunk.channels != expected_channels {
-            *cursor = cursor_before_drain;
-            anyhow::bail!(
+            let error = anyhow::anyhow!(
                 "recording PCM chunk format {} Hz / {} channels does not match streaming_service {} Hz / {} channels",
                 chunk.sample_rate_hz,
                 chunk.channels,
                 expected_sample_rate_hz,
                 expected_channels
             );
+            cursor.restore_checkpoint(cursor_before_drain);
+            cursor.recycle_pcm_chunk(chunk);
+            return Err(error);
         }
         match tokio::time::timeout(send_timeout, sender.send_pcm_chunk(&chunk)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                *cursor = cursor_before_drain;
+                cursor.restore_checkpoint(cursor_before_drain);
+                cursor.recycle_pcm_chunk(chunk);
                 return Err(error);
             }
             Err(_) => {
-                *cursor = cursor_before_drain;
+                cursor.restore_checkpoint(cursor_before_drain);
+                cursor.recycle_pcm_chunk(chunk);
                 return Err(StreamingPcmSendTimeout {
                     timeout_ms: send_timeout.as_millis(),
                 }
                 .into());
             }
         }
-        source.discard_consumed_pcm(cursor)?;
+        if let Err(error) = source.discard_consumed_pcm(cursor) {
+            cursor.restore_checkpoint(cursor_before_drain);
+            cursor.recycle_pcm_chunk(chunk);
+            return Err(error);
+        }
+        cursor.recycle_pcm_chunk(chunk);
         sent_chunks = sent_chunks.saturating_add(1);
     }
     Ok(sent_chunks)
 }
 
 const MAX_RETAINED_STREAMING_ASR_EVENTS: usize = 128;
+/// The desktop pumps live local-ASR audio from a roughly 50 ms HUD timer.
+/// Sending only one buffered PCM chunk per tick makes the stream recover from
+/// brief UI stalls too slowly: an 80 ms chunk minus a ~50 ms tick only claws
+/// back ~30 ms of backlog per healthy tick, so a short hiccup can leave seconds
+/// of transcript lag. A small bounded burst keeps catch-up fast without letting
+/// one pump monopolize the UI thread.
+const LIVE_STREAMING_PCM_PUMP_MAX_CHUNKS: usize = 4;
 
 fn retain_latest_streaming_asr_events<I>(
     retained: &mut Vec<StreamingAsrEvent>,
@@ -865,16 +909,45 @@ fn retain_latest_streaming_asr_events<I>(
 ) where
     I: IntoIterator<Item = StreamingAsrEvent>,
 {
-    if max_events == 0 {
-        retained.clear();
+    for event in incoming {
+        push_coalesced_streaming_asr_history_event(retained, event);
+    }
+    evict_streaming_asr_history_overflow(retained, max_events);
+}
+
+/// Coalesces adjacent updates of the same kind for one segment. Repeated
+/// partials and revised finals replace the previous entry without scanning the
+/// full transcript. Partial-to-final boundaries remain visible to callers of
+/// the live-session `stop` contract.
+fn push_coalesced_streaming_asr_history_event(
+    retained: &mut Vec<StreamingAsrEvent>,
+    event: StreamingAsrEvent,
+) {
+    if let Some(previous) = retained.last_mut() {
+        if previous.segment_id() == event.segment_id() && previous.is_final() == event.is_final() {
+            *previous = event;
+            return;
+        }
+    }
+    retained.push(event);
+}
+
+/// Capacity eviction skips final events: their count is naturally bounded by
+/// the number of committed segments, and dropping them would silently truncate
+/// the transcript rebuilt from history after `stop()`.
+fn evict_streaming_asr_history_overflow(retained: &mut Vec<StreamingAsrEvent>, max_events: usize) {
+    let mut excess = retained.len().saturating_sub(max_events);
+    if excess == 0 {
         return;
     }
-
-    retained.extend(incoming);
-    let excess = retained.len().saturating_sub(max_events);
-    if excess > 0 {
-        retained.drain(..excess);
-    }
+    retained.retain(|event| {
+        if excess > 0 && !event.is_final() {
+            excess -= 1;
+            false
+        } else {
+            true
+        }
+    });
 }
 
 pub async fn run_local_streaming_asr_service_from_recording(
@@ -975,9 +1048,34 @@ impl LocalStreamingAsrLiveSession {
         recording: &talk_audio::RecordingSession,
         event_idle_timeout: Duration,
     ) -> Result<Vec<StreamingAsrEvent>> {
+        self.pump_available_audio_from_source(recording, event_idle_timeout)
+            .await
+    }
+
+    pub async fn pump_available_pcm_source(
+        &mut self,
+        source: &RecordingPcmSource,
+        event_idle_timeout: Duration,
+    ) -> Result<Vec<StreamingAsrEvent>> {
+        self.pump_available_audio_from_source(source, event_idle_timeout)
+            .await
+    }
+
+    async fn pump_available_audio_from_source<S>(
+        &mut self,
+        source: &S,
+        event_idle_timeout: Duration,
+    ) -> Result<Vec<StreamingAsrEvent>>
+    where
+        S: StreamingPcmSource,
+    {
         let live_send_timeout = self.send_timeout.min(Duration::from_millis(25));
         if let Err(error) = self
-            .send_available_audio_with_limit(recording, Some(1), live_send_timeout)
+            .send_available_audio_with_limit(
+                source,
+                Some(LIVE_STREAMING_PCM_PUMP_MAX_CHUNKS),
+                live_send_timeout,
+            )
             .await
         {
             if error.downcast_ref::<StreamingPcmSendTimeout>().is_some() {
@@ -990,6 +1088,9 @@ impl LocalStreamingAsrLiveSession {
             .collect_available_asr_events_until_idle(event_idle_timeout)
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        // The per-tick events are cloned into history because the public pump
+        // contract also hands them to the caller. The client already coalesces
+        // each batch internally, so this clones at most a few events per tick.
         retain_latest_streaming_asr_events(
             &mut self.events,
             events.iter().cloned(),
@@ -999,31 +1100,36 @@ impl LocalStreamingAsrLiveSession {
     }
 
     pub async fn stop(
-        mut self,
-        recording: talk_audio::RecordingSession,
+        self,
+        recording: &talk_audio::RecordingSession,
     ) -> Result<Vec<StreamingAsrEvent>> {
-        let events_result = async {
-            self.send_available_audio(&recording).await?;
-            self.client.stop(&self.session_id).await?;
-            let final_events = self
-                .client
-                .collect_asr_events_until_final(self.final_timeout)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            retain_latest_streaming_asr_events(
-                &mut self.events,
-                final_events,
-                MAX_RETAINED_STREAMING_ASR_EVENTS,
-            );
-            Ok(self.events)
-        }
-        .await;
-        let cancel_result = recording.cancel();
-        match (events_result, cancel_result) {
-            (Ok(events), Ok(())) => Ok(events),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(anyhow::anyhow!(error.to_string())),
-        }
+        self.stop_from_source(recording).await
+    }
+
+    pub async fn stop_from_pcm_source(
+        self,
+        source: &RecordingPcmSource,
+    ) -> Result<Vec<StreamingAsrEvent>> {
+        self.stop_from_source(source).await
+    }
+
+    async fn stop_from_source<S>(mut self, source: &S) -> Result<Vec<StreamingAsrEvent>>
+    where
+        S: StreamingPcmSource,
+    {
+        self.send_available_audio(source).await?;
+        self.client.stop(&self.session_id).await?;
+        let final_events = self
+            .client
+            .collect_asr_events_until_final(self.final_timeout)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        retain_latest_streaming_asr_events(
+            &mut self.events,
+            final_events,
+            MAX_RETAINED_STREAMING_ASR_EVENTS,
+        );
+        Ok(self.events)
     }
 
     pub async fn cancel(mut self) -> Result<()> {
@@ -1033,26 +1139,29 @@ impl LocalStreamingAsrLiveSession {
             .map_err(Into::into)
     }
 
-    async fn send_available_audio(
-        &mut self,
-        recording: &talk_audio::RecordingSession,
-    ) -> Result<usize> {
-        self.send_available_audio_with_limit(recording, None, self.send_timeout)
+    async fn send_available_audio<S>(&mut self, source: &S) -> Result<usize>
+    where
+        S: StreamingPcmSource,
+    {
+        self.send_available_audio_with_limit(source, None, self.send_timeout)
             .await
     }
 
-    async fn send_available_audio_with_limit(
+    async fn send_available_audio_with_limit<S>(
         &mut self,
-        recording: &talk_audio::RecordingSession,
+        source: &S,
         max_chunks: Option<usize>,
         send_timeout: Duration,
-    ) -> Result<usize> {
+    ) -> Result<usize>
+    where
+        S: StreamingPcmSource,
+    {
         let mut sender = LocalStreamingClientPcmSender {
             client: &mut self.client,
             session_id: &self.session_id,
         };
         send_available_recording_pcm_with_limit(
-            recording,
+            source,
             &mut self.cursor,
             self.sample_rate_hz,
             self.channels,
@@ -1116,6 +1225,20 @@ pub async fn process_voice_transcript_text_with_diagnostics(
     .await
 }
 
+pub fn process_voice_transcript_text_from_provider_output_with_diagnostics(
+    config: &TalkConfig,
+    transcript: String,
+    provider_output_text: String,
+    mode_override: Option<VoiceMode>,
+) -> Result<RuntimeProcessedOutput> {
+    let resolution = resolve_runtime_voice_mode(config, mode_override, Some(&transcript));
+    finalize_processed_output(
+        &transcript,
+        provider_output_text,
+        resolution.processing_mode,
+    )
+}
+
 pub async fn run_voice_session_from_external_asr_command_with_insert_hooks<F, G, H>(
     config: &TalkConfig,
     session: VoiceSession,
@@ -1133,7 +1256,17 @@ where
     G: Fn(&RuntimeInsertContext) -> RuntimeInsertDirective,
     H: Fn(),
 {
-    let events = match run_external_streaming_asr_command(&command_line, &audio_path) {
+    let events = match tokio::task::spawn_blocking({
+        let command_line = command_line.clone();
+        let audio_path = audio_path.clone();
+        move || run_external_streaming_asr_command(&command_line, &audio_path)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        Err(talk_core::TalkError::Provider(format!(
+            "external streaming ASR command worker failed: {error}"
+        )))
+    }) {
         Ok(events) => events,
         Err(error) => {
             return persist_failed_session_with_mode_override(
@@ -1193,7 +1326,37 @@ where
     F: FnMut(RuntimePhase),
     G: Fn(&RuntimeInsertContext) -> RuntimeInsertDirective,
 {
-    let mut session = session;
+    run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hook(
+        config,
+        session,
+        trigger_events,
+        audio_path,
+        mock_text,
+        mode_override,
+        SmartRouteEvidence::default(),
+        context,
+        before_insert,
+        phase_callback,
+    )
+    .await
+}
+
+pub async fn run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hook<F, G>(
+    config: &TalkConfig,
+    session: VoiceSession,
+    trigger_events: Vec<&'static str>,
+    audio_path: PathBuf,
+    mock_text: Option<String>,
+    mode_override: Option<VoiceMode>,
+    route_evidence: SmartRouteEvidence,
+    context: FrontContext,
+    before_insert: G,
+    phase_callback: F,
+) -> Result<VoiceRunReport>
+where
+    F: FnMut(RuntimePhase),
+    G: Fn(&RuntimeInsertContext) -> RuntimeInsertDirective,
+{
     let mut phase_callback = phase_callback;
 
     let transcript = match transcribe_output(config, mock_text, audio_path, context.clone()).await {
@@ -1212,84 +1375,20 @@ where
             );
         }
     };
-    session.apply(VoiceEvent::TranscriptReady {
-        text: transcript.clone(),
-    })?;
-    phase_callback(RuntimePhase::Processing);
-
-    let resolution = resolve_runtime_voice_mode(config, mode_override, Some(&transcript));
-    let processed_output = match process_output_with_diagnostics(
+    finish_session_from_transcript(
         config,
-        transcript.clone(),
-        Some(resolution.processing_mode),
+        session,
+        trigger_events,
+        transcript,
+        mode_override,
+        route_evidence,
         context,
+        |output, insert_context| {
+            insert_output_with_single_hook(config, output, before_insert(insert_context))
+        },
+        phase_callback,
     )
     .await
-    {
-        Ok(output) => output,
-        Err(error) => {
-            return persist_failed_session_with_resolution(
-                config,
-                session,
-                &trigger_events,
-                error,
-                false,
-                resolution,
-                |phase| {
-                    phase_callback(phase);
-                },
-            );
-        }
-    };
-    let RuntimeProcessedOutput {
-        text: output,
-        faithful_validation,
-    } = processed_output;
-    let processing_diagnostics = RuntimeProcessingDiagnostics {
-        resolution,
-        faithful_validation,
-    };
-    session.apply(VoiceEvent::ProcessedTextReady {
-        text: output.clone(),
-    })?;
-    phase_callback(RuntimePhase::Inserting);
-    let insert_context = runtime_insert_context(resolution, &transcript, &output);
-    let insert_directive = before_insert(&insert_context);
-
-    let outcome = match insert_output_with_single_hook(config, &output, insert_directive) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return persist_failed_session_with_resolution(
-                config,
-                session,
-                &trigger_events,
-                error,
-                true,
-                resolution,
-                |phase| {
-                    phase_callback(phase);
-                },
-            );
-        }
-    };
-    session.apply(VoiceEvent::InsertSucceeded)?;
-    phase_callback(RuntimePhase::Completed);
-    let log_path = persist_session_log(
-        config,
-        &session,
-        Some(&outcome),
-        &trigger_events,
-        Some(processing_diagnostics),
-    )?;
-
-    Ok(VoiceRunReport {
-        session,
-        outcome: Some(outcome),
-        trigger_events,
-        log_path,
-        requested_mode: resolution.requested_mode,
-        smart_routed_mode: resolution.smart_routed_mode,
-    })
 }
 
 pub fn complete_failed_session<F>(
@@ -1357,6 +1456,7 @@ where
         Some(RuntimeProcessingDiagnostics {
             resolution,
             faithful_validation: None,
+            failure: None,
         }),
     )?;
     Ok(VoiceRunReport {
@@ -1424,6 +1524,7 @@ fn persist_failed_session_with_resolution<F>(
 where
     F: FnMut(RuntimePhase),
 {
+    let failure = runtime_failure_diagnostics(&error);
     let reason = error.to_string();
     let event = if insert_failure {
         VoiceEvent::InsertFailed { reason }
@@ -1440,6 +1541,7 @@ where
         Some(RuntimeProcessingDiagnostics {
             resolution,
             faithful_validation: None,
+            failure: Some(failure),
         }),
     )?;
     Ok(VoiceRunReport {
@@ -1450,6 +1552,21 @@ where
         requested_mode: resolution.requested_mode,
         smart_routed_mode: resolution.smart_routed_mode,
     })
+}
+
+fn runtime_failure_diagnostics(error: &anyhow::Error) -> RuntimeFailureDiagnostics {
+    let kind = error.downcast_ref::<TalkError>().map(|error| match error {
+        TalkError::InvalidConfig(_) => "invalid_config",
+        TalkError::Provider(_) => "provider",
+        TalkError::Insert(_) => "insert",
+        TalkError::Audio(_) => "audio",
+        TalkError::Hotkey(_) => "hotkey",
+        TalkError::Io(_) => "io",
+        TalkError::InvalidTransition { .. } => "invalid_transition",
+        TalkError::TerminalTransition { .. } => "terminal_transition",
+    });
+    let chain = error.chain().map(|source| source.to_string()).collect();
+    RuntimeFailureDiagnostics { kind, chain }
 }
 
 fn apply_configured_trigger_sequence<F>(
@@ -1545,9 +1662,12 @@ async fn process_output_with_diagnostics(
     context: FrontContext,
 ) -> Result<RuntimeProcessedOutput> {
     let mode = mode_override.unwrap_or_else(|| config.default_voice_mode());
-    let faithful_baseline = voice_mode_requires_faithful_output(mode).then(|| transcript.clone());
-    let output = match config.provider.kind {
-        ProviderKind::Mock => NoopTextProcessor.process(transcript, mode, context).await,
+    let provider_output_text = match config.provider.kind {
+        ProviderKind::Mock => {
+            NoopTextProcessor
+                .process(transcript.clone(), mode, context)
+                .await
+        }
         ProviderKind::Http => {
             let endpoint = config
                 .provider
@@ -1555,7 +1675,7 @@ async fn process_output_with_diagnostics(
                 .as_deref()
                 .context("provider.endpoint must be set for http provider")?;
             HttpTextProcessor::new(endpoint)
-                .process(transcript, mode, context)
+                .process(transcript.clone(), mode, context)
                 .await
         }
         ProviderKind::OpenAiCompatible => {
@@ -1572,22 +1692,34 @@ async fn process_output_with_diagnostics(
                 .as_deref()
                 .context("provider.chat_model must be set for openai_compatible provider")?;
             OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config)?)
-                .process(transcript, mode, context)
+                .process(transcript.clone(), mode, context)
                 .await
         }
     }
     .map_err(anyhow::Error::from)?;
 
-    let Some(faithful_baseline) = faithful_baseline else {
+    finalize_processed_output(&transcript, provider_output_text, mode)
+}
+
+fn finalize_processed_output(
+    transcript: &str,
+    provider_output_text: String,
+    mode: VoiceMode,
+) -> Result<RuntimeProcessedOutput> {
+    if !voice_mode_requires_faithful_output(mode) {
         return Ok(RuntimeProcessedOutput {
-            text: output,
+            text: provider_output_text.clone(),
+            provider_output_text,
             faithful_validation: None,
         });
-    };
-    let validation = validate_faithful_output(&faithful_baseline, &output);
+    }
+
+    let output = postprocess_faithful_transcription_output(transcript, &provider_output_text);
+    let validation = validate_faithful_output(transcript, &output);
     if validation.accepted {
         return Ok(RuntimeProcessedOutput {
             text: output,
+            provider_output_text,
             faithful_validation: Some(validation),
         });
     }
@@ -1604,7 +1736,8 @@ async fn process_output_with_diagnostics(
         validation.normalized_change_ratio,
     );
     Ok(RuntimeProcessedOutput {
-        text: faithful_baseline,
+        text: transcript.to_string(),
+        provider_output_text,
         faithful_validation: Some(validation),
     })
 }
@@ -1684,6 +1817,7 @@ fn insert_output_with_single_hook(
                     WindowsPasteShortcut,
                     restore_policy,
                 )
+                .with_deferred_restore()
                 .insert_text(output)
                 .map_err(Into::into)
             }
@@ -1710,6 +1844,10 @@ struct SessionLog<'a> {
 struct SessionProcessingLog {
     requested_mode: VoiceMode,
     resolved_mode: VoiceMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    failure_chain: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     route_reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1832,11 +1970,20 @@ pub fn update_session_log_after_text_processing(
 }
 
 fn session_processing_log(diagnostics: RuntimeProcessingDiagnostics) -> SessionProcessingLog {
-    let route = diagnostics.resolution.smart_route_analysis;
-    let faithful = diagnostics.faithful_validation;
+    let RuntimeProcessingDiagnostics {
+        resolution,
+        faithful_validation: faithful,
+        failure,
+    } = diagnostics;
+    let route = resolution.smart_route_analysis;
+    let (failure_kind, failure_chain) = failure
+        .map(|failure| (failure.kind, failure.chain))
+        .unwrap_or_default();
     SessionProcessingLog {
-        requested_mode: diagnostics.resolution.requested_mode,
-        resolved_mode: diagnostics.resolution.processing_mode,
+        requested_mode: resolution.requested_mode,
+        resolved_mode: resolution.processing_mode,
+        failure_kind,
+        failure_chain,
         route_reason: route.map(|analysis| analysis.reason.as_str()),
         route_input_char_count: route.map(|analysis| analysis.non_whitespace_char_count),
         sentence_boundary_count: route.map(|analysis| analysis.sentence_boundary_count),
@@ -1925,10 +2072,10 @@ mod tests {
     use super::{
         retain_latest_streaming_asr_events, send_available_recording_pcm,
         send_available_recording_pcm_with_limit, RecordingPcmChunk, RecordingPcmCursor,
-        StreamingPcmSender, StreamingPcmSource,
+        StreamingPcmSender, StreamingPcmSource, MAX_RETAINED_STREAMING_ASR_EVENTS,
     };
     use anyhow::Result;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::time::Duration;
     use talk_audio::{start_recording, AudioCaptureRequest, RecordingSession, WavSettings};
     use talk_core::AudioBackendMode;
@@ -1981,11 +2128,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingPcmSender {
         sent_sequences: Vec<u64>,
+        sent_byte_pointers: Vec<usize>,
+        sent_byte_capacities: Vec<usize>,
+        sent_payloads: Vec<Vec<u8>>,
     }
 
     impl StreamingPcmSender for RecordingPcmSender {
         async fn send_pcm_chunk(&mut self, chunk: &RecordingPcmChunk) -> Result<()> {
             self.sent_sequences.push(chunk.sequence);
+            self.sent_byte_pointers.push(chunk.bytes.as_ptr() as usize);
+            self.sent_byte_capacities.push(chunk.bytes.capacity());
+            self.sent_payloads.push(chunk.bytes.clone());
             Ok(())
         }
     }
@@ -1993,6 +2146,7 @@ mod tests {
     struct ObservableRecordingPcmSource {
         recording: RecordingSession,
         reclaimed_chunks: Cell<usize>,
+        drained_byte_pointers: RefCell<Vec<usize>>,
     }
 
     impl StreamingPcmSource for ObservableRecordingPcmSource {
@@ -2000,7 +2154,13 @@ mod tests {
             &self,
             cursor: &mut RecordingPcmCursor,
         ) -> Result<Option<RecordingPcmChunk>> {
-            self.recording.drain_pcm_chunk(cursor).map_err(Into::into)
+            let chunk = self.recording.drain_pcm_chunk(cursor)?;
+            if let Some(chunk) = chunk.as_ref() {
+                self.drained_byte_pointers
+                    .borrow_mut()
+                    .push(chunk.bytes.as_ptr() as usize);
+            }
+            Ok(chunk)
         }
 
         fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<()> {
@@ -2011,15 +2171,45 @@ mod tests {
         }
     }
 
+    struct FailFirstDiscardPcmSource {
+        recording: RecordingSession,
+        failed_once: Cell<bool>,
+        reclaimed_chunks: Cell<usize>,
+    }
+
+    impl StreamingPcmSource for FailFirstDiscardPcmSource {
+        fn drain_pcm_chunk(
+            &self,
+            cursor: &mut RecordingPcmCursor,
+        ) -> Result<Option<RecordingPcmChunk>> {
+            self.recording.drain_pcm_chunk(cursor).map_err(Into::into)
+        }
+
+        fn discard_consumed_pcm(&self, cursor: &mut RecordingPcmCursor) -> Result<()> {
+            if !self.failed_once.replace(true) {
+                anyhow::bail!("simulated PCM discard failure");
+            }
+            self.recording.discard_consumed_pcm(cursor)?;
+            self.reclaimed_chunks
+                .set(self.reclaimed_chunks.get().saturating_add(1));
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct FailFirstPcmSender {
         attempts: Vec<u64>,
+        attempted_byte_pointers: Vec<usize>,
+        attempted_payloads: Vec<Vec<u8>>,
         failed_once: bool,
     }
 
     impl StreamingPcmSender for FailFirstPcmSender {
         async fn send_pcm_chunk(&mut self, chunk: &RecordingPcmChunk) -> Result<()> {
             self.attempts.push(chunk.sequence);
+            self.attempted_byte_pointers
+                .push(chunk.bytes.as_ptr() as usize);
+            self.attempted_payloads.push(chunk.bytes.clone());
             if !self.failed_once {
                 self.failed_once = true;
                 anyhow::bail!("simulated streaming send failure");
@@ -2028,10 +2218,16 @@ mod tests {
         }
     }
 
-    struct PendingPcmSender;
+    #[derive(Default)]
+    struct PendingPcmSender {
+        attempted_byte_pointer: Option<usize>,
+        attempted_payload: Option<Vec<u8>>,
+    }
 
     impl StreamingPcmSender for PendingPcmSender {
-        async fn send_pcm_chunk(&mut self, _chunk: &RecordingPcmChunk) -> Result<()> {
+        async fn send_pcm_chunk(&mut self, chunk: &RecordingPcmChunk) -> Result<()> {
+            self.attempted_byte_pointer = Some(chunk.bytes.as_ptr() as usize);
+            self.attempted_payload = Some(chunk.bytes.clone());
             std::future::pending::<Result<()>>().await
         }
     }
@@ -2056,6 +2252,54 @@ mod tests {
         assert_eq!(sent_chunks, 3);
         assert_eq!(sender.sent_sequences, vec![0, 1, 2]);
         assert_eq!(source.reclaimed_chunks.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn streaming_pcm_reuses_owned_byte_buffer_after_sender_finishes() {
+        let root = std::env::temp_dir().join(format!(
+            "talk-runtime-pcm-byte-reuse-{}",
+            std::process::id()
+        ));
+        let source = ObservableRecordingPcmSource {
+            recording: start_recording(&AudioCaptureRequest {
+                backend: AudioBackendMode::Silent,
+                temp_dir: root,
+                session_id: "pcm-byte-reuse".to_string(),
+                input_device: None,
+                wav_settings: WavSettings::mono_16khz(),
+                max_recording_seconds: 1,
+                silent_samples: 2_000,
+            })
+            .unwrap(),
+            reclaimed_chunks: Cell::new(0),
+            drained_byte_pointers: RefCell::new(Vec::new()),
+        };
+        let mut cursor = RecordingPcmCursor::default();
+        let mut sender = RecordingPcmSender::default();
+
+        let sent_chunks = send_available_recording_pcm(
+            &source,
+            &mut cursor,
+            16_000,
+            1,
+            Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(sent_chunks, 2);
+        assert_eq!(sender.sent_sequences, vec![0, 1]);
+        assert_eq!(sender.sent_byte_pointers.len(), 2);
+        assert_eq!(sender.sent_byte_pointers[0], sender.sent_byte_pointers[1]);
+        assert_eq!(
+            sender.sent_byte_capacities[0],
+            sender.sent_byte_capacities[1]
+        );
+        assert_eq!(sender.sent_payloads[0].len(), 2_560);
+        assert_eq!(sender.sent_payloads[1].len(), 1_440);
+        assert!(sender.sent_payloads.iter().flatten().all(|byte| *byte == 0));
+        assert_eq!(source.reclaimed_chunks.get(), 2);
     }
 
     #[tokio::test]
@@ -2097,25 +2341,161 @@ mod tests {
     }
 
     #[test]
-    fn streaming_asr_history_retains_only_latest_events() {
+    fn streaming_asr_history_coalesces_partials_and_never_evicts_finals() {
         let mut retained = vec![
-            talk_client::StreamingAsrEvent::partial("seg-1", "one"),
-            talk_client::StreamingAsrEvent::partial("seg-1", "two"),
+            talk_client::StreamingAsrEvent::final_segment("seg-1", "first final"),
+            talk_client::StreamingAsrEvent::partial("seg-2", "stale partial"),
         ];
 
         retain_latest_streaming_asr_events(
             &mut retained,
             vec![
-                talk_client::StreamingAsrEvent::partial("seg-1", "three"),
-                talk_client::StreamingAsrEvent::final_segment("seg-1", "four"),
+                talk_client::StreamingAsrEvent::partial("seg-2", "fresh partial"),
+                talk_client::StreamingAsrEvent::final_segment("seg-2", "second final"),
+                talk_client::StreamingAsrEvent::partial("seg-3", "third partial"),
+                talk_client::StreamingAsrEvent::partial("seg-4", "fourth partial"),
             ],
             3,
         );
 
-        assert_eq!(retained.len(), 3);
-        assert_eq!(retained[0].text(), "two");
-        assert_eq!(retained[1].text(), "three");
-        assert_eq!(retained[2].text(), "four");
+        // The fresh seg-2 partial replaces the stale one instead of stacking,
+        // and capacity eviction drops the oldest partials while every final
+        // segment survives for the post-stop transcript rebuild.
+        assert_eq!(
+            retained,
+            vec![
+                talk_client::StreamingAsrEvent::final_segment("seg-1", "first final"),
+                talk_client::StreamingAsrEvent::final_segment("seg-2", "second final"),
+                talk_client::StreamingAsrEvent::partial("seg-4", "fourth partial"),
+            ]
+        );
+    }
+
+    #[test]
+    fn streaming_asr_history_partial_flood_keeps_early_final_segments() {
+        let mut retained = Vec::new();
+
+        retain_latest_streaming_asr_events(
+            &mut retained,
+            vec![talk_client::StreamingAsrEvent::final_segment(
+                "seg-1", "开头",
+            )],
+            MAX_RETAINED_STREAMING_ASR_EVENTS,
+        );
+        for tick in 0..(MAX_RETAINED_STREAMING_ASR_EVENTS * 4) {
+            retain_latest_streaming_asr_events(
+                &mut retained,
+                vec![talk_client::StreamingAsrEvent::partial(
+                    "seg-2",
+                    format!("partial {tick}"),
+                )],
+                MAX_RETAINED_STREAMING_ASR_EVENTS,
+            );
+        }
+
+        assert_eq!(retained.len(), 2);
+        assert_eq!(
+            retained[0],
+            talk_client::StreamingAsrEvent::final_segment("seg-1", "开头")
+        );
+        assert_eq!(
+            retained[1],
+            talk_client::StreamingAsrEvent::partial("seg-2", "partial 511")
+        );
+    }
+
+    #[test]
+    fn streaming_asr_history_coalesces_adjacent_final_revisions_without_losing_boundaries() {
+        let mut retained = Vec::new();
+
+        retain_latest_streaming_asr_events(
+            &mut retained,
+            (0..512).map(|revision| {
+                talk_client::StreamingAsrEvent::final_segment(
+                    "seg-1",
+                    format!("final revision {revision}"),
+                )
+            }),
+            MAX_RETAINED_STREAMING_ASR_EVENTS,
+        );
+        retain_latest_streaming_asr_events(
+            &mut retained,
+            vec![talk_client::StreamingAsrEvent::partial(
+                "seg-1",
+                "late partial",
+            )],
+            MAX_RETAINED_STREAMING_ASR_EVENTS,
+        );
+
+        assert_eq!(
+            retained,
+            vec![
+                talk_client::StreamingAsrEvent::final_segment("seg-1", "final revision 511",),
+                talk_client::StreamingAsrEvent::partial("seg-1", "late partial"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_pcm_recycles_format_mismatch_chunk_before_valid_retry() {
+        let root = std::env::temp_dir().join(format!(
+            "talk-runtime-pcm-format-retry-{}",
+            std::process::id()
+        ));
+        let source = ObservableRecordingPcmSource {
+            recording: start_recording(&AudioCaptureRequest {
+                backend: AudioBackendMode::Silent,
+                temp_dir: root,
+                session_id: "pcm-format-retry".to_string(),
+                input_device: None,
+                wav_settings: WavSettings::mono_16khz(),
+                max_recording_seconds: 1,
+                silent_samples: 160,
+            })
+            .unwrap(),
+            reclaimed_chunks: Cell::new(0),
+            drained_byte_pointers: RefCell::new(Vec::new()),
+        };
+        let mut cursor = RecordingPcmCursor::default();
+        let mut sender = RecordingPcmSender::default();
+
+        let first_error = send_available_recording_pcm(
+            &source,
+            &mut cursor,
+            8_000,
+            1,
+            Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+        .unwrap_err();
+        assert!(first_error
+            .to_string()
+            .contains("16000 Hz / 1 channels does not match streaming_service 8000 Hz"));
+        assert!(sender.sent_sequences.is_empty());
+        assert_eq!(source.reclaimed_chunks.get(), 0);
+
+        let sent_chunks = send_available_recording_pcm(
+            &source,
+            &mut cursor,
+            16_000,
+            1,
+            Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+        .unwrap();
+
+        let drained_byte_pointers = source.drained_byte_pointers.borrow();
+        assert_eq!(sent_chunks, 1);
+        assert_eq!(sender.sent_sequences, vec![0]);
+        assert_eq!(source.reclaimed_chunks.get(), 1);
+        assert_eq!(drained_byte_pointers.len(), 2);
+        assert_eq!(drained_byte_pointers[0], drained_byte_pointers[1]);
+        assert_eq!(
+            sender.sent_byte_pointers.first().copied(),
+            drained_byte_pointers.get(1).copied()
+        );
     }
 
     #[tokio::test]
@@ -2134,6 +2514,7 @@ mod tests {
             })
             .unwrap(),
             reclaimed_chunks: Cell::new(0),
+            drained_byte_pointers: RefCell::new(Vec::new()),
         };
         let mut cursor = RecordingPcmCursor::default();
         let mut sender = FailFirstPcmSender::default();
@@ -2166,6 +2547,70 @@ mod tests {
 
         assert_eq!(sent_chunks, 1);
         assert_eq!(sender.attempts, vec![0, 0]);
+        assert_eq!(sender.attempted_byte_pointers.len(), 2);
+        assert_eq!(
+            sender.attempted_byte_pointers[0],
+            sender.attempted_byte_pointers[1]
+        );
+        assert_eq!(sender.attempted_payloads[0], sender.attempted_payloads[1]);
+        assert_eq!(sender.attempted_payloads[0].len(), 320);
+        assert!(sender.attempted_payloads[0].iter().all(|byte| *byte == 0));
+        assert_eq!(source.reclaimed_chunks.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn streaming_pcm_rolls_back_and_reuses_bytes_after_discard_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "talk-runtime-pcm-discard-retry-{}",
+            std::process::id()
+        ));
+        let source = FailFirstDiscardPcmSource {
+            recording: start_recording(&AudioCaptureRequest {
+                backend: AudioBackendMode::Silent,
+                temp_dir: root,
+                session_id: "pcm-discard-retry".to_string(),
+                input_device: None,
+                wav_settings: WavSettings::mono_16khz(),
+                max_recording_seconds: 1,
+                silent_samples: 160,
+            })
+            .unwrap(),
+            failed_once: Cell::new(false),
+            reclaimed_chunks: Cell::new(0),
+        };
+        let mut cursor = RecordingPcmCursor::default();
+        let mut sender = RecordingPcmSender::default();
+
+        let first_error = send_available_recording_pcm(
+            &source,
+            &mut cursor,
+            16_000,
+            1,
+            Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+        .unwrap_err();
+        assert!(first_error
+            .to_string()
+            .contains("simulated PCM discard failure"));
+        assert_eq!(source.reclaimed_chunks.get(), 0);
+
+        let sent_chunks = send_available_recording_pcm(
+            &source,
+            &mut cursor,
+            16_000,
+            1,
+            Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(sent_chunks, 1);
+        assert_eq!(sender.sent_sequences, vec![0, 0]);
+        assert_eq!(sender.sent_byte_pointers[0], sender.sent_byte_pointers[1]);
+        assert_eq!(sender.sent_payloads[0], sender.sent_payloads[1]);
         assert_eq!(source.reclaimed_chunks.get(), 1);
     }
 
@@ -2185,9 +2630,10 @@ mod tests {
             })
             .unwrap(),
             reclaimed_chunks: Cell::new(0),
+            drained_byte_pointers: RefCell::new(Vec::new()),
         };
         let mut cursor = RecordingPcmCursor::default();
-        let mut stalled_sender = PendingPcmSender;
+        let mut stalled_sender = PendingPcmSender::default();
 
         let send_result = tokio::time::timeout(
             Duration::from_millis(100),
@@ -2222,6 +2668,14 @@ mod tests {
 
         assert_eq!(sent_chunks, 1);
         assert_eq!(retry_sender.sent_sequences, vec![0]);
+        assert_eq!(
+            stalled_sender.attempted_byte_pointer,
+            retry_sender.sent_byte_pointers.first().copied()
+        );
+        assert_eq!(
+            stalled_sender.attempted_payload.as_ref(),
+            retry_sender.sent_payloads.first()
+        );
         assert_eq!(source.reclaimed_chunks.get(), 1);
     }
 }

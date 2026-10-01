@@ -4,6 +4,49 @@ $scriptPath = Join-Path (Split-Path $here -Parent) 'Invoke-TalkDesktopReleaseSmo
 . $scriptPath
 
 Describe 'Invoke-TalkDesktopReleaseSmoke helpers' {
+    It 'waits for asynchronous desktop config startup instead of relying on a fixed sleep' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $waitStart = $scriptText.IndexOf('function Wait-TalkDesktopStartupConfigSettled')
+        $startInstance = $scriptText.IndexOf('function Start-TalkDesktopSmokeInstance')
+        $stopInstance = $scriptText.IndexOf('function Stop-TalkDesktopSmokeInstance')
+
+        $waitStart | Should BeGreaterThan -1
+        $startInstance | Should BeGreaterThan $waitStart
+        $stopInstance | Should BeGreaterThan $startInstance
+        $waitText = $scriptText.Substring($waitStart, $startInstance - $waitStart)
+        $startText = $scriptText.Substring($startInstance, $stopInstance - $startInstance)
+        $waitText | Should Match 'Current: Talk: loading config'
+        $waitText | Should Match 'Send-TalkDesktopMenuCommand -Hwnd \$Hwnd -CommandId 1004'
+        $waitText | Should Match 'Find-DialogByProcessIdAndTitle'
+        $waitText | Should Match 'ConfigSettledElapsedMs'
+        $waitText | Should Match 'LoadingStatusObserved'
+        $waitText | Should Match 'StatusProbeCount'
+        $waitText | Should Match '\[System\.Diagnostics\.Stopwatch\]::StartNew\(\)'
+        $startText | Should Match 'Wait-TalkDesktopStartupConfigSettled'
+        $startText | Should Match 'windowReadyElapsedMs'
+        $startText | Should Match 'startup-metrics\.json'
+        $startText | Should Match 'shellReadyBeforeConfigSettled'
+        $startText | Should Not Match 'Start-Sleep -Milliseconds 400'
+    }
+
+    It 'polls broken-config recovery transitions and records their elapsed durations' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $scenarioStart = $scriptText.IndexOf('function Invoke-BrokenConfigRecoverySmoke')
+        $scenarioEnd = $scriptText.IndexOf('function Invoke-NativeUnavailableStatusSmoke')
+        $scenarioText = $scriptText.Substring($scenarioStart, $scenarioEnd - $scenarioStart)
+
+        $scenarioText | Should Match 'Wait-TalkDesktopStatusText'
+        $scenarioText | Should Match "ExpectedText 'Current: Talk: idle'"
+        $scenarioText | Should Match "ExpectedText 'Current: Talk: listening'"
+        $scenarioText | Should Match 'Wait-LatestSessionLog'
+        $scenarioText | Should Match 'ReloadRecoveryElapsedMs'
+        $scenarioText | Should Match 'ListeningStatusText'
+        $scenarioText | Should Match 'ListeningReadyElapsedMs'
+        $scenarioText | Should Match 'CancelPersistenceElapsedMs'
+        $scenarioText | Should Match "StateSequence = @\('config_unavailable', 'idle', 'listening', 'cancelled'\)"
+        $scenarioText | Should Not Match 'Start-Sleep'
+    }
+
     It 'resolves an explicit talk-desktop binary path' {
         $tempRoot = Join-Path $env:TEMP ('talk-desktop-smoke-test-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot | Out-Null
@@ -228,6 +271,19 @@ Describe 'Invoke-TalkDesktopReleaseSmoke helpers' {
         $helperText | Should Match '\$MK_LBUTTON = 0x0001'
         $helperText.IndexOf('$WM_MOUSEMOVE = 0x0200') | Should BeLessThan $helperText.IndexOf('$WM_LBUTTONDOWN = 0x0201')
         $helperText.IndexOf('$WM_LBUTTONDOWN = 0x0201') | Should BeLessThan $helperText.IndexOf('$WM_LBUTTONUP = 0x0202')
+    }
+
+    It 'activates the popup editor before targeting its native EDIT child' {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
+        $startMarker = 'function Activate-TalkDesktopCopyPopupEditor'
+        $endMarker = 'function Send-TalkDesktopWindowLeftClick'
+        $startIndex = $scriptText.IndexOf($startMarker)
+        $endIndex = $scriptText.IndexOf($endMarker)
+        $helperText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
+
+        $helperText | Should Match 'Send-TalkDesktopWindowLeftClick'
+        $helperText | Should Match 'Get-TalkDesktopLastChildWindowByClass -Hwnd \$Hwnd -ClassName ''Edit'''
+        $helperText.IndexOf('Send-TalkDesktopWindowLeftClick') | Should BeLessThan $helperText.IndexOf('Get-TalkDesktopLastChildWindowByClass')
     }
 
     It 'calculates DPI-aware copy popup copy button center coordinates' {
@@ -1296,23 +1352,37 @@ Audio backend readiness: unavailable
         $scenarioText.IndexOf('Write-TalkSmokeProgress -Path $progressPath -Message ''copy-popup-visible''') | Should BeLessThan $scenarioText.IndexOf('Get-TalkDesktopForegroundWindowHwnd')
     }
 
-    It 'keeps the popup open after keyboard Enter copy and then closes it explicitly in the keyboard-enter focus-switch smoke flow' {
+    It 'tabs through the popup buttons, copies with Enter, and closes with Enter in the keyboard focus-switch smoke flow' {
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw -Encoding UTF8
         $startMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupKeyboardEnterSmoke'
-        $endMarker = 'function Invoke-HotkeyConflictSmoke'
+        $endMarker = 'function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupKeyboardEscapeSmoke'
         $startIndex = $scriptText.IndexOf($startMarker)
         $endIndex = $scriptText.IndexOf($endMarker)
         $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
 
+        $scenarioText | Should Match 'Activate-TalkDesktopCopyPopupEditor -Hwnd \$popupHwnd'
+        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$editHwnd -VirtualKey 0x09'
+        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x09'
         $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x0D'
         $scenarioText | Should Match 'Wait-TalkDesktopVisibleWindowByProcessIdAndClass'
-        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x1B'
         $scenarioText | Should Match 'Wait-TalkDesktopWindowHiddenByProcessIdAndClass'
+        $scenarioText | Should Match 'Wait-TalkDesktopForegroundWindow -TargetHwnd \$alternateTarget.Hwnd'
         $scenarioText | Should Match 'Get-TalkDesktopClipboardText'
-        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D') | Should BeLessThan $scenarioText.IndexOf('Wait-TalkDesktopWindowHiddenByProcessIdAndClass')
-        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D') | Should BeLessThan $scenarioText.IndexOf('Get-TalkDesktopClipboardText')
-        $scenarioText.IndexOf('Get-TalkDesktopClipboardText') | Should BeLessThan $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B')
-        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B') | Should BeLessThan $scenarioText.IndexOf('Wait-TalkDesktopWindowHiddenByProcessIdAndClass')
+        $scenarioText | Should Match '\$copiedText -cne ''assistant reply from audio input chat'''
+        $scenarioText | Should Not Match '\$copiedText\.Trim\(\)'
+        $copyTabIndex = $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x09')
+        $copyEnterIndex = $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D')
+        $clipboardIndex = $scenarioText.IndexOf('Get-TalkDesktopClipboardText')
+        $closeTabFromEditIndex = $scenarioText.LastIndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x09')
+        $closeTabIndex = $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x09')
+        $closeEnterIndex = $scenarioText.LastIndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D')
+        $hiddenIndex = $scenarioText.IndexOf('Wait-TalkDesktopWindowHiddenByProcessIdAndClass')
+        $copyTabIndex | Should BeLessThan $copyEnterIndex
+        $copyEnterIndex | Should BeLessThan $clipboardIndex
+        $clipboardIndex | Should BeLessThan $closeTabFromEditIndex
+        $closeTabFromEditIndex | Should BeLessThan $closeTabIndex
+        $closeTabIndex | Should BeLessThan $closeEnterIndex
+        $closeEnterIndex | Should BeLessThan $hiddenIndex
     }
 
     It 'sends Escape to the popup and verifies the clipboard sentinel remains unchanged in the keyboard-escape focus-switch smoke flow' {
@@ -1324,11 +1394,13 @@ Audio backend readiness: unavailable
         $scenarioText = $scriptText.Substring($startIndex, $endIndex - $startIndex)
 
         $scenarioText | Should Match 'Set-TalkDesktopClipboardText -Value ''talk-copy-popup-escape-sentinel'''
-        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$popupHwnd -VirtualKey 0x1B'
+        $scenarioText | Should Match 'Activate-TalkDesktopCopyPopupEditor -Hwnd \$popupHwnd'
+        $scenarioText | Should Match 'Send-TalkDesktopWindowVirtualKeyInput -Hwnd \$editHwnd -VirtualKey 0x1B'
         $scenarioText | Should Match 'Wait-TalkDesktopWindowHiddenByProcessIdAndClass'
+        $scenarioText | Should Match 'Wait-TalkDesktopForegroundWindow -TargetHwnd \$alternateTarget.Hwnd'
         $scenarioText | Should Match 'Get-TalkDesktopClipboardText'
-        $scenarioText.IndexOf('Set-TalkDesktopClipboardText -Value ''talk-copy-popup-escape-sentinel''') | Should BeLessThan $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B')
-        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B') | Should BeLessThan $scenarioText.IndexOf('Get-TalkDesktopClipboardText')
+        $scenarioText.IndexOf('Set-TalkDesktopClipboardText -Value ''talk-copy-popup-escape-sentinel''') | Should BeLessThan $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x1B')
+        $scenarioText.IndexOf('Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x1B') | Should BeLessThan $scenarioText.IndexOf('Get-TalkDesktopClipboardText')
     }
 
     It 'includes openai-compatible-audio-input-insert-success in the default release smoke set' {
@@ -1423,5 +1495,52 @@ Audio backend readiness: unavailable
         $scenarioText.IndexOf('Wait-TalkTextCaptureContainsWithForegroundRefresh') | Should BeGreaterThan -1
         $scenarioText.IndexOf('Wait-LatestSessionLog') | Should BeGreaterThan -1
         $scenarioText.IndexOf('Wait-TalkTextCaptureContainsWithForegroundRefresh') | Should BeLessThan $scenarioText.IndexOf('Wait-LatestSessionLog')
+    }
+
+    It 'persists each successful scenario result and a consolidated run summary as UTF-8 JSON' {
+        $tempRoot = Join-Path $env:TEMP ('talk-desktop-smoke-evidence-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot | Out-Null
+        try {
+            Mock Ensure-TalkDesktopSmokeWin32Type {}
+            Mock Resolve-TalkDesktopBinaryPath { 'C:\fake\Talk.exe' }
+            Mock Invoke-NativeUnavailableStatusSmoke {
+                param([string]$TalkDesktopBinaryPath, [string]$ScenarioRoot)
+                [pscustomobject][ordered]@{
+                    Scenario = 'native-unavailable-status'
+                    BinaryPath = $TalkDesktopBinaryPath
+                    ScenarioRoot = $ScenarioRoot
+                    StatusKind = 'native_unavailable'
+                }
+            }
+
+            $results = Invoke-TalkDesktopReleaseSmoke `
+                -BinaryPath 'C:\fake\Talk.exe' `
+                -SmokeRoot $tempRoot `
+                -Scenario @('native-unavailable-status')
+
+            $scenarioResultPath = Join-Path $tempRoot 'native-unavailable-status\result.json'
+            $runSummaryPath = Join-Path $tempRoot 'run-summary.json'
+            (Test-Path -LiteralPath $scenarioResultPath) | Should Be $true
+            (Test-Path -LiteralPath $runSummaryPath) | Should Be $true
+            @($results)[0].ResultPath | Should Be $scenarioResultPath
+
+            $scenarioResult = Get-Content -LiteralPath $scenarioResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $runSummary = Get-Content -LiteralPath $runSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $scenarioResult.Scenario | Should Be 'native-unavailable-status'
+            $scenarioResult.ResultPath | Should Be $scenarioResultPath
+            $runSummary.schemaVersion | Should Be 1
+            $runSummary.scenarioCount | Should Be 1
+            @($runSummary.scenarios)[0].StatusKind | Should Be 'native_unavailable'
+
+            $scenarioBytes = [System.IO.File]::ReadAllBytes($scenarioResultPath)
+            $hasUtf8Bom = $scenarioBytes.Length -ge 3 -and
+                $scenarioBytes[0] -eq 0xEF -and
+                $scenarioBytes[1] -eq 0xBB -and
+                $scenarioBytes[2] -eq 0xBF
+            $hasUtf8Bom | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }

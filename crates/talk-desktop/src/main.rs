@@ -8,10 +8,10 @@ fn main() {
 mod windows_app {
     use anyhow::{Context, Result};
     use clap::Parser;
+    use futures_util::FutureExt;
     use serde_json::Value;
-    use std::cell::Cell;
-    use std::collections::{HashMap, HashSet};
-    use std::ffi::OsString;
+    use std::cell::{Cell, RefCell};
+    use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
     use std::fs;
     use std::future::Future;
     use std::mem;
@@ -25,21 +25,22 @@ mod windows_app {
     use std::time::{Duration, Instant};
     use talk_audio::{
         probe_native_windows_audio_readiness_for_device, start_recording, AudioCaptureRequest,
-        RecordingSession, WavSettings,
+        RecordingPcmSource, RecordingSession, WavSettings,
     };
     use talk_client::{
         final_transcript_from_streaming_asr_events, FrontContext, StreamingAsrEvent,
     };
     use talk_core::{
-        AudioBackendMode, ClipboardBackendMode, DesktopPasteShortcut, OutputMode, TalkConfig,
-        TriggerMode, VoiceEvent, VoiceMode, VoiceSession,
+        AudioBackendMode, ClipboardBackendMode, DesktopPasteShortcut, OutputMode, ProviderKind,
+        TalkConfig, TriggerMode, VoiceEvent, VoiceMode, VoiceSession,
     };
     use talk_desktop::{
         build_desktop_insert_target_diagnostic_with_trace,
         build_desktop_insert_target_trace_diagnostic, build_status_report, compose_hud_message,
-        config_status_message, decide_speculative_patch_application, default_zipformer_model_spec,
-        desktop_action_binding_label, desktop_action_bindings,
-        desktop_copy_popup_action_for_virtual_key, desktop_copy_popup_activation_policy,
+        config_status_message, decide_speculative_patch_application,
+        default_product_local_asr_model_spec, desktop_action_binding_label,
+        desktop_action_bindings, desktop_copy_popup_action_for_virtual_key,
+        desktop_copy_popup_activation_policy,
         desktop_copy_popup_close_button_rect as popup_close_button_layout_rect,
         desktop_copy_popup_copy_button_rect as popup_copy_button_layout_rect,
         desktop_copy_popup_copy_shows_follow_up_hud, desktop_copy_popup_editor_content_rect,
@@ -47,6 +48,7 @@ mod windows_app {
         desktop_copy_popup_metrics, desktop_copy_popup_model,
         desktop_copy_popup_model_for_mode_text_result, desktop_copy_popup_pane_layouts,
         desktop_copy_popup_position, desktop_correction_text_with_local_boundary,
+        desktop_direct_control_paste_focus_handle,
         desktop_document_recorrection_generation_is_current,
         desktop_document_recorrection_session_decision, desktop_effective_streaming_asr_enabled,
         desktop_failure_cleanup_plan, desktop_final_correction_processing_mode,
@@ -72,26 +74,35 @@ mod windows_app {
         desktop_live_correction_presentation, desktop_live_correction_processing_mode,
         desktop_live_correction_target_apply_allowed, desktop_live_correction_timing_log,
         desktop_live_correction_worker_policy, desktop_live_smart_route_lock,
-        desktop_live_smart_transcribe_evidence, desktop_local_asr_daemon_bind_from_endpoint,
-        desktop_mode_dropdown_model, desktop_mode_text_result_model, desktop_output_plan,
-        desktop_overlay_scale_factor_for_dpi,
+        desktop_live_smart_transcribe_evidence, desktop_live_streaming_segmenter_config,
+        desktop_local_asr_daemon_bind_from_endpoint, desktop_mode_dropdown_model,
+        desktop_mode_text_result_model, desktop_output_plan, desktop_overlay_scale_factor_for_dpi,
         desktop_packaged_local_asr_daemon_launch_plan_with_config,
         desktop_preferred_paste_shortcut_for_target,
         desktop_product_local_asr_daemon_launch_plan_with_config,
         desktop_product_local_asr_model_available, desktop_product_local_asr_startup_timeout_ms,
-        desktop_runtime_insert_directive_for_mode, desktop_shortcut_help_activation_policy,
-        desktop_shortcut_help_metrics, desktop_shortcut_help_model, desktop_shortcut_help_position,
-        desktop_speculative_cloud_correction_enabled, desktop_speculative_correction_job_model,
-        desktop_speculative_local_asr_route, desktop_speculative_replacement_selection_count,
-        desktop_streaming_effective_segment_count, desktop_streaming_final_correction_job_enabled,
-        desktop_streaming_hud_transcript_parts, desktop_streaming_latest_segment_allows_auto_patch,
-        desktop_streaming_segment_cache_text, desktop_streaming_stop_aggregate_with_pending,
-        desktop_streaming_stop_policy, desktop_streaming_stop_reconciliation_plan,
-        desktop_streaming_stop_tail_target_unchanged, download_and_install_model,
+        desktop_resolve_product_local_asr_model_root, desktop_runtime_insert_directive_for_mode,
+        desktop_shortcut_help_activation_policy, desktop_shortcut_help_metrics,
+        desktop_shortcut_help_metrics_for_entry_count, desktop_shortcut_help_model,
+        desktop_shortcut_help_position, desktop_speculative_cloud_correction_enabled,
+        desktop_speculative_correction_job_model, desktop_speculative_local_asr_route,
+        desktop_speculative_replacement_selection_count, desktop_streaming_effective_segment_count,
+        desktop_streaming_final_correction_job_enabled,
+        desktop_streaming_hud_transcript_parts_for_auto_follow,
+        desktop_streaming_hud_transcript_parts_text,
+        desktop_streaming_hud_transcript_summary_apply_fallback_text,
+        desktop_streaming_hud_transcript_summary_owned,
+        desktop_streaming_hud_transcript_summary_with_fallback_text_owned,
+        desktop_streaming_latest_segment_allows_auto_patch, desktop_streaming_segment_cache_text,
+        desktop_streaming_stop_aggregate_with_pending, desktop_streaming_stop_policy,
+        desktop_streaming_stop_reconciliation_plan, desktop_streaming_stop_tail_target_unchanged,
+        desktop_target_matched_context_for_paste, desktop_ui_color_tokens,
+        desktop_ui_derived_colors, download_and_install_model,
         embedded_runtime_payload_is_appended, extract_embedded_runtime_payload,
         foreground_target_refresh_requested, foreground_target_stability_satisfied,
         hotkey_status_message, hud_message_for_phase, hydrate_foreground_insert_target_focus,
-        idle_status_detail, live_streaming_segment_plan_for_lifecycle, native_status_message,
+        idle_status_detail, live_streaming_segment_plan_for_lifecycle,
+        locate_verified_embedded_runtime, native_status_message,
         observe_foreground_target_stability, parse_desktop_window_handle,
         recording_stop_watcher_policy, resolve_default_desktop_config_path,
         resolve_desktop_audio_file_override, resolve_foreground_focus_capture,
@@ -106,35 +117,39 @@ mod windows_app {
         DesktopHudPresentation, DesktopHudViewModel, DesktopHudVisualState,
         DesktopInsertTargetContext, DesktopInsertTargetRestoreDiagnostic,
         DesktopListeningHudAction, DesktopListeningHudPartialTextLayout,
-        DesktopLiveCorrectionAnchorPolicy, DesktopLiveCorrectionEligibility,
-        DesktopLiveCorrectionPresentation, DesktopLiveCorrectionSegment,
-        DesktopLiveStreamingLocalSegmentPlan, DesktopOutputStrategy,
-        DesktopOverlayActivationPolicy, DesktopOverlayRect, DesktopRecordingStopWatcherPolicy,
-        DesktopRuntimeInsertDirective, DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
+        DesktopLiveCorrectionAnchorPolicy, DesktopLiveCorrectionBacklogItem,
+        DesktopLiveCorrectionEligibility, DesktopLiveCorrectionPresentation,
+        DesktopLiveCorrectionSegment, DesktopLiveStreamingLocalSegmentPlan,
+        DesktopLocalAsrDaemonLaunchPlan, DesktopOutputStrategy, DesktopOverlayActivationPolicy,
+        DesktopOverlayRect, DesktopRecordingStopWatcherPolicy, DesktopRuntimeInsertDirective,
+        DesktopShortcutHelpMetrics, DesktopShortcutHelpModel,
         DesktopSpeculativeCorrectionOutputTarget, DesktopSpeculativeLocalAsrRoute,
         DesktopSpeculativePipelineConfig, DesktopStreamingHudTranscriptParts,
-        DesktopStreamingStopReconciliationPlan, DesktopTextLifecycleState, ForegroundInsertTarget,
-        ForegroundTargetReleaseReason, ForegroundTargetStabilityProgress, HotkeyBindingState,
-        HotkeySpec, LastSessionStatus, LowLevelHotkeyTracker, LowLevelHotkeyTransition,
-        NativeBackendSnapshot, NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor,
-        SpeculativePatchApplication, SpeculativePatchCandidate, StatusSnapshot,
-        ToggleDesktopHotkeyRouter, ToggleDesktopHotkeyRouterPendingHold,
-        WindowsHotkeyBindingRegistrationPlan, WindowsHotkeyBindingStrategy,
-        TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV, TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV,
-        TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV, TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME,
+        DesktopStreamingStopReconciliationPlan, DesktopTextLifecycleState, DesktopUiColorTokens,
+        DesktopUiDerivedColors, ForegroundInsertTarget, ForegroundTargetReleaseReason,
+        ForegroundTargetStabilityProgress, HotkeyBindingState, HotkeySpec, LastSessionStatus,
+        LowLevelHotkeyTracker, LowLevelHotkeyTransition, ModelSpec, NativeBackendSnapshot,
+        NativeReadinessSnapshot, ShellState, SpeculativeInsertAnchor, SpeculativePatchApplication,
+        SpeculativePatchCandidate, StatusSnapshot, ToggleDesktopHotkeyRouter,
+        ToggleDesktopHotkeyRouterPendingHold, WindowsHotkeyBindingRegistrationPlan,
+        WindowsHotkeyBindingStrategy, TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV,
+        TALK_DESKTOP_INSERT_TARGET_FOCUS_ENV, TALK_DESKTOP_INSERT_TARGET_WINDOW_ENV,
+        TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME,
     };
     use talk_insert::{
-        probe_native_windows_clipboard_readiness, ClipboardBackend, ClipboardPasteInserter,
-        ClipboardRestorePolicy, TextInserter, WindowsClipboardBackend, WindowsPasteShortcut,
-        TALK_WINDOWS_PASTE_SHORTCUT_ENV,
+        flush_pending_clipboard_restore, probe_native_windows_clipboard_readiness,
+        set_windows_paste_thread_overrides, ClipboardBackend, ClipboardPasteInserter,
+        ClipboardRestorePolicy, ConfiguredWindowsPasteShortcut, TextInserter,
+        WindowsClipboardBackend, WindowsPasteOverrides, WindowsPasteShortcutMode,
     };
     use talk_runtime::{
-        analyze_smart_voice_mode, complete_cancelled_session, complete_failed_session,
+        analyze_smart_voice_mode, complete_cancelled_session,
         complete_failed_session_with_mode_override, load_effective_config,
         process_voice_transcript_text_with_diagnostics,
         provider_text_processing_credentials_available,
         run_local_streaming_asr_service_from_recording, run_mock_speculative_session,
         run_voice_session_from_audio_artifact_with_insert_hooks,
+        run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks,
         run_voice_session_from_external_asr_command_with_insert_hooks,
         run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks,
         run_voice_session_from_transcript_with_route_evidence_and_insert_hooks,
@@ -156,53 +171,75 @@ mod windows_app {
     };
     use windows_sys::Win32::Graphics::Gdi::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-        CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW,
-        Ellipse, EndPaint, FillRect, GetDC, GetStockObject, GetTextExtentPoint32W, GradientFill,
-        InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect, SelectObject, SetBkColor,
-        SetBkMode, SetTextColor, SetWindowRgn, TextOutW, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-        COLOR_WINDOW, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH, DT_CALCRECT, DT_CENTER,
-        DT_EDITCONTROL, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE,
-        FW_BOLD, GRADIENT_FILL_RECT_H, GRADIENT_FILL_RECT_V, GRADIENT_RECT, HOLLOW_BRUSH, OPAQUE,
-        OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT, TRIVERTEX,
+        CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawFocusRect,
+        DrawTextW, Ellipse, EndPaint, FillRect, FrameRect, GetDC, GetStockObject,
+        GetTextExtentPoint32W, InvalidateRect, LineTo, MoveToEx, ReleaseDC, RoundRect,
+        SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, TextOutW,
+        CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_GUI_FONT, DEFAULT_PITCH,
+        DT_CALCRECT, DT_CENTER, DT_EDITCONTROL, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+        DT_WORDBREAK, FF_DONTCARE, FW_BOLD, HOLLOW_BRUSH, OPAQUE, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+        PS_SOLID, SRCCOPY, TRANSPARENT,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::{
         AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
         PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows_sys::Win32::UI::HiDpi::{
         GetDpiForSystem, GetDpiForWindow, SetProcessDpiAwarenessContext,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, GetFocus, RegisterHotKey, ReleaseCapture, SendInput, SetActiveWindow,
-        SetCapture, SetFocus, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYEVENTF_KEYUP, VK_LEFT, VK_SHIFT,
+        SetCapture, SetFocus, TrackMouseEvent, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
+        KEYBDINPUT, KEYEVENTF_KEYUP, TME_LEAVE, TRACKMOUSEEVENT, VK_LEFT, VK_SHIFT,
     };
     use windows_sys::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW,
+        DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW, NIF_ICON,
+        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, BringWindowToTop, CallNextHookEx, CreatePopupMenu, CreateWindowExW,
         DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-        GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
-        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow, KillTimer,
-        LoadCursorW, LoadIconW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
-        SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-        SetWindowTextW, SetWindowsHookExW, ShowWindow, TrackPopupMenu, TranslateMessage,
-        UnhookWindowsHookEx, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, EN_CHANGE,
-        ES_AUTOVSCROLL, ES_CENTER, ES_MULTILINE, GUITHREADINFO, GWLP_USERDATA, HC_ACTION, HHOOK,
-        IDC_ARROW, IDI_APPLICATION, KBDLLHOOKSTRUCT, MB_ICONINFORMATION, MB_OK, MF_CHECKED,
-        MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_APP, WM_CAPTURECHANGED,
-        WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETFONT,
-        WM_HOTKEY, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SYSKEYDOWN, WM_SYSKEYUP,
-        WM_TIMER, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-        WS_OVERLAPPEDWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+        GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetParent, GetSystemMetrics,
+        GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsIconic, IsWindow, KillTimer, LoadCursorW, LoadIconW, MessageBoxW, PostMessageW,
+        PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer,
+        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow,
+        TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx, CREATESTRUCTW, CS_HREDRAW,
+        CS_VREDRAW, CW_USEDEFAULT, EN_CHANGE, ES_AUTOVSCROLL, ES_CENTER, ES_MULTILINE,
+        GUITHREADINFO, GWLP_USERDATA, HC_ACTION, HHOOK, IDC_ARROW, IDI_APPLICATION,
+        KBDLLHOOKSTRUCT, MB_ICONINFORMATION, MB_OK, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
+        MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+        TPM_RIGHTBUTTON, WH_KEYBOARD_LL, WM_APP, WM_CAPTURECHANGED, WM_CHAR, WM_COMMAND,
+        WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_GETFONT, WM_HOTKEY,
+        WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SYSCHAR,
+        WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+        WS_VSCROLL,
     };
+
+    #[cfg(test)]
+    use talk_desktop::DesktopShortcutHelpEntry;
+    #[cfg(test)]
+    use windows_sys::Win32::Graphics::Gdi::GetPixel;
+    #[cfg(test)]
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+
+    /// Acquires a mutex while recovering from poisoning instead of panicking.
+    ///
+    /// A panic on any thread holding one of the desktop mutexes would otherwise
+    /// poison the lock and cascade into panics on every later acquisition,
+    /// killing the tray application without running cleanup paths.
+    fn lock_recovering<'a, T>(mutex: &'a Mutex<T>, context: &str) -> std::sync::MutexGuard<'a, T> {
+        mutex.lock().unwrap_or_else(|poisoned| {
+            eprintln!("Talk desktop mutex poisoned ({context}); recovering last known state");
+            poisoned.into_inner()
+        })
+    }
 
     const WINDOW_CLASS_NAME: &str = "TalkDesktopMessageWindow";
     const HUD_WINDOW_CLASS_NAME: &str = "TalkDesktopHudWindow";
@@ -212,9 +249,17 @@ mod windows_app {
     const HOTKEY_ID: i32 = 1;
     const COPY_POPUP_EDIT_CONTROL_ID: isize = 2001;
     const COPY_POPUP_MAX_PANES: usize = 4;
+    const COPY_POPUP_EDIT_SUBCLASS_ID: usize = 1;
     const EM_SETREADONLY_MESSAGE: u32 = 0x00CF;
+    const VK_TAB_KEY: u32 = 0x09;
     const VK_CONTROL_KEY: u16 = 0x11;
+    const VK_LEFT_CONTROL_KEY: u16 = 0xA2;
+    const VK_RIGHT_CONTROL_KEY: u16 = 0xA3;
     const VK_MENU_KEY: i32 = 0x12;
+    const VK_LEFT_MENU_KEY: u16 = 0xA4;
+    const VK_RIGHT_MENU_KEY: u16 = 0xA5;
+    const VK_LEFT_SHIFT_KEY: u16 = 0xA0;
+    const VK_RIGHT_SHIFT_KEY: u16 = 0xA1;
     const VK_A_KEY: u16 = 0x41;
     const TRAY_ICON_ID: u32 = 1;
     const TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -229,14 +274,22 @@ mod windows_app {
     const MODEL_BOOTSTRAP_MESSAGE: u32 = WM_APP + 10;
     const CORRECTED_HUD_MESSAGE: u32 = WM_APP + 11;
     const STREAMING_CORRECTED_HUD_MESSAGE: u32 = WM_APP + 12;
+    const STREAMING_PUMP_DONE_MESSAGE: u32 = WM_APP + 13;
+    const LOCAL_ASR_PREPARE_DONE_MESSAGE: u32 = WM_APP + 14;
+    const AUDIO_START_DONE_MESSAGE: u32 = WM_APP + 15;
+    const CONFIG_RELOAD_DONE_MESSAGE: u32 = WM_APP + 16;
     const TIMER_HIDE_HUD: usize = 1;
     const TIMER_SHORTCUT_HELP_HOLD: usize = 2;
     const TIMER_RECORDING_LEVEL: usize = 3;
     const TIMER_THINKING_PROGRESS: usize = 4;
+    const TIMER_RECORDING_TIMEOUT: usize = 5;
     const HUD_RECORDING_LEVEL_REFRESH_MS: u32 = 48;
     const HUD_THINKING_PROGRESS_REFRESH_MS: u32 = 72;
-    const COPY_POPUP_CORNER_RADIUS: i32 = 0;
-    const SHORTCUT_HELP_CORNER_RADIUS: i32 = 0;
+    const HUD_WAVEFORM_BUCKET_COUNT: usize = 9;
+    const HUD_STREAMING_ASR_EVENTS_PER_REFRESH: usize = 64;
+    const STREAMING_PUMP_PARTIAL_IDLE_TIMEOUT_MS: u64 = 1;
+    const COPY_POPUP_CORNER_RADIUS: i32 = 6;
+    const SHORTCUT_HELP_CORNER_RADIUS: i32 = 6;
     const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
     const SHORTCUT_HELP_HOLD_DELAY_MS: u32 = 650;
     const HOTKEY_ORIGIN_ENRICH_POLL_INTERVAL_MS: u64 = 35;
@@ -280,20 +333,26 @@ mod windows_app {
     enum ActiveRecordingSource {
         Live {
             recording: RecordingSession,
-            streaming_session: Option<LocalStreamingAsrLiveSession>,
+            streaming_pump: Option<LocalStreamingAsrPumpController>,
         },
         ExplicitAudioFile(PathBuf),
     }
 
     enum StoppedRecordingSource {
         AudioFile(PathBuf),
+        LiveRecording {
+            recording: RecordingSession,
+            streaming_pump: Option<LocalStreamingAsrPumpController>,
+        },
         StreamingRecording {
             recording: RecordingSession,
-            streaming_session: Option<LocalStreamingAsrLiveSession>,
+            streaming_pump: Option<LocalStreamingAsrPumpController>,
         },
         StreamingEvents {
             events: Result<Vec<StreamingAsrEvent>>,
+            audio_path: Option<PathBuf>,
         },
+        RecordingFinalizeFailed(String),
     }
 
     struct ActiveRecording {
@@ -313,16 +372,99 @@ mod windows_app {
         speculative_segmenter_config: SegmenterConfig,
         live_streaming_inserted_anchors: HashMap<String, SpeculativeInsertAnchor>,
         live_streaming_inserted_segment_ids: Vec<String>,
-        hud_streaming_segments: Vec<(String, String)>,
+        hud_streaming_segments: Arc<Vec<(String, String)>>,
+        hud_streaming_segments_revision: u64,
         live_streaming_correction_sender:
             Option<tokio::sync::mpsc::Sender<SpeculativeCloudCorrectionJob>>,
         live_streaming_correction_tracker: Arc<LiveCorrectionTracker>,
+        live_correction_snapshot_revision: u64,
+        live_correction_snapshot: Vec<DesktopLiveCorrectionSegment>,
         last_streaming_asr_event: Option<StreamingAsrEvent>,
         last_streaming_asr_event_at: Option<Instant>,
+        last_streaming_idle_evaluated_ms: u64,
+        hud_waveform: [f32; HUD_WAVEFORM_BUCKET_COUNT],
+        pending_streaming_pump_results:
+            VecDeque<std::result::Result<Vec<StreamingAsrEvent>, String>>,
+        streaming_unavailable_hint: Option<String>,
+    }
+
+    struct PendingRecordingBegin {
+        action_index: usize,
+        source: ActivationSource,
+        config: Arc<TalkConfig>,
+        runtime_handle: tokio::runtime::Handle,
+        hotkey: Option<HotkeySpec>,
+        mode_override: Option<VoiceMode>,
+        generation: u64,
+        trigger_mode: TriggerMode,
+        max_recording_seconds: u64,
+        session_id: String,
+        config_path: PathBuf,
+        session: VoiceSession,
+        trigger_events: Vec<&'static str>,
+        origin_insert_target: Option<DesktopInsertTargetContext>,
+        origin_insert_target_source: Option<String>,
+        pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
+        release_time_origin_target: Option<DesktopInsertTargetContext>,
+        local_asr_result: Option<std::result::Result<bool, String>>,
+        audio_start_result:
+            Option<std::result::Result<PreparedRecordingAudio, RecordingAudioStartFailure>>,
+    }
+
+    struct PreparedRecordingAudio {
+        source: ActiveRecordingSource,
+        use_streaming_speculative_asr: bool,
+    }
+
+    struct RecordingAudioStartFailure {
+        message: String,
+        reason: &'static str,
+        hud_detail: String,
+    }
+
+    struct PendingConfigReload {
+        generation: u64,
+        result: Option<std::result::Result<PreparedConfigReload, String>>,
+    }
+
+    struct PreparedConfigReload {
+        config: TalkConfig,
+        selected_voice_mode: VoiceMode,
+        shortcut_label: String,
+        hotkey_binding:
+            std::result::Result<(Vec<DesktopActionBinding>, HotkeyBindingState), String>,
+        native_readiness: NativeReadinessSnapshot,
+        uses_streaming_service: bool,
+    }
+
+    enum PreparedProductBootstrap {
+        EngineeringFallback,
+        FallbackCloud(String),
+        Ready {
+            worker_path: PathBuf,
+            model_root: PathBuf,
+        },
+        Download {
+            worker_path: PathBuf,
+            model_root: PathBuf,
+            primary_model_root: PathBuf,
+            spec: ModelSpec,
+        },
+    }
+
+    #[derive(Clone)]
+    struct LocalStreamingAsrPumpController {
+        pump_sender: tokio::sync::mpsc::Sender<()>,
+        terminal_sender: tokio::sync::mpsc::Sender<LocalStreamingAsrPumpTerminalCommand>,
+    }
+
+    enum LocalStreamingAsrPumpTerminalCommand {
+        Stop(tokio::sync::oneshot::Sender<Result<Vec<StreamingAsrEvent>>>),
+        Cancel(tokio::sync::oneshot::Sender<Result<()>>),
     }
 
     struct SharedState {
-        config: Option<TalkConfig>,
+        config: Option<Arc<TalkConfig>>,
         config_status: ConfigAvailability,
         config_path: PathBuf,
         hotkey: HotkeyBindingState,
@@ -333,6 +475,7 @@ mod windows_app {
         current_phase: Option<RuntimePhase>,
         last_session: Option<LastSessionStatus>,
         active_recording: Option<ActiveRecording>,
+        pending_recording_begin: Option<PendingRecordingBegin>,
         worker_generation: Option<u64>,
         pending_worker_error: Option<(u64, String)>,
         pending_worker_task: Option<(u64, tokio::task::JoinHandle<()>)>,
@@ -341,6 +484,8 @@ mod windows_app {
         pending_corrected_hud: Option<PendingCorrectedHud>,
         pending_hotkey_origin_insert_target: Option<DesktopInsertTargetContext>,
         local_asr_daemon: Option<ManagedLocalAsrDaemon>,
+        local_asr_daemon_epoch: u64,
+        local_asr_daemon_lifecycle: Arc<Mutex<()>>,
         local_asr_bootstrap_status: LocalAsrBootstrapStatus,
         product_runtime_worker: Option<PathBuf>,
         product_model_root: Option<PathBuf>,
@@ -348,6 +493,10 @@ mod windows_app {
         foreground_apply_gate: ForegroundApplyGate,
         pending_document_correction_task: Option<(u64, tokio::task::JoinHandle<()>)>,
         pending_model_bootstrap_task: Option<tokio::task::JoinHandle<()>>,
+        product_bootstrap_generation: u64,
+        pending_product_bootstrap_prepare_generation: Option<u64>,
+        config_reload_generation: u64,
+        pending_config_reload: Option<PendingConfigReload>,
         shutting_down: bool,
         runtime_handle: tokio::runtime::Handle,
         next_generation: u64,
@@ -355,6 +504,7 @@ mod windows_app {
 
     struct ManagedLocalAsrDaemon {
         endpoint: String,
+        launch_plan: DesktopLocalAsrDaemonLaunchPlan,
         child: std::process::Child,
     }
 
@@ -420,17 +570,192 @@ mod windows_app {
         }
     }
 
-    async fn abort_pending_task(pending: &mut Option<(u64, tokio::task::JoinHandle<()>)>) {
-        if let Some((_, task)) = pending.take() {
-            task.abort();
-            let _ = task.await;
+    impl LocalStreamingAsrPumpController {
+        fn request_pump(&self) {
+            let _ = self.pump_sender.try_send(());
+        }
+
+        async fn stop(self) -> Result<Vec<StreamingAsrEvent>> {
+            let (reply_sender, reply_receiver) = tokio::sync::oneshot::channel();
+            self.terminal_sender
+                .send(LocalStreamingAsrPumpTerminalCommand::Stop(reply_sender))
+                .await
+                .context("send stop command to local streaming ASR pump")?;
+            reply_receiver
+                .await
+                .context("receive stop result from local streaming ASR pump")?
+        }
+
+        async fn cancel(self) -> Result<()> {
+            let (reply_sender, reply_receiver) = tokio::sync::oneshot::channel();
+            self.terminal_sender
+                .send(LocalStreamingAsrPumpTerminalCommand::Cancel(reply_sender))
+                .await
+                .context("send cancel command to local streaming ASR pump")?;
+            reply_receiver
+                .await
+                .context("receive cancel result from local streaming ASR pump")?
         }
     }
 
-    async fn abort_pending_join_handle(pending: &mut Option<tokio::task::JoinHandle<()>>) {
+    fn spawn_local_streaming_asr_pump(
+        runtime_handle: &tokio::runtime::Handle,
+        shared: Arc<Mutex<SharedState>>,
+        hwnd: HWND,
+        generation: u64,
+        source: RecordingPcmSource,
+        config: Arc<TalkConfig>,
+        session_id: String,
+    ) -> LocalStreamingAsrPumpController {
+        let (pump_sender, mut pump_receiver) = tokio::sync::mpsc::channel::<()>(1);
+        let (terminal_sender, mut terminal_receiver) =
+            tokio::sync::mpsc::channel::<LocalStreamingAsrPumpTerminalCommand>(1);
+        let hwnd_value = hwnd as usize;
+        runtime_handle.spawn(async move {
+            let mut session = None::<LocalStreamingAsrLiveSession>;
+            loop {
+                tokio::select! {
+                    biased;
+                    command = terminal_receiver.recv() => {
+                        match command {
+                            Some(LocalStreamingAsrPumpTerminalCommand::Stop(reply)) => {
+                                let result = match session.take() {
+                                    Some(session) => session.stop_from_pcm_source(&source).await,
+                                    None => match LocalStreamingAsrLiveSession::start(
+                                        &config,
+                                        &session_id,
+                                        None,
+                                    )
+                                    .await
+                                    {
+                                        Ok(session) => session.stop_from_pcm_source(&source).await,
+                                        Err(error) => Err(error),
+                                    },
+                                };
+                                let _ = reply.send(result);
+                            }
+                            Some(LocalStreamingAsrPumpTerminalCommand::Cancel(reply)) => {
+                                let result = match session.take() {
+                                    Some(session) => session.cancel().await,
+                                    None => Ok(()),
+                                };
+                                let _ = reply.send(result);
+                            }
+                            None => {
+                                if let Some(session) = session.take() {
+                                    let _ = session.cancel().await;
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    pump = pump_receiver.recv() => {
+                        if pump.is_none() {
+                            if let Some(session) = session.take() {
+                                let _ = session.cancel().await;
+                            }
+                            return;
+                        }
+                        if session.is_none() {
+                            match LocalStreamingAsrLiveSession::start(
+                                &config,
+                                &session_id,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(started) => session = Some(started),
+                                Err(error) => {
+                                    let result = Err(error.to_string());
+                                    let should_post = shared.lock().ok().is_some_and(|mut shared| {
+                                        if shared.shutting_down
+                                            || shared.current_phase != Some(RuntimePhase::Recording)
+                                        {
+                                            return false;
+                                        }
+                                        let Some(active) = shared.active_recording.as_mut() else {
+                                            return false;
+                                        };
+                                        if active.generation != generation {
+                                            return false;
+                                        }
+                                        active.pending_streaming_pump_results.push_back(result);
+                                        true
+                                    });
+                                    if should_post {
+                                        unsafe {
+                                            let _ = PostMessageW(
+                                                hwnd_value as HWND,
+                                                STREAMING_PUMP_DONE_MESSAGE,
+                                                generation as usize,
+                                                0,
+                                            );
+                                        }
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                        let result = session
+                            .as_mut()
+                            .expect("local streaming ASR session started")
+                            .pump_available_pcm_source(
+                                &source,
+                                Duration::from_millis(STREAMING_PUMP_PARTIAL_IDLE_TIMEOUT_MS),
+                            )
+                            .await
+                            .map_err(|error| error.to_string());
+                        let failed = result.is_err();
+                        let should_post = shared.lock().ok().is_some_and(|mut shared| {
+                            if shared.shutting_down
+                                || shared.current_phase != Some(RuntimePhase::Recording)
+                            {
+                                return false;
+                            }
+                            let Some(active) = shared.active_recording.as_mut() else {
+                                return false;
+                            };
+                            if active.generation != generation {
+                                return false;
+                            }
+                            active.pending_streaming_pump_results.push_back(result);
+                            true
+                        });
+                        if should_post {
+                            unsafe {
+                                let _ = PostMessageW(
+                                    hwnd_value as HWND,
+                                    STREAMING_PUMP_DONE_MESSAGE,
+                                    generation as usize,
+                                    0,
+                                );
+                            }
+                        }
+                        if failed {
+                            if let Some(session) = session.take() {
+                                let _ = session.cancel().await;
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        LocalStreamingAsrPumpController {
+            pump_sender,
+            terminal_sender,
+        }
+    }
+
+    fn abort_pending_task(pending: &mut Option<(u64, tokio::task::JoinHandle<()>)>) {
+        if let Some((_, task)) = pending.take() {
+            task.abort();
+        }
+    }
+
+    fn abort_pending_join_handle(pending: &mut Option<tokio::task::JoinHandle<()>>) {
         if let Some(task) = pending.take() {
             task.abort();
-            let _ = task.await;
         }
     }
 
@@ -478,8 +803,12 @@ mod windows_app {
         })
     }
 
-    fn model_bootstrap_side_effects_allowed(shutting_down: bool) -> bool {
-        !shutting_down
+    fn model_bootstrap_side_effects_allowed(
+        shutting_down: bool,
+        current_generation: u64,
+        generation: u64,
+    ) -> bool {
+        !shutting_down && current_generation == generation
     }
 
     fn correction_foreground_side_effects_allowed(
@@ -517,6 +846,12 @@ mod windows_app {
         poll_count: u32,
         initial_state: PasteShortcutModifierKeyState,
         final_state: PasteShortcutModifierKeyState,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct PasteShortcutModifierPreparation {
+        wait_outcome: PasteShortcutModifierReleaseWaitOutcome,
+        force_release: bool,
     }
 
     fn paste_shortcut_modifier_keys_clear(state: PasteShortcutModifierKeyState) -> bool {
@@ -574,12 +909,85 @@ mod windows_app {
         }
     }
 
-    fn wait_for_paste_shortcut_modifier_release() -> PasteShortcutModifierReleaseWaitOutcome {
-        wait_for_paste_shortcut_modifier_release_with_sampler(
-            Duration::from_millis(350),
-            Duration::from_millis(10),
+    fn prepare_paste_shortcut_modifier_state_with_sampler<F>(
+        timeout: Duration,
+        poll_interval: Duration,
+        sample: F,
+    ) -> PasteShortcutModifierPreparation
+    where
+        F: FnMut() -> PasteShortcutModifierKeyState,
+    {
+        let wait_outcome =
+            wait_for_paste_shortcut_modifier_release_with_sampler(timeout, poll_interval, sample);
+        PasteShortcutModifierPreparation {
+            force_release: !wait_outcome.cleared
+                && !paste_shortcut_modifier_keys_clear(wait_outcome.final_state),
+            wait_outcome,
+        }
+    }
+
+    fn force_release_pressed_paste_modifiers(state: PasteShortcutModifierKeyState) -> Result<()> {
+        if paste_shortcut_modifier_keys_clear(state) {
+            return Ok(());
+        }
+
+        let mut inputs = Vec::new();
+        if state.control {
+            inputs.push(keyboard_input(VK_LEFT_CONTROL_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_RIGHT_CONTROL_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_CONTROL_KEY, KEYEVENTF_KEYUP));
+        }
+        if state.alt {
+            inputs.push(keyboard_input(VK_LEFT_MENU_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_RIGHT_MENU_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_MENU_KEY as u16, KEYEVENTF_KEYUP));
+        }
+        if state.shift {
+            inputs.push(keyboard_input(VK_LEFT_SHIFT_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_RIGHT_SHIFT_KEY, KEYEVENTF_KEYUP));
+            inputs.push(keyboard_input(VK_SHIFT, KEYEVENTF_KEYUP));
+        }
+
+        if inputs.is_empty() {
+            return Ok(());
+        }
+
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_mut_ptr(),
+                mem::size_of::<INPUT>() as i32,
+            )
+        };
+        if sent != inputs.len() as u32 {
+            anyhow::bail!(
+                "SendInput(release lingering modifiers) sent {sent}/{} key events",
+                inputs.len()
+            );
+        }
+        Ok(())
+    }
+
+    fn prepare_paste_shortcut_modifier_state() -> PasteShortcutModifierPreparation {
+        let preparation = prepare_paste_shortcut_modifier_state_with_sampler(
+            Duration::from_millis(40),
+            Duration::from_millis(5),
             sample_paste_shortcut_modifier_key_state,
-        )
+        );
+        if preparation.force_release {
+            if let Err(error) =
+                force_release_pressed_paste_modifiers(preparation.wait_outcome.final_state)
+            {
+                eprintln!("Talk forced modifier release before paste failed: {error:#}");
+            } else {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        preparation
+    }
+
+    fn should_prepare_paste_shortcut_modifiers(direct_control_paste_active: bool) -> bool {
+        !direct_control_paste_active
     }
 
     #[derive(Debug, Clone)]
@@ -602,7 +1010,7 @@ mod windows_app {
     }
 
     struct SpeculativeCloudCorrectionJob {
-        config: TalkConfig,
+        config: Arc<TalkConfig>,
         segment_id: String,
         transcript: String,
         context_before: Option<String>,
@@ -702,10 +1110,27 @@ mod windows_app {
 
     struct LiveCorrectionTrackerState {
         segments: Vec<DesktopLiveCorrectionSegment>,
+        segment_indices: HashMap<String, usize>,
+        segments_revision: u64,
         pending_jobs: usize,
         completed_jobs: HashSet<String>,
         stopping: bool,
         cancelled: bool,
+    }
+
+    impl LiveCorrectionTrackerState {
+        fn segment_index(&self, segment_id: &str) -> Option<usize> {
+            self.segment_indices.get(segment_id).copied()
+        }
+
+        fn segment(&self, segment_id: &str) -> Option<&DesktopLiveCorrectionSegment> {
+            self.segments.get(self.segment_index(segment_id)?)
+        }
+
+        fn segment_mut(&mut self, segment_id: &str) -> Option<&mut DesktopLiveCorrectionSegment> {
+            let index = self.segment_index(segment_id)?;
+            self.segments.get_mut(index)
+        }
     }
 
     impl LiveCorrectionTracker {
@@ -714,6 +1139,8 @@ mod windows_app {
                 apply_gate: Mutex::new(()),
                 state: Mutex::new(LiveCorrectionTrackerState {
                     segments: Vec::new(),
+                    segment_indices: HashMap::new(),
+                    segments_revision: 0,
                     pending_jobs: 0,
                     completed_jobs: HashSet::new(),
                     stopping: false,
@@ -732,21 +1159,19 @@ mod windows_app {
             let Ok(mut state) = self.state.lock() else {
                 return false;
             };
-            if state.cancelled
-                || state.stopping
-                || state
-                    .segments
-                    .iter()
-                    .any(|segment| segment.segment_id == segment_id)
-            {
+            if state.cancelled || state.stopping || state.segment_indices.contains_key(segment_id) {
                 return false;
             }
+            let segment_index = state.segments.len();
+            let segment_id = segment_id.to_string();
             state.segments.push(DesktopLiveCorrectionSegment {
-                segment_id: segment_id.to_string(),
+                segment_id: segment_id.clone(),
                 local_text: local_text.to_string(),
                 corrected_text: None,
                 insert_anchor: anchor,
             });
+            state.segment_indices.insert(segment_id, segment_index);
+            state.segments_revision = state.segments_revision.wrapping_add(1);
             state.pending_jobs += 1;
             true
         }
@@ -763,9 +1188,9 @@ mod windows_app {
                 return false;
             };
             !state.cancelled
-                && state.segments.iter().any(|segment| {
-                    segment.segment_id == segment_id && segment.corrected_text.is_none()
-                })
+                && state
+                    .segment(segment_id)
+                    .is_some_and(|segment| segment.corrected_text.is_none())
         }
 
         fn acquire_apply_lease(&self, segment_id: &str) -> Option<LiveCorrectionApplyLease<'_>> {
@@ -795,14 +1220,20 @@ mod windows_app {
             if state.cancelled {
                 return;
             }
-            if let Some(segment) = state
-                .segments
-                .iter_mut()
-                .find(|segment| segment.segment_id == segment_id)
-            {
-                segment.corrected_text = Some(corrected_text.to_string());
-                if anchor.is_some() {
-                    segment.insert_anchor = anchor;
+            if let Some(segment) = state.segment_mut(segment_id) {
+                let mut segments_changed = false;
+                if segment.corrected_text.as_deref() != Some(corrected_text) {
+                    segment.corrected_text = Some(corrected_text.to_string());
+                    segments_changed = true;
+                }
+                if let Some(anchor) = anchor {
+                    if segment.insert_anchor.as_ref() != Some(&anchor) {
+                        segment.insert_anchor = Some(anchor);
+                        segments_changed = true;
+                    }
+                }
+                if segments_changed {
+                    state.segments_revision = state.segments_revision.wrapping_add(1);
                 }
             }
         }
@@ -812,14 +1243,26 @@ mod windows_app {
             if state.cancelled {
                 return None;
             }
-            let segment = state
-                .segments
-                .iter()
-                .find(|segment| segment.segment_id == segment_id)?;
+            let segment = state.segment(segment_id)?;
             if segment.corrected_text.is_some() {
                 return None;
             }
             Some(segment.local_text.clone())
+        }
+
+        fn has_insert_anchor(&self, segment_id: &str) -> bool {
+            self.state.lock().ok().is_some_and(|state| {
+                state
+                    .segment(segment_id)
+                    .is_some_and(|segment| segment.insert_anchor.is_some())
+            })
+        }
+
+        fn ordered_backlog(&self) -> Vec<DesktopLiveCorrectionBacklogItem> {
+            self.state
+                .lock()
+                .map(|state| desktop_live_correction_ordered_backlog(&state.segments))
+                .unwrap_or_default()
         }
 
         fn complete_job(
@@ -831,17 +1274,23 @@ mod windows_app {
             let Ok(mut state) = self.state.lock() else {
                 return;
             };
-            if let Some(segment) = state
-                .segments
-                .iter_mut()
-                .find(|segment| segment.segment_id == segment_id)
-            {
+            let mut segments_changed = false;
+            if let Some(segment) = state.segment_mut(segment_id) {
                 if let Some(corrected_text) = corrected_text {
-                    segment.corrected_text = Some(corrected_text.to_string());
+                    if segment.corrected_text.as_deref() != Some(corrected_text) {
+                        segment.corrected_text = Some(corrected_text.to_string());
+                        segments_changed = true;
+                    }
                 }
-                if anchor.is_some() {
-                    segment.insert_anchor = anchor;
+                if let Some(anchor) = anchor {
+                    if segment.insert_anchor.as_ref() != Some(&anchor) {
+                        segment.insert_anchor = Some(anchor);
+                        segments_changed = true;
+                    }
                 }
+            }
+            if segments_changed {
+                state.segments_revision = state.segments_revision.wrapping_add(1);
             }
             state.completed_jobs.insert(segment_id.to_string());
             state.pending_jobs = state.pending_jobs.saturating_sub(1);
@@ -890,11 +1339,10 @@ mod windows_app {
                     if state.cancelled {
                         return Some(false);
                     }
-                    let index = state
+                    let index = state.segment_index(segment_id)?;
+                    if state
                         .segments
-                        .iter()
-                        .position(|segment| segment.segment_id == segment_id)?;
-                    if state.segments[..index]
+                        .get(..index)?
                         .iter()
                         .all(|segment| state.completed_jobs.contains(&segment.segment_id))
                     {
@@ -926,10 +1374,38 @@ mod windows_app {
         }
 
         fn snapshot(&self) -> Vec<DesktopLiveCorrectionSegment> {
+            self.snapshot_with_revision()
+                .map(|(_, segments)| segments)
+                .unwrap_or_default()
+        }
+
+        fn snapshot_with_revision(&self) -> Option<(u64, Vec<DesktopLiveCorrectionSegment>)> {
             self.state
                 .lock()
-                .map(|state| state.segments.clone())
-                .unwrap_or_default()
+                .ok()
+                .map(|state| (state.segments_revision, state.segments.clone()))
+        }
+
+        fn current_revision(&self) -> Option<u64> {
+            self.state.lock().ok().map(|state| state.segments_revision)
+        }
+
+        fn refresh_snapshot_if_changed(
+            &self,
+            revision: &mut u64,
+            snapshot: &mut Vec<DesktopLiveCorrectionSegment>,
+        ) -> bool {
+            let Ok(state) = self.state.lock() else {
+                snapshot.clear();
+                *revision = 0;
+                return false;
+            };
+            if *revision == state.segments_revision {
+                return false;
+            }
+            snapshot.clone_from(&state.segments);
+            *revision = state.segments_revision;
+            true
         }
     }
 
@@ -939,7 +1415,7 @@ mod windows_app {
     }
 
     struct PendingLiveStreamingDispatch {
-        config: TalkConfig,
+        config: Arc<TalkConfig>,
         pipeline_config: DesktopSpeculativePipelineConfig,
         generation: u64,
         origin_insert_target: Option<DesktopInsertTargetContext>,
@@ -954,6 +1430,70 @@ mod windows_app {
         allow_target_apply: bool,
         hwnd_value: usize,
         hud_hwnd_value: usize,
+    }
+
+    struct PendingLiveStreamingDispatchSeed {
+        live_correction_tracker: Arc<LiveCorrectionTracker>,
+        events: Vec<SpeculativeRuntimeEvent>,
+        requested_mode: VoiceMode,
+        smart_routed_mode: Option<VoiceMode>,
+        flush_corrected_backlog: bool,
+    }
+
+    struct LiveStreamingDispatchMetadata {
+        config: Arc<TalkConfig>,
+        origin_insert_target: Option<DesktopInsertTargetContext>,
+        existing_anchors: HashMap<String, SpeculativeInsertAnchor>,
+        live_correction_sender: tokio::sync::mpsc::Sender<SpeculativeCloudCorrectionJob>,
+    }
+
+    struct PendingLiveCorrectionTranscript {
+        tracker_revision: u64,
+        tracker_snapshot: Vec<DesktopLiveCorrectionSegment>,
+        hud_streaming_segments_revision: u64,
+        latest_asr_text: Option<String>,
+        fallback_text: Option<String>,
+        transcript_parts: DesktopStreamingHudTranscriptParts,
+        route_was_requested: bool,
+        routed_mode: Option<VoiceMode>,
+    }
+
+    struct RecordingHudProcessingState {
+        speculative_runtime_state: SpeculativeRuntimeState,
+        hud_streaming_segments: Arc<Vec<(String, String)>>,
+        hud_streaming_segments_revision: u64,
+        live_correction_snapshot_revision: u64,
+        live_correction_snapshot: Vec<DesktopLiveCorrectionSegment>,
+        last_streaming_asr_event: Option<StreamingAsrEvent>,
+        last_streaming_asr_event_at: Option<Instant>,
+        last_streaming_idle_evaluated_ms: u64,
+        live_smart_routed_mode: Option<VoiceMode>,
+    }
+
+    struct PendingRecordingHudRefresh {
+        generation: u64,
+        requested_mode: VoiceMode,
+        segmenter_config: SegmenterConfig,
+        processing_state: RecordingHudProcessingState,
+        pending_streaming_pump_results:
+            VecDeque<std::result::Result<Vec<StreamingAsrEvent>, String>>,
+        waveform_source: Option<RecordingPcmSource>,
+        raw_waveform: [f32; HUD_WAVEFORM_BUCKET_COUNT],
+        streaming_pump: Option<LocalStreamingAsrPumpController>,
+        streaming_unavailable_hint: Option<String>,
+        live_correction_tracker: Arc<LiveCorrectionTracker>,
+    }
+
+    struct ProcessedRecordingHudRefresh {
+        generation: u64,
+        processing_state: RecordingHudProcessingState,
+        pending_streaming_pump_results:
+            VecDeque<std::result::Result<Vec<StreamingAsrEvent>, String>>,
+        raw_waveform: [f32; HUD_WAVEFORM_BUCKET_COUNT],
+        streaming_unavailable_hint: Option<String>,
+        refreshed_hud_transcript_parts: Option<DesktopStreamingHudTranscriptParts>,
+        live_dispatch_seed: Option<PendingLiveStreamingDispatchSeed>,
+        streaming_pump_error: Option<String>,
     }
 
     enum LowLevelHookState {
@@ -974,11 +1514,14 @@ mod windows_app {
 
     struct WindowState {
         shared: Arc<Mutex<SharedState>>,
-        hud_hwnd: HWND,
-        copy_popup_hwnd: HWND,
-        copy_popup_edit_hwnd: HWND,
-        copy_popup_pane_edit_hwnds: Vec<HWND>,
-        shortcut_help_hwnd: HWND,
+        hud_hwnd: Cell<HWND>,
+        copy_popup_hwnd: Cell<HWND>,
+        copy_popup_edit_hwnd: Cell<HWND>,
+        copy_popup_pane_edit_hwnds: RefCell<Vec<HWND>>,
+        copy_popup_restore_foreground_hwnd: Cell<HWND>,
+        copy_popup_restore_focus_hwnd: Cell<HWND>,
+        shortcut_help_hwnd: Cell<HWND>,
+        recording_timeout_generation: Cell<Option<u64>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1030,9 +1573,8 @@ mod windows_app {
     fn with_low_level_toggle_router<T>(
         f: impl FnOnce(&mut ToggleDesktopHotkeyRouter, HWND) -> T,
     ) -> Option<T> {
-        let mut state = low_level_hook_state()
-            .lock()
-            .expect("Talk desktop low-level hook state");
+        let mut state =
+            lock_recovering(low_level_hook_state(), "Talk desktop low-level hook state");
         let LowLevelHookState::ToggleRouter { hwnd_value, router } = state.as_mut()? else {
             return None;
         };
@@ -1043,6 +1585,8 @@ mod windows_app {
     struct CopyPopupRenderState {
         model: DesktopCopyPopupModel,
         hovered_control: CopyPopupHoveredControl,
+        pressed_control: CopyPopupHoveredControl,
+        keyboard_focused_control: CopyPopupHoveredControl,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1083,48 +1627,65 @@ mod windows_app {
         segments: &mut Vec<(String, String)>,
         segment_id: &str,
         text: &str,
-    ) {
+    ) -> bool {
         let Some(text) = desktop_streaming_segment_cache_text(text) else {
-            return;
+            return false;
         };
 
-        if let Some((_, existing_text)) = segments
+        if let Some((last_segment_id, last_text)) = segments.last_mut() {
+            if last_segment_id == segment_id {
+                return update_hud_streaming_segment_text(last_text, text);
+            }
+        }
+
+        let search_end = segments.len().saturating_sub(1);
+        if let Some((_, existing_text)) = segments[..search_end]
             .iter_mut()
             .find(|(existing_segment_id, _)| existing_segment_id == segment_id)
         {
-            existing_text.clear();
-            existing_text.push_str(text);
+            return update_hud_streaming_segment_text(existing_text, text);
         } else {
             segments.push((segment_id.to_string(), text.to_string()));
         }
+        true
+    }
+
+    fn update_hud_streaming_segment_text(existing_text: &mut String, text: &str) -> bool {
+        if existing_text == text {
+            return false;
+        }
+        existing_text.clear();
+        existing_text.push_str(text);
+        true
     }
 
     /// Drop streaming HUD segments whose ids were rolled back by an ASR revision
     /// that segmented into fewer pieces. Retained/re-committed segments keep
     /// their position, so display order is preserved.
-    fn remove_hud_streaming_segments(segments: &mut Vec<(String, String)>, segment_ids: &[String]) {
+    fn remove_hud_streaming_segments(
+        segments: &mut Vec<(String, String)>,
+        segment_ids: &[String],
+    ) -> bool {
         if segment_ids.is_empty() {
-            return;
+            return false;
         }
-        segments.retain(|(segment_id, _)| !segment_ids.iter().any(|removed| removed == segment_id));
+        let previous_len = segments.len();
+        if let [removed] = segment_ids {
+            segments.retain(|(segment_id, _)| segment_id != removed);
+        } else {
+            let removed = segment_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            segments.retain(|(segment_id, _)| !removed.contains(segment_id.as_str()));
+        }
+        segments.len() != previous_len
     }
 
     fn display_text_units(text: &str) -> usize {
         text.chars()
             .map(|character| if character.is_ascii() { 1 } else { 2 })
             .sum()
-    }
-
-    fn active_recording_hud_transcript_parts(
-        active: &ActiveRecording,
-    ) -> DesktopStreamingHudTranscriptParts {
-        let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
-        let pending_segments = active
-            .hud_streaming_segments
-            .iter()
-            .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
-            .collect::<Vec<_>>();
-        desktop_streaming_hud_transcript_parts(&tracker_snapshot, &pending_segments)
     }
 
     fn live_smart_route_for_transcript(
@@ -1173,6 +1734,19 @@ mod windows_app {
         desktop_live_smart_route_lock(current_lock, analysis.resolved_mode, transcribe_evidence)
     }
 
+    fn commit_live_smart_route_candidate(
+        requested_mode: VoiceMode,
+        current_lock: Option<VoiceMode>,
+        candidate_is_current: bool,
+        candidate: Option<VoiceMode>,
+    ) -> Option<VoiceMode> {
+        if requested_mode == VoiceMode::Smart && current_lock.is_none() && candidate_is_current {
+            candidate
+        } else {
+            current_lock
+        }
+    }
+
     fn live_correction_job_target_apply_allowed(
         job_allow_target_apply: bool,
         has_live_segment_guard: bool,
@@ -1199,20 +1773,85 @@ mod windows_app {
     fn listening_hud_transcript_text_and_lifecycle(
         parts: &DesktopStreamingHudTranscriptParts,
     ) -> (Option<String>, DesktopTextLifecycleState) {
-        let display_text = format!("{}{}", parts.corrected_prefix, parts.pre_recognized_tail);
-        let display_text = display_text.trim().to_string();
-        let lifecycle = if parts.pre_recognized_tail.trim().is_empty()
-            && !parts.corrected_prefix.trim().is_empty()
-        {
+        let corrected_is_empty = parts.corrected_prefix.trim().is_empty();
+        let pre_recognized_is_empty = parts.pre_recognized_tail.trim().is_empty();
+        let lifecycle = if pre_recognized_is_empty && !corrected_is_empty {
             DesktopTextLifecycleState::Corrected
         } else {
             DesktopTextLifecycleState::PreRecognized
         };
 
-        (
-            (!display_text.is_empty()).then_some(display_text),
-            lifecycle,
-        )
+        let mut display_text =
+            String::with_capacity(parts.corrected_prefix.len() + parts.pre_recognized_tail.len());
+        display_text.push_str(&parts.corrected_prefix);
+        display_text.push_str(&parts.pre_recognized_tail);
+        let Some((trim_start, trim_end)) = ({
+            let trimmed = display_text.trim();
+            (!trimmed.is_empty()).then(|| {
+                let trim_start = trimmed.as_ptr() as usize - display_text.as_ptr() as usize;
+                (trim_start, trim_start + trimmed.len())
+            })
+        }) else {
+            return (None, lifecycle);
+        };
+        display_text.truncate(trim_end);
+        if trim_start > 0 {
+            display_text.drain(..trim_start);
+        }
+
+        (Some(display_text), lifecycle)
+    }
+
+    const LISTENING_HUD_AUTO_FOLLOW_MAX_DISPLAY_UNITS: usize = 640;
+
+    fn listening_hud_presented_transcript_parts(
+        parts: &DesktopStreamingHudTranscriptParts,
+        user_scrolled: bool,
+    ) -> DesktopStreamingHudTranscriptParts {
+        if user_scrolled {
+            parts.clone()
+        } else {
+            desktop_streaming_hud_transcript_parts_for_auto_follow(
+                parts,
+                LISTENING_HUD_AUTO_FOLLOW_MAX_DISPLAY_UNITS,
+            )
+        }
+    }
+
+    fn desktop_windows_paste_mode(shortcut: DesktopPasteShortcut) -> WindowsPasteShortcutMode {
+        match shortcut {
+            DesktopPasteShortcut::ControlV => WindowsPasteShortcutMode::ControlV,
+            DesktopPasteShortcut::ControlShiftV => WindowsPasteShortcutMode::ControlShiftV,
+            DesktopPasteShortcut::ShiftInsert => WindowsPasteShortcutMode::ShiftInsert,
+        }
+    }
+
+    fn configured_windows_paste_shortcut(
+        preferred_mode: Option<DesktopPasteShortcut>,
+        focus_handle: Option<isize>,
+    ) -> ConfiguredWindowsPasteShortcut {
+        let mut shortcut = ConfiguredWindowsPasteShortcut::new();
+        if let Some(mode) = preferred_mode {
+            shortcut = shortcut.with_shortcut_mode(desktop_windows_paste_mode(mode));
+        }
+        if let Some(hwnd) = focus_handle {
+            shortcut = shortcut.with_target_hwnd(hwnd);
+        }
+        shortcut
+    }
+
+    fn windows_paste_overrides_for_target(
+        preferred_mode: Option<DesktopPasteShortcut>,
+        focus_handle: Option<isize>,
+    ) -> WindowsPasteOverrides {
+        let mut overrides = WindowsPasteOverrides::new();
+        if let Some(mode) = preferred_mode {
+            overrides = overrides.with_shortcut_mode(desktop_windows_paste_mode(mode));
+        }
+        if let Some(hwnd) = focus_handle {
+            overrides = overrides.with_target_hwnd(hwnd);
+        }
+        overrides
     }
 
     fn cached_hud_streaming_transcript_parts() -> DesktopStreamingHudTranscriptParts {
@@ -1311,25 +1950,20 @@ mod windows_app {
             .enable_all()
             .build()
             .context("build Talk desktop tokio runtime")?;
-        let (config, config_status, hotkey, desktop_actions, native_readiness) =
-            load_desktop_startup_state(runtime.handle(), &config_path);
-        let selected_voice_mode = config
-            .as_ref()
-            .map(TalkConfig::default_voice_mode)
-            .unwrap_or(VoiceMode::Smart);
 
         let shared = Arc::new(Mutex::new(SharedState {
-            config,
-            config_status,
+            config: None,
+            config_status: ConfigAvailability::loading(),
             config_path,
-            hotkey,
-            desktop_actions,
-            selected_voice_mode,
-            native_readiness,
+            hotkey: HotkeyBindingState::Unconfigured,
+            desktop_actions: Vec::new(),
+            selected_voice_mode: VoiceMode::Smart,
+            native_readiness: None,
             shell_state: ShellState::idle(),
             current_phase: None,
             last_session: None,
             active_recording: None,
+            pending_recording_begin: None,
             worker_generation: None,
             pending_worker_error: None,
             pending_worker_task: None,
@@ -1338,6 +1972,8 @@ mod windows_app {
             pending_corrected_hud: None,
             pending_hotkey_origin_insert_target: None,
             local_asr_daemon: None,
+            local_asr_daemon_epoch: 0,
+            local_asr_daemon_lifecycle: Arc::new(Mutex::new(())),
             local_asr_bootstrap_status: LocalAsrBootstrapStatus::NotStarted,
             product_runtime_worker: None,
             product_model_root: None,
@@ -1347,6 +1983,10 @@ mod windows_app {
             foreground_apply_gate: ForegroundApplyGate::new(),
             pending_document_correction_task: None,
             pending_model_bootstrap_task: None,
+            product_bootstrap_generation: 0,
+            pending_product_bootstrap_prepare_generation: None,
+            config_reload_generation: 0,
+            pending_config_reload: None,
             shutting_down: false,
             runtime_handle: runtime.handle().clone(),
             next_generation: 1,
@@ -1354,11 +1994,14 @@ mod windows_app {
 
         let window = Box::new(WindowState {
             shared: Arc::clone(&shared),
-            hud_hwnd: ptr::null_mut(),
-            copy_popup_hwnd: ptr::null_mut(),
-            copy_popup_edit_hwnd: ptr::null_mut(),
-            copy_popup_pane_edit_hwnds: Vec::new(),
-            shortcut_help_hwnd: ptr::null_mut(),
+            hud_hwnd: Cell::new(ptr::null_mut()),
+            copy_popup_hwnd: Cell::new(ptr::null_mut()),
+            copy_popup_edit_hwnd: Cell::new(ptr::null_mut()),
+            copy_popup_pane_edit_hwnds: RefCell::new(Vec::new()),
+            copy_popup_restore_foreground_hwnd: Cell::new(ptr::null_mut()),
+            copy_popup_restore_focus_hwnd: Cell::new(ptr::null_mut()),
+            shortcut_help_hwnd: Cell::new(ptr::null_mut()),
+            recording_timeout_generation: Cell::new(None),
         });
         let window_ptr = Box::into_raw(window);
 
@@ -1400,7 +2043,7 @@ mod windows_app {
             }
             return Err(error);
         }
-        start_product_bootstrap(hwnd, Arc::clone(&shared));
+        reload_config(hwnd)?;
 
         let mut message = MSG::default();
         while unsafe { GetMessageW(&mut message, ptr::null_mut(), 0, 0) } > 0 {
@@ -1445,7 +2088,7 @@ mod windows_app {
             lpszClassName: class_name_wide.as_ptr(),
             hCursor: cursor,
             hIcon: icon,
-            hbrBackground: (COLOR_WINDOW as isize + 1) as _,
+            hbrBackground: terminal_window_class_background_brush() as _,
             ..unsafe { mem::zeroed() }
         };
         let atom = unsafe { RegisterClassW(&class) };
@@ -1456,13 +2099,17 @@ mod windows_app {
     }
 
     fn initialize_window(hwnd: HWND, instance: HINSTANCE) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        state.hud_hwnd = create_hud_window(instance, hwnd)?;
-        state.copy_popup_hwnd = create_copy_popup_window(instance, hwnd)?;
-        state.shortcut_help_hwnd = create_shortcut_help_window(instance, hwnd)?;
+        let state = unsafe { get_window_state(hwnd)? };
+        state.hud_hwnd.set(create_hud_window(instance, hwnd)?);
+        state
+            .copy_popup_hwnd
+            .set(create_copy_popup_window(instance, hwnd)?);
+        state
+            .shortcut_help_hwnd
+            .set(create_shortcut_help_window(instance, hwnd)?);
 
         let (startup_message, tray_status) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             register_or_mark_hotkey_failure(hwnd, &mut shared);
             let summary = current_idle_status(&shared);
             (
@@ -1560,9 +2207,9 @@ mod windows_app {
             ShowWindow(hwnd, SW_HIDE);
             ShowWindow(edit_hwnd, SW_HIDE);
         }
-        if let Ok(state) = unsafe { get_window_state_mut(owner_hwnd) } {
-            state.copy_popup_edit_hwnd = edit_hwnd;
-            state.copy_popup_pane_edit_hwnds = vec![edit_hwnd];
+        if let Ok(state) = unsafe { get_window_state(owner_hwnd) } {
+            state.copy_popup_edit_hwnd.set(edit_hwnd);
+            state.copy_popup_pane_edit_hwnds.replace(vec![edit_hwnd]);
         }
         Ok(hwnd)
     }
@@ -1670,6 +2317,16 @@ mod windows_app {
                 GetStockObject(DEFAULT_GUI_FONT) as usize,
                 1,
             );
+            if SetWindowSubclass(
+                edit_hwnd,
+                Some(copy_popup_edit_subclass_proc),
+                COPY_POPUP_EDIT_SUBCLASS_ID,
+                0,
+            ) == 0
+            {
+                let _ = DestroyWindow(edit_hwnd);
+                anyhow::bail!("subclass Talk desktop copy popup edit control");
+            }
         }
         Ok(edit_hwnd)
     }
@@ -1692,118 +2349,178 @@ mod windows_app {
         Ok(())
     }
 
-    fn start_product_bootstrap(hwnd: HWND, shared: Arc<Mutex<SharedState>>) {
-        let configured_for_streaming = {
-            let shared_state = shared.lock().expect("Talk desktop shared state");
-            shared_state
-                .config
-                .as_ref()
-                .map(|config| {
-                    desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
-                        config,
-                    )) == DesktopSpeculativeLocalAsrRoute::StreamingService
-                })
-                .unwrap_or(false)
-        };
-        if !configured_for_streaming {
-            return;
-        }
-
+    fn prepare_product_bootstrap() -> PreparedProductBootstrap {
         let data_root = match resolve_talk_data_root() {
             Ok(root) => root,
-            Err(error) => {
-                set_local_asr_bootstrap_status(
-                    &shared,
-                    LocalAsrBootstrapStatus::FallbackCloud(error),
-                );
-                return;
-            }
+            Err(error) => return PreparedProductBootstrap::FallbackCloud(error),
         };
-        let model_root = data_root.join("models").join("sherpa-onnx");
+        let primary_model_root = data_root.join("models").join("sherpa-onnx");
         let executable_path = match std::env::current_exe() {
             Ok(path) => path,
             Err(error) => {
-                set_local_asr_bootstrap_status(
-                    &shared,
-                    LocalAsrBootstrapStatus::FallbackCloud(format!(
-                        "resolve Talk executable for local ASR payload: {error}"
-                    )),
-                );
-                return;
+                return PreparedProductBootstrap::FallbackCloud(format!(
+                    "resolve Talk executable for local ASR payload: {error}"
+                ));
             }
         };
-        let executable_bytes = match fs::read(&executable_path) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                set_local_asr_bootstrap_status(
-                    &shared,
-                    LocalAsrBootstrapStatus::FallbackCloud(format!(
-                        "read Talk executable for local ASR payload: {error}"
-                    )),
-                );
-                return;
-            }
-        };
-        if !embedded_runtime_payload_is_appended(&executable_bytes) {
-            set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::EngineeringFallback);
-            return;
-        }
+        let model_root =
+            desktop_resolve_product_local_asr_model_root(&executable_path, data_root.as_path());
         let runtime_root = data_root.join("runtime");
-        let worker_path = match extract_embedded_runtime_payload(&executable_bytes, &runtime_root) {
-            Ok(runtime_dir) => runtime_dir.join(TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME),
-            Err(error) => {
-                set_local_asr_bootstrap_status(
-                    &shared,
-                    LocalAsrBootstrapStatus::FallbackCloud(format!(
+        // Fast path: resolve the extracted runtime cache from the payload
+        // trailer alone, skipping the full executable read + SHA-256 pass
+        // (which can cost seconds for a runtime-embedding product build).
+        let cached_runtime_dir = locate_verified_embedded_runtime(&executable_path, &runtime_root);
+        let worker_path = if let Some(runtime_dir) = cached_runtime_dir {
+            runtime_dir.join(TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME)
+        } else {
+            let executable_bytes = match fs::read(&executable_path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return PreparedProductBootstrap::FallbackCloud(format!(
+                        "read Talk executable for local ASR payload: {error}"
+                    ));
+                }
+            };
+            if !embedded_runtime_payload_is_appended(&executable_bytes) {
+                return PreparedProductBootstrap::EngineeringFallback;
+            }
+            match extract_embedded_runtime_payload(&executable_bytes, &runtime_root) {
+                Ok(runtime_dir) => runtime_dir.join(TALK_PACKAGED_LOCAL_ASR_DAEMON_EXE_NAME),
+                Err(error) => {
+                    return PreparedProductBootstrap::FallbackCloud(format!(
                         "verify embedded Talk local ASR runtime: {error}"
-                    )),
-                );
-                return;
+                    ));
+                }
             }
         };
-        {
-            let mut shared_state = shared.lock().expect("Talk desktop shared state");
-            shared_state.product_runtime_worker = Some(worker_path);
-            shared_state.product_model_root = Some(model_root.clone());
-        }
-
-        let spec = default_zipformer_model_spec();
+        let spec = default_product_local_asr_model_spec();
         let model_dir = model_root.join(&spec.id);
-        if validate_installed_model(&spec, &model_dir).is_ok() {
-            set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::Ready);
-            return;
+        if validate_installed_model(&spec, &model_dir).is_ok()
+            || (model_root != primary_model_root
+                && desktop_product_local_asr_model_available(&model_root))
+        {
+            PreparedProductBootstrap::Ready {
+                worker_path,
+                model_root,
+            }
+        } else {
+            PreparedProductBootstrap::Download {
+                worker_path,
+                model_root,
+                primary_model_root,
+                spec,
+            }
         }
+    }
 
-        set_local_asr_bootstrap_status(&shared, LocalAsrBootstrapStatus::Downloading);
-        let runtime_handle = {
-            let shared_state = shared.lock().expect("Talk desktop shared state");
-            shared_state.runtime_handle.clone()
+    fn commit_product_bootstrap_if_current(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        worker_path: Option<PathBuf>,
+        model_root: Option<PathBuf>,
+        status: LocalAsrBootstrapStatus,
+    ) -> bool {
+        shared.lock().ok().is_some_and(|mut shared_state| {
+            if !model_bootstrap_side_effects_allowed(
+                shared_state.shutting_down,
+                shared_state.product_bootstrap_generation,
+                generation,
+            ) {
+                return false;
+            }
+            advance_local_asr_daemon_epoch(&mut shared_state);
+            if shared_state.pending_product_bootstrap_prepare_generation == Some(generation) {
+                shared_state.pending_product_bootstrap_prepare_generation = None;
+            }
+            shared_state.product_runtime_worker = worker_path;
+            shared_state.product_model_root = model_root;
+            shared_state.local_asr_bootstrap_status = status;
+            true
+        })
+    }
+
+    fn post_model_bootstrap_status(hwnd_value: usize, generation: u64) -> bool {
+        unsafe {
+            PostMessageW(
+                hwnd_value as HWND,
+                MODEL_BOOTSTRAP_MESSAGE,
+                generation as usize,
+                0,
+            ) != 0
+        }
+    }
+
+    fn start_product_model_download(
+        hwnd_value: usize,
+        shared: Arc<Mutex<SharedState>>,
+        generation: u64,
+        spec: ModelSpec,
+        primary_model_root: PathBuf,
+    ) {
+        let runtime_handle = match shared.lock() {
+            Ok(shared_state)
+                if model_bootstrap_side_effects_allowed(
+                    shared_state.shutting_down,
+                    shared_state.product_bootstrap_generation,
+                    generation,
+                ) =>
+            {
+                shared_state.runtime_handle.clone()
+            }
+            _ => return,
         };
         let shared_for_task = Arc::clone(&shared);
-        let hwnd_value = hwnd as usize;
+        let (start_sender, start_receiver) = tokio::sync::oneshot::channel::<()>();
         let task = runtime_handle.spawn(async move {
-            let status = match download_and_install_model(&spec, &model_root).await {
-                Ok(_) => LocalAsrBootstrapStatus::Ready,
-                Err(error) => LocalAsrBootstrapStatus::FallbackCloud(format!(
+            if start_receiver.await.is_err() {
+                return;
+            }
+            let status = match std::panic::AssertUnwindSafe(download_and_install_model(
+                &spec,
+                &primary_model_root,
+            ))
+            .catch_unwind()
+            .await
+            {
+                Ok(Ok(_)) => LocalAsrBootstrapStatus::Ready,
+                Ok(Err(error)) => LocalAsrBootstrapStatus::FallbackCloud(format!(
                     "download local ASR model: {error}"
                 )),
+                Err(_) => LocalAsrBootstrapStatus::FallbackCloud(
+                    "Talk local ASR model download panicked".to_string(),
+                ),
             };
+            let became_ready = matches!(status, LocalAsrBootstrapStatus::Ready);
             let should_notify = shared_for_task.lock().ok().is_some_and(|mut shared_state| {
-                if !model_bootstrap_side_effects_allowed(shared_state.shutting_down) {
+                if !model_bootstrap_side_effects_allowed(
+                    shared_state.shutting_down,
+                    shared_state.product_bootstrap_generation,
+                    generation,
+                ) {
                     return false;
                 }
+                advance_local_asr_daemon_epoch(&mut shared_state);
+                if matches!(status, LocalAsrBootstrapStatus::Ready) {
+                    shared_state.product_model_root = Some(primary_model_root.clone());
+                }
                 shared_state.local_asr_bootstrap_status = status;
+                shared_state.pending_model_bootstrap_task.take();
                 true
             });
             if should_notify {
-                unsafe {
-                    let _ = PostMessageW(hwnd_value as HWND, MODEL_BOOTSTRAP_MESSAGE, 0, 0);
+                if became_ready {
+                    spawn_product_local_asr_daemon_prewarm(Arc::clone(&shared_for_task));
                 }
+                let _ = post_model_bootstrap_status(hwnd_value, generation);
             }
         });
         let mut task = Some(task);
         let previous_task = shared.lock().ok().and_then(|mut shared_state| {
-            if !model_bootstrap_side_effects_allowed(shared_state.shutting_down) {
+            if !model_bootstrap_side_effects_allowed(
+                shared_state.shutting_down,
+                shared_state.product_bootstrap_generation,
+                generation,
+            ) {
                 return None;
             }
             shared_state
@@ -1815,27 +2532,162 @@ mod windows_app {
         }
         if let Some(task) = task {
             task.abort();
+            return;
         }
-        let _ = update_tray_icon(hwnd, "Talk: downloading local ASR model");
+        if start_sender.send(()).is_err() {
+            if let Ok(mut shared_state) = shared.lock() {
+                if model_bootstrap_side_effects_allowed(
+                    shared_state.shutting_down,
+                    shared_state.product_bootstrap_generation,
+                    generation,
+                ) {
+                    shared_state.pending_model_bootstrap_task.take();
+                    shared_state.local_asr_bootstrap_status =
+                        LocalAsrBootstrapStatus::FallbackCloud(
+                            "start Talk local ASR model download task".to_string(),
+                        );
+                }
+            }
+        }
+        let _ = post_model_bootstrap_status(hwnd_value, generation);
     }
 
-    fn set_local_asr_bootstrap_status(
-        shared: &Arc<Mutex<SharedState>>,
-        status: LocalAsrBootstrapStatus,
-    ) {
-        let mut shared_state = shared.lock().expect("Talk desktop shared state");
-        shared_state.local_asr_bootstrap_status = status;
-    }
-
-    fn handle_model_bootstrap_status(hwnd: HWND) {
-        let status = unsafe { get_window_state_mut(hwnd) }
-            .ok()
-            .and_then(|state| {
-                state.shared.lock().ok().map(|mut shared| {
-                    shared.pending_model_bootstrap_task.take();
-                    shared.local_asr_bootstrap_status.clone()
+    fn start_product_bootstrap(hwnd: HWND, shared: Arc<Mutex<SharedState>>) {
+        let (generation, previous_task) = {
+            let mut shared_state = lock_recovering(&shared, "Talk desktop shared state");
+            let configured_for_streaming = shared_state
+                .config
+                .as_ref()
+                .map(|config| {
+                    desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
+                        config,
+                    )) == DesktopSpeculativeLocalAsrRoute::StreamingService
                 })
-            });
+                .unwrap_or(false);
+            if shared_state.shutting_down || !configured_for_streaming {
+                return;
+            }
+            if shared_state
+                .pending_product_bootstrap_prepare_generation
+                .is_some()
+            {
+                return;
+            }
+            if shared_state.product_runtime_worker.is_some()
+                && shared_state.product_model_root.is_some()
+                && matches!(
+                    shared_state.local_asr_bootstrap_status,
+                    LocalAsrBootstrapStatus::Ready | LocalAsrBootstrapStatus::Downloading
+                )
+            {
+                return;
+            }
+            shared_state.product_bootstrap_generation =
+                shared_state.product_bootstrap_generation.saturating_add(1);
+            shared_state.pending_product_bootstrap_prepare_generation =
+                Some(shared_state.product_bootstrap_generation);
+            shared_state.local_asr_bootstrap_status = LocalAsrBootstrapStatus::NotStarted;
+            (
+                shared_state.product_bootstrap_generation,
+                shared_state.pending_model_bootstrap_task.take(),
+            )
+        };
+        if let Some(previous_task) = previous_task {
+            previous_task.abort();
+        }
+
+        let hwnd_value = hwnd as usize;
+        thread::spawn(move || {
+            let prepared =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(prepare_product_bootstrap))
+                    .unwrap_or_else(|_| {
+                        PreparedProductBootstrap::FallbackCloud(
+                            "Talk local ASR runtime preparation panicked".to_string(),
+                        )
+                    });
+            match prepared {
+                PreparedProductBootstrap::EngineeringFallback => {
+                    if commit_product_bootstrap_if_current(
+                        &shared,
+                        generation,
+                        None,
+                        None,
+                        LocalAsrBootstrapStatus::EngineeringFallback,
+                    ) {
+                        let _ = post_model_bootstrap_status(hwnd_value, generation);
+                    }
+                }
+                PreparedProductBootstrap::FallbackCloud(reason) => {
+                    if commit_product_bootstrap_if_current(
+                        &shared,
+                        generation,
+                        None,
+                        None,
+                        LocalAsrBootstrapStatus::FallbackCloud(reason),
+                    ) {
+                        let _ = post_model_bootstrap_status(hwnd_value, generation);
+                    }
+                }
+                PreparedProductBootstrap::Ready {
+                    worker_path,
+                    model_root,
+                } => {
+                    if commit_product_bootstrap_if_current(
+                        &shared,
+                        generation,
+                        Some(worker_path),
+                        Some(model_root),
+                        LocalAsrBootstrapStatus::Ready,
+                    ) {
+                        spawn_product_local_asr_daemon_prewarm(Arc::clone(&shared));
+                        let _ = post_model_bootstrap_status(hwnd_value, generation);
+                    }
+                }
+                PreparedProductBootstrap::Download {
+                    worker_path,
+                    model_root,
+                    primary_model_root,
+                    spec,
+                } => {
+                    if commit_product_bootstrap_if_current(
+                        &shared,
+                        generation,
+                        Some(worker_path),
+                        Some(model_root),
+                        LocalAsrBootstrapStatus::Downloading,
+                    ) {
+                        start_product_model_download(
+                            hwnd_value,
+                            shared,
+                            generation,
+                            spec,
+                            primary_model_root,
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    fn handle_model_bootstrap_status(hwnd: HWND, generation: u64) {
+        let status = unsafe { get_window_state(hwnd) }.ok().and_then(|state| {
+            state.shared.lock().ok().and_then(|mut shared| {
+                if !model_bootstrap_side_effects_allowed(
+                    shared.shutting_down,
+                    shared.product_bootstrap_generation,
+                    generation,
+                ) {
+                    return None;
+                }
+                if !matches!(
+                    shared.local_asr_bootstrap_status,
+                    LocalAsrBootstrapStatus::Downloading
+                ) {
+                    shared.pending_model_bootstrap_task.take();
+                }
+                Some(shared.local_asr_bootstrap_status.clone())
+            })
+        });
         match status {
             Some(LocalAsrBootstrapStatus::Ready) => {
                 let _ = update_tray_icon(hwnd, "Talk: local ASR ready");
@@ -1871,35 +2723,44 @@ mod windows_app {
         Ok(())
     }
 
-    fn register_low_level_origin_capture(hwnd: HWND, hotkey: HotkeySpec) -> Result<()> {
+    fn install_low_level_hook(
+        hook_state: LowLevelHookState,
+        failure_message: &'static str,
+    ) -> Result<()> {
         unregister_low_level_hotkey();
 
         {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
-            *state = Some(LowLevelHookState::OriginCapture {
-                hwnd_value: hwnd as isize,
-                tracker: LowLevelHotkeyTracker::new(hotkey),
-            });
+            let mut state =
+                lock_recovering(low_level_hook_state(), "Talk desktop low-level hook state");
+            *state = Some(hook_state);
         }
 
         let module = unsafe { GetModuleHandleW(ptr::null()) };
         let hook =
             unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), module, 0) };
         if hook.is_null() {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
+            let mut state =
+                lock_recovering(low_level_hook_state(), "Talk desktop low-level hook state");
             *state = None;
-            anyhow::bail!("register Talk desktop origin capture hook failed");
+            anyhow::bail!("{failure_message}");
         }
 
-        let mut handle = low_level_hook_handle()
-            .lock()
-            .expect("Talk desktop low-level hook handle");
+        let mut handle = lock_recovering(
+            low_level_hook_handle(),
+            "Talk desktop low-level hook handle",
+        );
         *handle = Some(hook as isize);
         Ok(())
+    }
+
+    fn register_low_level_origin_capture(hwnd: HWND, hotkey: HotkeySpec) -> Result<()> {
+        install_low_level_hook(
+            LowLevelHookState::OriginCapture {
+                hwnd_value: hwnd as isize,
+                tracker: LowLevelHotkeyTracker::new(hotkey),
+            },
+            "register Talk desktop origin capture hook failed",
+        )
     }
 
     fn register_low_level_hotkey(
@@ -1907,85 +2768,43 @@ mod windows_app {
         trigger_mode: TriggerMode,
         hotkey: HotkeySpec,
     ) -> Result<()> {
-        unregister_low_level_hotkey();
-
-        {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
-            *state = Some(LowLevelHookState::Single {
+        install_low_level_hook(
+            LowLevelHookState::Single {
                 hwnd_value: hwnd as isize,
                 trigger_mode,
                 tracker: LowLevelHotkeyTracker::new(hotkey),
-            });
-        }
-
-        let module = unsafe { GetModuleHandleW(ptr::null()) };
-        let hook =
-            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), module, 0) };
-        if hook.is_null() {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
-            *state = None;
-            anyhow::bail!("register Talk desktop low-level keyboard hook failed");
-        }
-
-        let mut handle = low_level_hook_handle()
-            .lock()
-            .expect("Talk desktop low-level hook handle");
-        *handle = Some(hook as isize);
-        Ok(())
+            },
+            "register Talk desktop low-level keyboard hook failed",
+        )
     }
 
     fn register_low_level_action_router(
         hwnd: HWND,
         bindings: &[DesktopActionBinding],
     ) -> Result<()> {
-        unregister_low_level_hotkey();
-
-        {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
-            *state = Some(LowLevelHookState::ToggleRouter {
+        install_low_level_hook(
+            LowLevelHookState::ToggleRouter {
                 hwnd_value: hwnd as isize,
                 router: ToggleDesktopHotkeyRouter::new(bindings),
-            });
-        }
-
-        let module = unsafe { GetModuleHandleW(ptr::null()) };
-        let hook =
-            unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), module, 0) };
-        if hook.is_null() {
-            let mut state = low_level_hook_state()
-                .lock()
-                .expect("Talk desktop low-level hook state");
-            *state = None;
-            anyhow::bail!("register Talk desktop low-level keyboard hook failed");
-        }
-
-        let mut handle = low_level_hook_handle()
-            .lock()
-            .expect("Talk desktop low-level hook handle");
-        *handle = Some(hook as isize);
-        Ok(())
+            },
+            "register Talk desktop low-level keyboard hook failed",
+        )
     }
 
     fn unregister_low_level_hotkey() {
-        if let Some(hook) = low_level_hook_handle()
-            .lock()
-            .expect("Talk desktop low-level hook handle")
-            .take()
+        if let Some(hook) = lock_recovering(
+            low_level_hook_handle(),
+            "Talk desktop low-level hook handle",
+        )
+        .take()
         {
             unsafe {
                 let _ = UnhookWindowsHookEx(hook as HHOOK);
             }
         }
 
-        let mut state = low_level_hook_state()
-            .lock()
-            .expect("Talk desktop low-level hook state");
+        let mut state =
+            lock_recovering(low_level_hook_state(), "Talk desktop low-level hook state");
         *state = None;
     }
 
@@ -2032,46 +2851,6 @@ mod windows_app {
         ))
     }
 
-    fn load_desktop_startup_state(
-        runtime_handle: &tokio::runtime::Handle,
-        config_path: &Path,
-    ) -> (
-        Option<TalkConfig>,
-        ConfigAvailability,
-        HotkeyBindingState,
-        Vec<DesktopActionBinding>,
-        Option<NativeReadinessSnapshot>,
-    ) {
-        match runtime_handle.block_on(load_effective_config(config_path)) {
-            Ok(config) => match initial_hotkey_binding(&config) {
-                Ok((desktop_actions, hotkey)) => (
-                    Some(config.clone()),
-                    ConfigAvailability::ready(),
-                    hotkey,
-                    desktop_actions,
-                    Some(configured_native_readiness(&config)),
-                ),
-                Err(error) => (
-                    Some(config.clone()),
-                    ConfigAvailability::ready(),
-                    HotkeyBindingState::invalid_config(
-                        desktop_shortcut_label_from_config(&config),
-                        error,
-                    ),
-                    Vec::new(),
-                    Some(configured_native_readiness(&config)),
-                ),
-            },
-            Err(error) => (
-                None,
-                ConfigAvailability::unavailable(error.to_string()),
-                HotkeyBindingState::Unconfigured,
-                Vec::new(),
-                None,
-            ),
-        }
-    }
-
     fn current_idle_status(shared: &SharedState) -> &'static str {
         if let Some(status) = config_status_message(&shared.config_status) {
             status
@@ -2088,6 +2867,49 @@ mod windows_app {
             &shared.hotkey,
             shared.native_readiness.as_ref(),
         )
+    }
+
+    fn local_asr_status_snapshot(shared: &SharedState) -> (Option<String>, Option<String>) {
+        let configured_for_streaming = shared
+            .config
+            .as_ref()
+            .map(|config| {
+                desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(config))
+                    == DesktopSpeculativeLocalAsrRoute::StreamingService
+            })
+            .unwrap_or(false);
+        if !configured_for_streaming {
+            return (None, None);
+        }
+
+        let status = match &shared.local_asr_bootstrap_status {
+            LocalAsrBootstrapStatus::NotStarted => "not_started",
+            LocalAsrBootstrapStatus::EngineeringFallback => "engineering_fallback",
+            LocalAsrBootstrapStatus::Downloading => "downloading",
+            LocalAsrBootstrapStatus::Ready => "ready",
+            LocalAsrBootstrapStatus::FallbackCloud(_) => "fallback",
+        }
+        .to_string();
+
+        let model_root_detail = shared
+            .product_model_root
+            .as_ref()
+            .map(|path| format!("using model root {}", path.display()));
+        let detail = match &shared.local_asr_bootstrap_status {
+            LocalAsrBootstrapStatus::NotStarted => model_root_detail,
+            LocalAsrBootstrapStatus::EngineeringFallback => {
+                Some("embedded local ASR runtime payload is unavailable".to_string())
+            }
+            LocalAsrBootstrapStatus::Downloading => model_root_detail
+                .map(|detail| format!("{detail}; default local ASR model install is in progress"))
+                .or_else(|| Some("default local ASR model install is in progress".to_string())),
+            LocalAsrBootstrapStatus::Ready => model_root_detail,
+            LocalAsrBootstrapStatus::FallbackCloud(reason) => model_root_detail
+                .map(|detail| format!("{detail}; {reason}"))
+                .or_else(|| Some(reason.clone())),
+        };
+
+        (Some(status), detail)
     }
 
     fn configured_native_readiness(config: &TalkConfig) -> NativeReadinessSnapshot {
@@ -2214,6 +3036,8 @@ mod windows_app {
                     .join("logs")
             });
 
+        let (local_asr_status, local_asr_detail) = local_asr_status_snapshot(shared);
+
         StatusSnapshot {
             current_summary,
             current_detail,
@@ -2225,32 +3049,188 @@ mod windows_app {
                 .unwrap_or_else(|| "unconfigured".to_string()),
             hotkey_detail: shared.hotkey.reason().map(str::to_string),
             last_session: shared.last_session.clone(),
+            local_asr_status,
+            local_asr_detail,
             native_readiness: shared.native_readiness.clone(),
         }
     }
 
     fn refresh_idle_tray_status(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let shared = state.shared.lock().expect("Talk desktop shared state");
+        let state = unsafe { get_window_state(hwnd)? };
+        let shared = lock_recovering(&state.shared, "Talk desktop shared state");
         update_tray_icon(hwnd, current_idle_status(&shared))
     }
 
-    fn cancel_active_recording(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let (config, runtime_handle, mut active) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
-            let Some(active) = shared.active_recording.take() else {
-                return Ok(());
+    fn spawn_recording_source_cancel_worker(
+        runtime_handle: &tokio::runtime::Handle,
+        source: ActiveRecordingSource,
+        reason: &'static str,
+    ) {
+        let ActiveRecordingSource::Live {
+            recording,
+            streaming_pump,
+        } = source
+        else {
+            return;
+        };
+
+        runtime_handle.spawn(async move {
+            if let Some(streaming_pump) = streaming_pump {
+                if let Err(error) = streaming_pump.cancel().await {
+                    eprintln!("Talk local streaming ASR cancel failed during {reason}: {error:#}");
+                }
+            }
+            match tokio::task::spawn_blocking(move || recording.cancel()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    eprintln!("Talk recording cleanup failed during {reason}: {error}");
+                }
+                Err(error) => {
+                    eprintln!("Talk recording cleanup worker failed during {reason}: {error}");
+                }
+            }
+        });
+    }
+
+    fn cleanup_shutdown_resources(
+        active: Option<ActiveRecording>,
+        pending: Option<PendingRecordingBegin>,
+        config: Option<Arc<TalkConfig>>,
+        daemon: Option<ManagedLocalAsrDaemon>,
+    ) {
+        flush_pending_clipboard_restore();
+        if let Some(mut active) = active {
+            active.live_streaming_correction_tracker.cancel();
+            active.live_streaming_correction_sender.take();
+            let ActiveRecording {
+                session,
+                trigger_events,
+                source,
+                ..
+            } = active;
+            if let ActiveRecordingSource::Live {
+                recording,
+                streaming_pump,
+            } = source
+            {
+                drop(streaming_pump);
+                if let Err(error) = recording.cancel() {
+                    eprintln!("Talk recording cleanup failed during shutdown: {error}");
+                }
+            }
+            if let Some(config) = config.as_ref() {
+                if let Err(error) =
+                    complete_cancelled_session(config, session, trigger_events, |_| {})
+                {
+                    eprintln!(
+                        "Talk cancelled-session persistence failed during shutdown: {error:#}"
+                    );
+                }
+            }
+        }
+        if let Some(mut pending) = pending {
+            if let Some(Ok(prepared)) = pending.audio_start_result.take() {
+                if let ActiveRecordingSource::Live {
+                    recording,
+                    streaming_pump,
+                } = prepared.source
+                {
+                    drop(streaming_pump);
+                    if let Err(error) = recording.cancel() {
+                        eprintln!(
+                            "Talk prepared recording cleanup failed during shutdown: {error}"
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(daemon) = daemon {
+            stop_managed_local_asr_daemon(daemon);
+        }
+    }
+
+    fn spawn_cancelled_session_persistence_worker(
+        runtime_handle: &tokio::runtime::Handle,
+        config: Option<Arc<TalkConfig>>,
+        session: VoiceSession,
+        trigger_events: Vec<&'static str>,
+        reason: &'static str,
+    ) {
+        runtime_handle.spawn_blocking(move || {
+            let Some(config) = config else {
+                eprintln!(
+                    "Talk cancelled-session persistence skipped during {reason}: config unavailable"
+                );
+                return;
             };
-            let Some(config) = shared.config.clone() else {
-                shared.shell_state = shared.shell_state.complete();
-                shared.current_phase = None;
+            if let Err(error) = complete_cancelled_session(&config, session, trigger_events, |_| {})
+            {
+                eprintln!("Talk cancelled-session persistence failed during {reason}: {error:#}");
+            }
+        });
+    }
+
+    fn spawn_failed_session_persistence_worker(
+        runtime_handle: &tokio::runtime::Handle,
+        config: Option<Arc<TalkConfig>>,
+        session: VoiceSession,
+        trigger_events: Vec<&'static str>,
+        mode_override: Option<VoiceMode>,
+        error: anyhow::Error,
+        reason: &'static str,
+    ) {
+        runtime_handle.spawn_blocking(move || {
+            let Some(config) = config else {
+                eprintln!(
+                    "Talk failed-session persistence skipped during {reason}: config unavailable"
+                );
+                return;
+            };
+            if let Err(error) = complete_failed_session_with_mode_override(
+                &config,
+                session,
+                trigger_events,
+                mode_override,
+                error,
+                false,
+                |_| {},
+            ) {
+                eprintln!("Talk failed-session persistence failed during {reason}: {error:#}");
+            }
+        });
+    }
+
+    fn set_failed_last_session_if_current(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+        error_message: String,
+    ) {
+        if let Ok(mut shared) = shared.lock() {
+            if !shared.shutting_down
+                && generation
+                    .checked_add(1)
+                    .is_some_and(|next| shared.next_generation == next)
+            {
+                set_last_session(&mut shared, "failed", Some(error_message));
+            }
+        }
+    }
+
+    fn cancel_active_recording(hwnd: HWND) -> Result<()> {
+        if cancel_pending_recording_begin(hwnd, None)? {
+            return Ok(());
+        }
+        let state = unsafe { get_window_state(hwnd)? };
+        let (config, runtime_handle, mut active) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            let Some(active) = shared.active_recording.take() else {
                 return Ok(());
             };
             shared.shell_state = shared.shell_state.complete();
             shared.current_phase = None;
-            (config, shared.runtime_handle.clone(), active)
+            (shared.config.clone(), shared.runtime_handle.clone(), active)
         };
+        cancel_recording_timeout_timer(hwnd);
 
         active.live_streaming_correction_tracker.cancel();
         active.live_streaming_correction_sender.take();
@@ -2261,23 +3241,16 @@ mod windows_app {
             source,
             ..
         } = active;
-        if let ActiveRecordingSource::Live {
-            recording,
-            streaming_session,
-        } = source
+        spawn_recording_source_cancel_worker(&runtime_handle, source, "user cancellation");
+        spawn_cancelled_session_persistence_worker(
+            &runtime_handle,
+            config,
+            session,
+            trigger_events,
+            "user cancellation",
+        );
         {
-            if let Some(streaming_session) = streaming_session {
-                runtime_handle.spawn(async move {
-                    if let Err(error) = streaming_session.cancel().await {
-                        eprintln!("Talk local streaming ASR cancel failed: {error:#}");
-                    }
-                });
-            }
-            recording.cancel()?;
-        }
-        let _ = complete_cancelled_session(&config, session, trigger_events, |_| {})?;
-        {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             set_last_session(
                 &mut shared,
                 "cancelled",
@@ -2292,20 +3265,21 @@ mod windows_app {
 
     fn fail_active_recording(
         hwnd: HWND,
-        state: &mut WindowState,
+        state: &WindowState,
         error_message: String,
         copy_text: Option<String>,
     ) -> Result<()> {
-        let (config, mut active) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+        let (config, runtime_handle, mut active) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             let Some(active) = shared.active_recording.take() else {
                 return Ok(());
             };
             shared.shell_state = shared.shell_state.complete();
             shared.current_phase = None;
             shared.worker_generation = None;
-            (shared.config.clone(), active)
+            (shared.config.clone(), shared.runtime_handle.clone(), active)
         };
+        cancel_recording_timeout_timer(hwnd);
         let generation = active.generation;
 
         active.live_streaming_correction_tracker.cancel();
@@ -2317,41 +3291,22 @@ mod windows_app {
             source,
             ..
         } = active;
-        if let ActiveRecordingSource::Live {
-            recording,
-            streaming_session,
-        } = source
-        {
-            drop(streaming_session);
-            if let Err(error) = recording.cancel() {
-                eprintln!("Talk recording cleanup after streaming failure failed: {error}");
-            }
-        }
+        spawn_recording_source_cancel_worker(&runtime_handle, source, "recording failure");
 
         let copy_text = copy_text.filter(|text| !text.trim().is_empty());
-        let persistence_result = config.as_ref().map(|config| {
-            complete_failed_session(
-                config,
-                session,
-                trigger_events,
-                anyhow::anyhow!(error_message.clone()),
-                false,
-                |_| {},
-            )
-        });
-        let cleanup_plan = desktop_failure_cleanup_plan(
-            persistence_result
-                .as_ref()
-                .is_some_and(|result| result.is_ok()),
-            copy_text.is_some(),
+        let persistence_scheduled = config.is_some();
+        spawn_failed_session_persistence_worker(
+            &runtime_handle,
+            config,
+            session,
+            trigger_events,
+            None,
+            anyhow::anyhow!(error_message.clone()),
+            "recording failure",
         );
-        if let Some(Err(error)) = persistence_result {
-            eprintln!("Talk failed-session log persistence failed: {error:#}");
-        } else if cleanup_plan.persistence_failed {
-            eprintln!("Talk failed-session log persistence skipped because config is unavailable");
-        }
+        let cleanup_plan = desktop_failure_cleanup_plan(persistence_scheduled, copy_text.is_some());
         {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             set_last_session(&mut shared, "failed", Some(error_message));
             if let Some(copy_text) = copy_text.as_deref() {
                 shared.pending_copy_popup = Some(PendingCopyPopup {
@@ -2447,12 +3402,18 @@ mod windows_app {
         }
     }
 
-    unsafe fn get_window_state_mut(hwnd: HWND) -> Result<&'static mut WindowState> {
+    /// Returns the Talk window state stored in `GWLP_USERDATA`.
+    ///
+    /// # Safety
+    /// `hwnd` must still own the `WindowState` pointer installed at window
+    /// creation. Mutable fields use interior mutability so nested lookups on
+    /// the UI thread do not create aliased `&mut WindowState` references.
+    unsafe fn get_window_state(hwnd: HWND) -> Result<&'static WindowState> {
         let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
         if pointer.is_null() {
             anyhow::bail!("Talk desktop window state is unavailable");
         }
-        Ok(&mut *pointer)
+        Ok(&*pointer)
     }
 
     unsafe extern "system" fn window_proc(
@@ -2495,6 +3456,10 @@ mod windows_app {
                     let _ = refresh_thinking_hud_progress(hwnd);
                     return 0;
                 }
+                if wparam == TIMER_RECORDING_TIMEOUT {
+                    handle_recording_timeout_timer(hwnd);
+                    return 0;
+                }
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             TRAY_MESSAGE => {
@@ -2535,7 +3500,19 @@ mod windows_app {
                 0
             }
             MODEL_BOOTSTRAP_MESSAGE => {
-                handle_model_bootstrap_status(hwnd);
+                handle_model_bootstrap_status(hwnd, wparam as u64);
+                0
+            }
+            LOCAL_ASR_PREPARE_DONE_MESSAGE => {
+                handle_local_asr_prepare_done(hwnd, wparam as u64);
+                0
+            }
+            AUDIO_START_DONE_MESSAGE => {
+                handle_recording_audio_start_done(hwnd, wparam as u64);
+                0
+            }
+            CONFIG_RELOAD_DONE_MESSAGE => {
+                handle_config_reload_done(hwnd, wparam as u64);
                 0
             }
             CORRECTION_COPY_POPUP_MESSAGE => {
@@ -2550,13 +3527,17 @@ mod windows_app {
                 handle_streaming_corrected_hud(hwnd, wparam as u64);
                 0
             }
+            STREAMING_PUMP_DONE_MESSAGE => {
+                let _ = refresh_recording_hud_level(hwnd);
+                0
+            }
             WM_DESTROY => {
                 unsafe {
                     KillTimer(hwnd, TIMER_SHORTCUT_HELP_HOLD);
                     KillTimer(hwnd, TIMER_RECORDING_LEVEL);
                     KillTimer(hwnd, TIMER_THINKING_PROGRESS);
                 }
-                if let Ok(state) = get_window_state_mut(hwnd) {
+                if let Ok(state) = get_window_state(hwnd) {
                     let foreground_apply_gate = state
                         .shared
                         .lock()
@@ -2568,9 +3549,18 @@ mod windows_app {
                     let shutdown_state = state.shared.lock().ok().map(|mut shared| {
                         shared.shutting_down = true;
                         shared.next_generation = shared.next_generation.saturating_add(1);
+                        shared.product_bootstrap_generation =
+                            shared.product_bootstrap_generation.saturating_add(1);
+                        shared.pending_product_bootstrap_prepare_generation = None;
+                        shared.config_reload_generation =
+                            shared.config_reload_generation.saturating_add(1);
+                        shared.pending_config_reload = None;
+                        advance_local_asr_daemon_epoch(&mut shared);
+                        let pending_recording_begin = shared.pending_recording_begin.take();
                         shared.worker_generation = None;
                         (
                             shared.active_recording.take(),
+                            pending_recording_begin,
                             shared.local_asr_daemon.take(),
                             shared.runtime_handle.clone(),
                             shared.config.clone(),
@@ -2583,6 +3573,7 @@ mod windows_app {
                     drop(foreground_apply_lease);
                     if let Some((
                         active,
+                        pending,
                         daemon,
                         runtime_handle,
                         config,
@@ -2595,60 +3586,25 @@ mod windows_app {
                         if let Some(tracker) = stop_tracker {
                             tracker.cancel();
                         }
-                        if let Some(active) = active {
-                            active.live_streaming_correction_tracker.cancel();
-                            let ActiveRecording {
-                                session,
-                                trigger_events,
-                                source,
-                                ..
-                            } = active;
-                            if let ActiveRecordingSource::Live {
-                                recording,
-                                streaming_session,
-                            } = source
-                            {
-                                if let Some(streaming_session) = streaming_session {
-                                    runtime_handle.block_on(async move {
-                                        if let Err(error) = streaming_session.cancel().await {
-                                            eprintln!(
-                                                "Talk local streaming ASR cancel failed: {error:#}"
-                                            );
-                                        }
-                                    });
-                                }
-                                let _ = recording.cancel();
-                            }
-                            if let Some(config) = config.as_ref() {
-                                let _ = complete_cancelled_session(
-                                    config,
-                                    session,
-                                    trigger_events,
-                                    |_| {},
-                                );
-                            }
-                        }
-                        runtime_handle.block_on(async {
-                            abort_pending_task(&mut pending_correction).await;
-                            abort_pending_task(&mut pending_worker).await;
-                            abort_pending_join_handle(&mut pending_model_bootstrap).await;
+                        abort_pending_task(&mut pending_correction);
+                        abort_pending_task(&mut pending_worker);
+                        abort_pending_join_handle(&mut pending_model_bootstrap);
+                        runtime_handle.spawn_blocking(move || {
+                            cleanup_shutdown_resources(active, pending, config, daemon);
                         });
-                        if let Some(daemon) = daemon {
-                            stop_managed_local_asr_daemon(daemon);
-                        }
                     }
                     unregister_bound_hotkey(hwnd);
-                    if !state.hud_hwnd.is_null() {
-                        let _ = DestroyWindow(state.hud_hwnd);
+                    if !state.hud_hwnd.get().is_null() {
+                        let _ = DestroyWindow(state.hud_hwnd.get());
                     }
-                    if !state.copy_popup_hwnd.is_null() {
-                        let _ = DestroyWindow(state.copy_popup_hwnd);
-                        state.copy_popup_hwnd = ptr::null_mut();
-                        state.copy_popup_edit_hwnd = ptr::null_mut();
-                        state.copy_popup_pane_edit_hwnds.clear();
+                    if !state.copy_popup_hwnd.get().is_null() {
+                        let _ = DestroyWindow(state.copy_popup_hwnd.get());
+                        state.copy_popup_hwnd.set(ptr::null_mut());
+                        state.copy_popup_edit_hwnd.set(ptr::null_mut());
+                        state.copy_popup_pane_edit_hwnds.borrow_mut().clear();
                     }
-                    if !state.shortcut_help_hwnd.is_null() {
-                        let _ = DestroyWindow(state.shortcut_help_hwnd);
+                    if !state.shortcut_help_hwnd.get().is_null() {
+                        let _ = DestroyWindow(state.shortcut_help_hwnd.get());
                     }
                 }
                 remove_tray_icon(hwnd);
@@ -2705,6 +3661,143 @@ mod windows_app {
         }
     }
 
+    fn copy_popup_keyboard_tab_target(
+        current: CopyPopupHoveredControl,
+        reverse: bool,
+    ) -> CopyPopupHoveredControl {
+        match (current, reverse) {
+            (CopyPopupHoveredControl::None, false) => CopyPopupHoveredControl::Copy,
+            (CopyPopupHoveredControl::Copy, false) => CopyPopupHoveredControl::Close,
+            (CopyPopupHoveredControl::Close, false) => CopyPopupHoveredControl::None,
+            (CopyPopupHoveredControl::None, true) => CopyPopupHoveredControl::Close,
+            (CopyPopupHoveredControl::Close, true) => CopyPopupHoveredControl::Copy,
+            (CopyPopupHoveredControl::Copy, true) => CopyPopupHoveredControl::None,
+        }
+    }
+
+    fn copy_popup_keyboard_focused_control() -> CopyPopupHoveredControl {
+        overlay_ui_state()
+            .lock()
+            .ok()
+            .and_then(|overlay| {
+                overlay
+                    .copy_popup
+                    .as_ref()
+                    .map(|popup| popup.keyboard_focused_control)
+            })
+            .unwrap_or_default()
+    }
+
+    fn focus_copy_popup_keyboard_target(
+        owner_hwnd: HWND,
+        copy_popup_hwnd: HWND,
+        target: CopyPopupHoveredControl,
+    ) {
+        let mut should_invalidate = false;
+        if let Ok(mut overlay) = overlay_ui_state().lock() {
+            if let Some(popup) = overlay.copy_popup.as_mut() {
+                if popup.keyboard_focused_control != target {
+                    popup.keyboard_focused_control = target;
+                    should_invalidate = true;
+                }
+            }
+        }
+
+        let edit_hwnd = unsafe { get_window_state(owner_hwnd) }
+            .ok()
+            .map(|state| state.copy_popup_edit_hwnd.get())
+            .unwrap_or(ptr::null_mut());
+        unsafe {
+            if should_invalidate {
+                InvalidateRect(copy_popup_hwnd, ptr::null(), 0);
+            }
+            if target == CopyPopupHoveredControl::None && !edit_hwnd.is_null() {
+                let _ = SetFocus(edit_hwnd);
+            } else if target != CopyPopupHoveredControl::None {
+                let _ = SetFocus(copy_popup_hwnd);
+            }
+        }
+    }
+
+    fn clear_copy_popup_keyboard_focus(copy_popup_hwnd: HWND) {
+        let mut should_invalidate = false;
+        if let Ok(mut overlay) = overlay_ui_state().lock() {
+            if let Some(popup) = overlay.copy_popup.as_mut() {
+                if popup.keyboard_focused_control != CopyPopupHoveredControl::None {
+                    popup.keyboard_focused_control = CopyPopupHoveredControl::None;
+                    should_invalidate = true;
+                }
+            }
+        }
+        unsafe {
+            if should_invalidate {
+                InvalidateRect(copy_popup_hwnd, ptr::null(), 0);
+            }
+        }
+    }
+
+    fn handle_copy_popup_virtual_key(
+        owner_hwnd: HWND,
+        _copy_popup_hwnd: HWND,
+        virtual_key: u32,
+    ) -> bool {
+        match desktop_copy_popup_action_for_virtual_key(virtual_key) {
+            DesktopCopyPopupAction::CopyToClipboard => {
+                if copy_popup_keyboard_focused_control() == CopyPopupHoveredControl::Close {
+                    let _ = hide_copy_popup(owner_hwnd);
+                } else {
+                    let _ = copy_popup_text_to_clipboard(owner_hwnd);
+                }
+                true
+            }
+            DesktopCopyPopupAction::Close => {
+                let _ = hide_copy_popup(owner_hwnd);
+                true
+            }
+            DesktopCopyPopupAction::Ignore => false,
+        }
+    }
+
+    unsafe extern "system" fn copy_popup_edit_subclass_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _subclass_id: usize,
+        _reference_data: usize,
+    ) -> LRESULT {
+        match message {
+            WM_CHAR | WM_SYSCHAR if matches!(wparam as u32, VK_TAB_KEY | 0x0D | 0x1B) => {
+                return 0;
+            }
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                let copy_popup_hwnd = GetParent(hwnd);
+                if let Some(owner_hwnd) = copy_popup_owner(copy_popup_hwnd) {
+                    if wparam as u32 == VK_TAB_KEY {
+                        let reverse = GetAsyncKeyState(VK_SHIFT as i32) < 0;
+                        let target =
+                            copy_popup_keyboard_tab_target(CopyPopupHoveredControl::None, reverse);
+                        focus_copy_popup_keyboard_target(owner_hwnd, copy_popup_hwnd, target);
+                        return 0;
+                    }
+                    if handle_copy_popup_virtual_key(owner_hwnd, copy_popup_hwnd, wparam as u32) {
+                        return 0;
+                    }
+                }
+            }
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(
+                    hwnd,
+                    Some(copy_popup_edit_subclass_proc),
+                    COPY_POPUP_EDIT_SUBCLASS_ID,
+                );
+            }
+            _ => {}
+        }
+
+        DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+
     unsafe extern "system" fn copy_popup_window_proc(
         hwnd: HWND,
         message: u32,
@@ -2716,11 +3809,29 @@ mod windows_app {
                 paint_copy_popup_window(hwnd);
                 0
             }
+            WM_LBUTTONDOWN => {
+                clear_copy_popup_keyboard_focus(hwnd);
+                let dpi = overlay_dpi_for_window(hwnd);
+                let pressed =
+                    copy_popup_hovered_control_for_point(hwnd, dpi, point_from_lparam(lparam));
+                set_copy_popup_pressed_control(hwnd, pressed);
+                if pressed != CopyPopupHoveredControl::None {
+                    SetCapture(hwnd);
+                }
+                0
+            }
             WM_MOUSEMOVE => {
+                track_copy_popup_mouse_leave(hwnd);
                 refresh_copy_popup_hover(hwnd, point_from_lparam(lparam));
                 0
             }
+            WM_MOUSELEAVE => {
+                clear_copy_popup_hover(hwnd);
+                0
+            }
             WM_LBUTTONUP => {
+                clear_copy_popup_pressed_control(hwnd);
+                ReleaseCapture();
                 if let Some(owner_hwnd) = copy_popup_owner(hwnd) {
                     let click = point_from_lparam(lparam);
                     let dpi = overlay_dpi_for_window(hwnd);
@@ -2730,12 +3841,13 @@ mod windows_app {
                         let _ = hide_copy_popup(owner_hwnd);
                     } else if point_in_rect(click, copy_popup_editor_frame_rect(hwnd, dpi)) {
                         clear_copy_popup_hover(hwnd);
-                        if let Ok(state) = get_window_state_mut(owner_hwnd) {
-                            let _ = SetForegroundWindow(hwnd);
-                            let _ = SetFocus(state.copy_popup_edit_hwnd);
-                        }
+                        let _ = activate_copy_popup_for_interaction(owner_hwnd);
                     }
                 }
+                0
+            }
+            WM_CAPTURECHANGED => {
+                clear_copy_popup_pressed_control(hwnd);
                 0
             }
             WM_COMMAND => {
@@ -2744,23 +3856,28 @@ mod windows_app {
                 if copy_popup_edit_control_index(control_id).is_some() && notify_code == EN_CHANGE {
                     if let Some(owner_hwnd) = copy_popup_owner(hwnd) {
                         let _ = update_copy_popup_edit_layout(owner_hwnd, hwnd);
-                        InvalidateRect(hwnd, ptr::null(), 1);
+                        InvalidateRect(hwnd, ptr::null(), 0);
                     }
                 }
                 0
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
                 if let Some(owner_hwnd) = copy_popup_owner(hwnd) {
-                    match desktop_copy_popup_action_for_virtual_key(wparam as u32) {
-                        DesktopCopyPopupAction::CopyToClipboard => {
-                            let _ = copy_popup_text_to_clipboard(owner_hwnd);
-                        }
-                        DesktopCopyPopupAction::Close => {
-                            let _ = hide_copy_popup(owner_hwnd);
-                        }
-                        DesktopCopyPopupAction::Ignore => {}
+                    if wparam as u32 == VK_TAB_KEY {
+                        let reverse = GetAsyncKeyState(VK_SHIFT as i32) < 0;
+                        let target = copy_popup_keyboard_tab_target(
+                            copy_popup_keyboard_focused_control(),
+                            reverse,
+                        );
+                        focus_copy_popup_keyboard_target(owner_hwnd, hwnd, target);
+                    } else {
+                        let _ = handle_copy_popup_virtual_key(owner_hwnd, hwnd, wparam as u32);
                     }
                 }
+                0
+            }
+            WM_KILLFOCUS => {
+                clear_copy_popup_keyboard_focus(hwnd);
                 0
             }
             WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
@@ -2768,7 +3885,7 @@ mod windows_app {
                 SetTextColor(hdc, typeless_popup_editor_text_color());
                 SetBkColor(hdc, typeless_popup_editor_fill_color());
                 SetBkMode(hdc, copy_popup_edit_background_mode());
-                copy_popup_edit_brush() as isize
+                copy_popup_edit_brush()
             }
             WM_ERASEBKGND => 1,
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -2792,12 +3909,19 @@ mod windows_app {
     }
 
     fn handle_desktop_action(hwnd: HWND, action_index: usize) {
-        let state = match unsafe { get_window_state_mut(hwnd) } {
+        let state = match unsafe { get_window_state(hwnd) } {
             Ok(state) => state,
             Err(_) => return,
         };
-        let (can_start, can_stop, active_generation, active_action_index) = {
-            let shared = state.shared.lock().expect("Talk desktop shared state");
+        let (
+            can_start,
+            can_stop,
+            active_generation,
+            active_action_index,
+            pending_generation,
+            pending_action_index,
+        ) = {
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
             (
                 shared.shell_state.can_start_session(),
                 shared.shell_state.can_stop_session(),
@@ -2809,6 +3933,14 @@ mod windows_app {
                     .active_recording
                     .as_ref()
                     .map(|active| active.action_index),
+                shared
+                    .pending_recording_begin
+                    .as_ref()
+                    .map(|pending| pending.generation),
+                shared
+                    .pending_recording_begin
+                    .as_ref()
+                    .map(|pending| pending.action_index),
             )
         };
 
@@ -2821,6 +3953,10 @@ mod windows_app {
                     Some(1800),
                 );
             }
+        } else if let Some(generation) =
+            pending_generation.filter(|_| pending_action_index == Some(action_index))
+        {
+            let _ = cancel_pending_recording_begin(hwnd, Some(generation));
         } else if can_stop {
             if let Some(generation) =
                 active_generation.filter(|_| active_action_index == Some(action_index))
@@ -2835,16 +3971,20 @@ mod windows_app {
     }
 
     fn handle_low_level_hotkey_release(hwnd: HWND) {
-        let generation = unsafe { get_window_state_mut(hwnd) }
-            .ok()
-            .and_then(|state| {
-                state.shared.lock().ok().and_then(|shared| {
-                    shared
-                        .active_recording
-                        .as_ref()
-                        .map(|active| active.generation)
-                })
-            });
+        let generation = unsafe { get_window_state(hwnd) }.ok().and_then(|state| {
+            state.shared.lock().ok().and_then(|shared| {
+                shared
+                    .active_recording
+                    .as_ref()
+                    .map(|active| active.generation)
+                    .or_else(|| {
+                        shared
+                            .pending_recording_begin
+                            .as_ref()
+                            .map(|pending| pending.generation)
+                    })
+            })
+        });
 
         if let Some(generation) = generation {
             request_stop_recording(hwnd, generation);
@@ -2866,44 +4006,167 @@ mod windows_app {
         }
     }
 
-    fn ensure_packaged_local_asr_daemon(
-        shared: &mut SharedState,
+    fn recording_streaming_unavailable_hint(
+        configured_streaming_speculative_asr: bool,
+        use_streaming_speculative_asr: bool,
+        status: &LocalAsrBootstrapStatus,
+    ) -> Option<&'static str> {
+        if !configured_streaming_speculative_asr || use_streaming_speculative_asr {
+            return None;
+        }
+
+        match status {
+            LocalAsrBootstrapStatus::Downloading => Some("downloading local ASR model..."),
+            LocalAsrBootstrapStatus::NotStarted => Some("preparing local ASR..."),
+            LocalAsrBootstrapStatus::FallbackCloud(_)
+            | LocalAsrBootstrapStatus::EngineeringFallback => Some("live transcript unavailable"),
+            LocalAsrBootstrapStatus::Ready => None,
+        }
+    }
+
+    fn recording_streaming_preflight_message(
+        configured_streaming_speculative_asr: bool,
+    ) -> Option<(&'static str, &'static str)> {
+        configured_streaming_speculative_asr.then_some((
+            "Talk: preparing local ASR",
+            "starting local live transcript runtime...",
+        ))
+    }
+
+    struct ProductLocalAsrDaemonPrewarmRequest {
+        endpoint: String,
+        startup_timeout_ms: u64,
+        plan: DesktopLocalAsrDaemonLaunchPlan,
+    }
+
+    fn product_local_asr_daemon_prewarm_request(
         config: &TalkConfig,
-    ) -> Result<bool> {
-        let Some(service) = config.speculative.streaming_service.as_ref() else {
-            return Ok(false);
-        };
-        let endpoint = service.endpoint.clone();
+        status: &LocalAsrBootstrapStatus,
+        worker_path: Option<&Path>,
+        model_root: Option<&Path>,
+    ) -> Option<ProductLocalAsrDaemonPrewarmRequest> {
+        let service = config.speculative.streaming_service.as_ref()?;
+        if desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(config))
+            != DesktopSpeculativeLocalAsrRoute::StreamingService
+        {
+            return None;
+        }
 
         let has_explicit_model = service.local_daemon.is_some();
-        let has_installed_model = shared
-            .product_model_root
-            .as_deref()
-            .is_some_and(desktop_product_local_asr_model_available);
+        let has_installed_model = model_root.is_some_and(desktop_product_local_asr_model_available);
         if !local_asr_bootstrap_allows_packaged_daemon(
-            &shared.local_asr_bootstrap_status,
+            status,
             has_explicit_model,
             has_installed_model,
         ) {
-            return Ok(false);
+            return None;
         }
 
-        if let Some(mut daemon) = shared.local_asr_daemon.take() {
-            if daemon.endpoint == endpoint && managed_local_asr_daemon_is_running(&mut daemon) {
-                shared.local_asr_daemon = Some(daemon);
-                return Ok(true);
+        let worker_path = worker_path?;
+        let model_root = model_root?;
+        let plan = desktop_product_local_asr_daemon_launch_plan_with_config(
+            worker_path,
+            model_root,
+            &service.endpoint,
+            service.local_daemon.as_ref(),
+        )
+        .ok()
+        .flatten()?;
+
+        Some(ProductLocalAsrDaemonPrewarmRequest {
+            endpoint: service.endpoint.clone(),
+            startup_timeout_ms: desktop_product_local_asr_startup_timeout_ms(
+                service.connect_timeout_ms,
+            ),
+            plan,
+        })
+    }
+
+    fn start_managed_local_asr_daemon(
+        plan: &DesktopLocalAsrDaemonLaunchPlan,
+        endpoint: String,
+        startup_timeout_ms: u64,
+    ) -> Result<ManagedLocalAsrDaemon> {
+        let mut child = std::process::Command::new(&plan.executable_path)
+            .args(&plan.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW_FLAG)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "start packaged local ASR daemon {}",
+                    plan.executable_path.display()
+                )
+            })?;
+
+        let deadline = Instant::now() + Duration::from_millis(startup_timeout_ms);
+        loop {
+            if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
+                return Ok(ManagedLocalAsrDaemon {
+                    endpoint,
+                    launch_plan: plan.clone(),
+                    child,
+                });
             }
-            stop_managed_local_asr_daemon(daemon);
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    anyhow::bail!("packaged local ASR daemon exited before readiness: {status}");
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if let Err(kill_error) = child.kill() {
+                        eprintln!(
+                            "Talk packaged local ASR daemon cleanup kill failed after status error: {kill_error}"
+                        );
+                    }
+                    if let Err(wait_error) = child.wait() {
+                        eprintln!(
+                            "Talk packaged local ASR daemon cleanup wait failed after status error: {wait_error}"
+                        );
+                    }
+                    anyhow::bail!("check packaged local ASR daemon status: {error}");
+                }
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!(
+                    "packaged local ASR daemon did not become ready within {startup_timeout_ms} ms"
+                );
+            }
+            thread::sleep(Duration::from_millis(40));
         }
+    }
 
-        if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(80)) {
-            return Ok(true);
+    fn packaged_local_asr_daemon_request(
+        config: &TalkConfig,
+        status: &LocalAsrBootstrapStatus,
+        worker_path: Option<&Path>,
+        model_root: Option<&Path>,
+    ) -> Result<Option<ProductLocalAsrDaemonPrewarmRequest>> {
+        let Some(service) = config.speculative.streaming_service.as_ref() else {
+            return Ok(None);
+        };
+        if desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(config))
+            != DesktopSpeculativeLocalAsrRoute::StreamingService
+        {
+            return Ok(None);
         }
+        let endpoint = service.endpoint.clone();
 
-        let plan = if let (Some(worker_path), Some(model_root)) = (
-            shared.product_runtime_worker.as_ref(),
-            shared.product_model_root.as_ref(),
+        let has_explicit_model = service.local_daemon.is_some();
+        let has_installed_model = model_root.is_some_and(desktop_product_local_asr_model_available);
+        if !local_asr_bootstrap_allows_packaged_daemon(
+            status,
+            has_explicit_model,
+            has_installed_model,
         ) {
+            return Ok(None);
+        }
+
+        let plan = if let (Some(worker_path), Some(model_root)) = (worker_path, model_root) {
             desktop_product_local_asr_daemon_launch_plan_with_config(
                 worker_path,
                 model_root,
@@ -2921,50 +4184,254 @@ mod windows_app {
             )
             .map_err(anyhow::Error::msg)?
         };
-        let Some(plan) = plan else {
+        Ok(plan.map(|plan| ProductLocalAsrDaemonPrewarmRequest {
+            endpoint,
+            startup_timeout_ms: desktop_product_local_asr_startup_timeout_ms(
+                service.connect_timeout_ms,
+            ),
+            plan,
+        }))
+    }
+
+    fn local_asr_daemon_operation_allowed(
+        shutting_down: bool,
+        current_epoch: u64,
+        operation_epoch: u64,
+    ) -> bool {
+        !shutting_down && current_epoch == operation_epoch
+    }
+
+    fn advance_local_asr_daemon_epoch(shared: &mut SharedState) -> u64 {
+        shared.local_asr_daemon_epoch = shared.local_asr_daemon_epoch.saturating_add(1);
+        shared.local_asr_daemon_epoch
+    }
+
+    fn local_asr_daemon_config_matches(current: &TalkConfig, requested: &TalkConfig) -> bool {
+        current.speculative.enabled == requested.speculative.enabled
+            && current.speculative.local_asr == requested.speculative.local_asr
+            && current.speculative.streaming_service == requested.speculative.streaming_service
+    }
+
+    fn local_asr_daemon_operation_is_current(
+        shared: &Arc<Mutex<SharedState>>,
+        operation_epoch: u64,
+    ) -> bool {
+        shared.lock().ok().is_some_and(|shared_state| {
+            local_asr_daemon_operation_allowed(
+                shared_state.shutting_down,
+                shared_state.local_asr_daemon_epoch,
+                operation_epoch,
+            )
+        })
+    }
+
+    fn reserve_local_asr_daemon_operation(
+        shared: &Arc<Mutex<SharedState>>,
+        observed_epoch: u64,
+    ) -> Result<Option<(u64, Option<ManagedLocalAsrDaemon>)>> {
+        let mut shared_state = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?;
+        if !local_asr_daemon_operation_allowed(
+            shared_state.shutting_down,
+            shared_state.local_asr_daemon_epoch,
+            observed_epoch,
+        ) {
+            return Ok(None);
+        }
+        let operation_epoch = advance_local_asr_daemon_epoch(&mut shared_state);
+        Ok(Some((
+            operation_epoch,
+            shared_state.local_asr_daemon.take(),
+        )))
+    }
+
+    fn install_managed_local_asr_daemon_if_current(
+        shared: &Arc<Mutex<SharedState>>,
+        operation_epoch: u64,
+        daemon: ManagedLocalAsrDaemon,
+    ) -> bool {
+        let mut candidate = Some(daemon);
+        let displaced = shared.lock().ok().and_then(|mut shared_state| {
+            if !local_asr_daemon_operation_allowed(
+                shared_state.shutting_down,
+                shared_state.local_asr_daemon_epoch,
+                operation_epoch,
+            ) {
+                return None;
+            }
+            let displaced = shared_state.local_asr_daemon.take();
+            shared_state.local_asr_daemon = candidate.take();
+            displaced
+        });
+        if let Some(displaced) = displaced {
+            stop_managed_local_asr_daemon(displaced);
+        }
+        if let Some(stale) = candidate {
+            stop_managed_local_asr_daemon(stale);
+            false
+        } else {
+            true
+        }
+    }
+
+    fn reconcile_managed_local_asr_daemon(
+        shared: &Arc<Mutex<SharedState>>,
+        operation_epoch: u64,
+        request: &ProductLocalAsrDaemonPrewarmRequest,
+        existing: Option<ManagedLocalAsrDaemon>,
+    ) -> Result<bool> {
+        if !local_asr_daemon_operation_is_current(shared, operation_epoch) {
+            if let Some(existing) = existing {
+                stop_managed_local_asr_daemon(existing);
+            }
+            return Ok(false);
+        }
+
+        if let Some(mut daemon) = existing {
+            if managed_local_asr_daemon_launch_is_current(
+                &daemon.endpoint,
+                &daemon.launch_plan,
+                &request.endpoint,
+                &request.plan,
+            ) && managed_local_asr_daemon_is_running(&mut daemon)
+            {
+                return Ok(install_managed_local_asr_daemon_if_current(
+                    shared,
+                    operation_epoch,
+                    daemon,
+                ));
+            }
+            stop_managed_local_asr_daemon(daemon);
+        }
+
+        if !local_asr_daemon_operation_is_current(shared, operation_epoch) {
+            return Ok(false);
+        }
+        if local_asr_endpoint_accepts_tcp(&request.endpoint, Duration::from_millis(80)) {
+            return Ok(local_asr_daemon_operation_is_current(
+                shared,
+                operation_epoch,
+            ));
+        }
+        if !local_asr_daemon_operation_is_current(shared, operation_epoch) {
+            return Ok(false);
+        }
+
+        let daemon = start_managed_local_asr_daemon(
+            &request.plan,
+            request.endpoint.clone(),
+            request.startup_timeout_ms,
+        )?;
+        Ok(install_managed_local_asr_daemon_if_current(
+            shared,
+            operation_epoch,
+            daemon,
+        ))
+    }
+
+    fn run_product_local_asr_daemon_prewarm(shared: &Arc<Mutex<SharedState>>) -> Result<()> {
+        let lifecycle = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?
+            .local_asr_daemon_lifecycle
+            .clone();
+        let _lifecycle_guard = lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk local ASR daemon lifecycle is poisoned"))?;
+        let (observed_epoch, config, status, worker_path, model_root) = {
+            let shared_state = shared
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?;
+            if shared_state.shutting_down {
+                return Ok(());
+            }
+            let Some(config) = shared_state.config.clone() else {
+                return Ok(());
+            };
+            (
+                shared_state.local_asr_daemon_epoch,
+                config,
+                shared_state.local_asr_bootstrap_status.clone(),
+                shared_state.product_runtime_worker.clone(),
+                shared_state.product_model_root.clone(),
+            )
+        };
+        let Some(request) = product_local_asr_daemon_prewarm_request(
+            &config,
+            &status,
+            worker_path.as_deref(),
+            model_root.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let Some((operation_epoch, existing)) =
+            reserve_local_asr_daemon_operation(shared, observed_epoch)?
+        else {
+            return Ok(());
+        };
+        let _ = reconcile_managed_local_asr_daemon(shared, operation_epoch, &request, existing)?;
+        Ok(())
+    }
+
+    fn spawn_product_local_asr_daemon_prewarm(shared: Arc<Mutex<SharedState>>) {
+        thread::spawn(move || {
+            if let Err(error) = run_product_local_asr_daemon_prewarm(&shared) {
+                eprintln!("Talk product local ASR prewarm failed: {error:#}");
+            }
+        });
+    }
+
+    fn ensure_packaged_local_asr_daemon(
+        shared: &Arc<Mutex<SharedState>>,
+        config: &TalkConfig,
+    ) -> Result<bool> {
+        let lifecycle = shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?
+            .local_asr_daemon_lifecycle
+            .clone();
+        let _lifecycle_guard = lifecycle
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Talk local ASR daemon lifecycle is poisoned"))?;
+        let (observed_epoch, status, worker_path, model_root) = {
+            let shared_state = shared
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Talk desktop shared state is poisoned"))?;
+            if shared_state.shutting_down {
+                return Ok(false);
+            }
+            (
+                shared_state.local_asr_daemon_epoch,
+                shared_state.local_asr_bootstrap_status.clone(),
+                shared_state.product_runtime_worker.clone(),
+                shared_state.product_model_root.clone(),
+            )
+        };
+        let Some(request) = packaged_local_asr_daemon_request(
+            config,
+            &status,
+            worker_path.as_deref(),
+            model_root.as_deref(),
+        )?
+        else {
             return Ok(false);
         };
+        let Some((operation_epoch, existing)) =
+            reserve_local_asr_daemon_operation(shared, observed_epoch)?
+        else {
+            return Ok(false);
+        };
+        reconcile_managed_local_asr_daemon(shared, operation_epoch, &request, existing)
+    }
 
-        let mut child = std::process::Command::new(&plan.executable_path)
-            .args(&plan.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW_FLAG)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "start packaged local ASR daemon {}",
-                    plan.executable_path.display()
-                )
-            })?;
-
-        let startup_timeout_ms =
-            desktop_product_local_asr_startup_timeout_ms(service.connect_timeout_ms);
-        let deadline = Instant::now() + Duration::from_millis(startup_timeout_ms);
-        loop {
-            if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
-                shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
-                return Ok(true);
-            }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    anyhow::bail!("packaged local ASR daemon exited before readiness: {status}");
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    anyhow::bail!("check packaged local ASR daemon status: {error}");
-                }
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                anyhow::bail!(
-                    "packaged local ASR daemon did not become ready within {startup_timeout_ms} ms"
-                );
-            }
-            thread::sleep(Duration::from_millis(40));
-        }
+    fn managed_local_asr_daemon_launch_is_current(
+        daemon_endpoint: &str,
+        daemon_plan: &DesktopLocalAsrDaemonLaunchPlan,
+        requested_endpoint: &str,
+        requested_plan: &DesktopLocalAsrDaemonLaunchPlan,
+    ) -> bool {
+        daemon_endpoint == requested_endpoint && daemon_plan == requested_plan
     }
 
     fn local_asr_endpoint_accepts_tcp(endpoint: &str, timeout: Duration) -> bool {
@@ -3011,9 +4478,441 @@ mod windows_app {
         }
     }
 
+    fn recording_begin_completion_allowed(
+        shutting_down: bool,
+        shell_state: ShellState,
+        next_generation: u64,
+        generation: u64,
+    ) -> bool {
+        !shutting_down
+            && shell_state.is_preparing_local_asr()
+            && next_generation == generation.saturating_add(1)
+    }
+
+    fn cleanup_prepared_recording_audio(
+        runtime_handle: &tokio::runtime::Handle,
+        result: Option<std::result::Result<PreparedRecordingAudio, RecordingAudioStartFailure>>,
+        reason: &'static str,
+    ) {
+        if let Some(Ok(prepared)) = result {
+            spawn_recording_source_cancel_worker(runtime_handle, prepared.source, reason);
+        }
+    }
+
+    fn cleanup_pending_recording_begin(mut pending: PendingRecordingBegin, reason: &'static str) {
+        let audio_start_result = pending.audio_start_result.take();
+        cleanup_prepared_recording_audio(&pending.runtime_handle, audio_start_result, reason);
+    }
+
+    fn release_recording_begin_reservation(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+    ) -> bool {
+        let pending = {
+            let Ok(mut shared) = shared.lock() else {
+                return false;
+            };
+            if !recording_begin_completion_allowed(
+                shared.shutting_down,
+                shared.shell_state,
+                shared.next_generation,
+                generation,
+            ) {
+                return false;
+            }
+            if shared
+                .pending_recording_begin
+                .as_ref()
+                .is_some_and(|pending| pending.generation != generation)
+            {
+                return false;
+            }
+            let pending = shared.pending_recording_begin.take();
+            shared.shell_state = shared.shell_state.complete();
+            shared.current_phase = None;
+            pending
+        };
+        if let Some(pending) = pending {
+            cleanup_pending_recording_begin(pending, "recording preparation release");
+        }
+        true
+    }
+
+    fn cancel_pending_recording_begin(
+        hwnd: HWND,
+        expected_generation: Option<u64>,
+    ) -> Result<bool> {
+        let state = unsafe { get_window_state(hwnd)? };
+        let pending = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            let Some(pending) = shared.pending_recording_begin.as_ref() else {
+                return Ok(false);
+            };
+            if expected_generation.is_some_and(|generation| generation != pending.generation) {
+                return Ok(false);
+            }
+            let pending = shared
+                .pending_recording_begin
+                .take()
+                .expect("validated pending recording begin");
+            shared.shell_state = shared.shell_state.complete();
+            shared.current_phase = None;
+            pending
+        };
+        cleanup_pending_recording_begin(pending, "recording preparation cancellation");
+        let _ = update_tray_icon(hwnd, "Talk: cancelled");
+        let _ = hide_hud(hwnd);
+        let _ = refresh_idle_tray_status(hwnd);
+        Ok(true)
+    }
+
+    fn spawn_local_asr_recording_prepare(
+        shared: Arc<Mutex<SharedState>>,
+        hwnd: HWND,
+        generation: u64,
+        config: Arc<TalkConfig>,
+    ) {
+        let hwnd_value = hwnd as usize;
+        thread::spawn(move || {
+            let result = ensure_packaged_local_asr_daemon(&shared, &config)
+                .map_err(|error| error.to_string());
+            let should_post = shared.lock().ok().is_some_and(|mut shared| {
+                if !recording_begin_completion_allowed(
+                    shared.shutting_down,
+                    shared.shell_state,
+                    shared.next_generation,
+                    generation,
+                ) {
+                    return false;
+                }
+                let Some(pending) = shared.pending_recording_begin.as_mut() else {
+                    return false;
+                };
+                if pending.generation != generation || pending.local_asr_result.is_some() {
+                    return false;
+                }
+                pending.local_asr_result = Some(result);
+                true
+            });
+            if should_post {
+                let posted = unsafe {
+                    PostMessageW(
+                        hwnd_value as HWND,
+                        LOCAL_ASR_PREPARE_DONE_MESSAGE,
+                        generation as usize,
+                        0,
+                    )
+                };
+                if posted == 0 {
+                    let _ = release_recording_begin_reservation(&shared, generation);
+                }
+            }
+        });
+    }
+
+    fn recording_streaming_enabled_for_source(
+        streaming_route_ready: bool,
+        is_live_recording_source: bool,
+    ) -> bool {
+        streaming_route_ready && is_live_recording_source
+    }
+
+    fn recording_streaming_route_prepare_needed(
+        configured_streaming_route: bool,
+        explicit_audio_override_present: bool,
+    ) -> bool {
+        configured_streaming_route && !explicit_audio_override_present
+    }
+
+    fn prepare_recording_audio(
+        shared: Arc<Mutex<SharedState>>,
+        hwnd: HWND,
+        generation: u64,
+        config: Arc<TalkConfig>,
+        runtime_handle: tokio::runtime::Handle,
+        config_path: PathBuf,
+        session_id: String,
+        local_asr_ready: bool,
+    ) -> std::result::Result<PreparedRecordingAudio, RecordingAudioStartFailure> {
+        let speculative_local_asr_route =
+            desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(&config));
+        let streaming_route_ready =
+            desktop_effective_streaming_asr_enabled(speculative_local_asr_route, local_asr_ready);
+        let audio_override_raw = std::env::var(TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV).ok();
+        let audio_override =
+            resolve_desktop_audio_file_override(audio_override_raw.as_deref(), &config_path)
+                .map_err(|error| RecordingAudioStartFailure {
+                    hud_detail: error.clone(),
+                    message: error,
+                    reason: "audio override resolution failure",
+                })?;
+        let use_streaming_speculative_asr =
+            recording_streaming_enabled_for_source(streaming_route_ready, audio_override.is_none());
+        let source = match audio_override {
+            Some(audio_path) => ActiveRecordingSource::ExplicitAudioFile(audio_path),
+            None => {
+                let recording_request = AudioCaptureRequest {
+                    backend: config.audio.backend,
+                    temp_dir: config.audio.temp_dir.clone(),
+                    session_id: session_id.clone(),
+                    input_device: config.audio.input_device.clone(),
+                    wav_settings: WavSettings {
+                        sample_rate_hz: config.audio.sample_rate_hz,
+                        channels: config.audio.channels,
+                    },
+                    max_recording_seconds: config.audio.max_recording_seconds,
+                    silent_samples: 320,
+                };
+                let recording = start_recording(&recording_request).map_err(|error| {
+                    let message = error.to_string();
+                    RecordingAudioStartFailure {
+                        hud_detail: message.clone(),
+                        message,
+                        reason: "recording start failure",
+                    }
+                })?;
+                let streaming_pump = if use_streaming_speculative_asr {
+                    let streaming_source = match recording.streaming_pcm_source() {
+                        Ok(streaming_source) => streaming_source,
+                        Err(error) => {
+                            let message = error.to_string();
+                            spawn_recording_source_cancel_worker(
+                                &runtime_handle,
+                                ActiveRecordingSource::Live {
+                                    recording,
+                                    streaming_pump: None,
+                                },
+                                "streaming PCM source failure",
+                            );
+                            return Err(RecordingAudioStartFailure {
+                                message,
+                                reason: "streaming PCM source failure",
+                                hud_detail: "local streaming ASR unavailable".to_string(),
+                            });
+                        }
+                    };
+                    Some(spawn_local_streaming_asr_pump(
+                        &runtime_handle,
+                        shared,
+                        hwnd,
+                        generation,
+                        streaming_source,
+                        config,
+                        session_id,
+                    ))
+                } else {
+                    None
+                };
+                ActiveRecordingSource::Live {
+                    recording,
+                    streaming_pump,
+                }
+            }
+        };
+
+        Ok(PreparedRecordingAudio {
+            source,
+            use_streaming_speculative_asr,
+        })
+    }
+
+    fn spawn_recording_audio_prepare(
+        shared: Arc<Mutex<SharedState>>,
+        hwnd: HWND,
+        generation: u64,
+        config: Arc<TalkConfig>,
+        runtime_handle: tokio::runtime::Handle,
+        config_path: PathBuf,
+        session_id: String,
+        local_asr_ready: bool,
+    ) {
+        let hwnd_value = hwnd as usize;
+        thread::spawn(move || {
+            let mut result = Some(prepare_recording_audio(
+                Arc::clone(&shared),
+                hwnd_value as HWND,
+                generation,
+                config,
+                runtime_handle.clone(),
+                config_path,
+                session_id,
+                local_asr_ready,
+            ));
+            let should_post = shared.lock().ok().is_some_and(|mut shared| {
+                if !recording_begin_completion_allowed(
+                    shared.shutting_down,
+                    shared.shell_state,
+                    shared.next_generation,
+                    generation,
+                ) {
+                    return false;
+                }
+                let Some(pending) = shared.pending_recording_begin.as_mut() else {
+                    return false;
+                };
+                if pending.generation != generation || pending.audio_start_result.is_some() {
+                    return false;
+                }
+                pending.audio_start_result = result.take();
+                true
+            });
+            if !should_post {
+                cleanup_prepared_recording_audio(
+                    &runtime_handle,
+                    result.take(),
+                    "stale recording audio preparation",
+                );
+                return;
+            }
+            let posted = unsafe {
+                PostMessageW(
+                    hwnd_value as HWND,
+                    AUDIO_START_DONE_MESSAGE,
+                    generation as usize,
+                    0,
+                )
+            };
+            if posted == 0 {
+                let _ = release_recording_begin_reservation(&shared, generation);
+            }
+        });
+    }
+
+    fn handle_local_asr_prepare_done(hwnd: HWND, generation: u64) {
+        let state = match unsafe { get_window_state(hwnd) } {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let (result, config, runtime_handle, config_path, session_id) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if !recording_begin_completion_allowed(
+                shared.shutting_down,
+                shared.shell_state,
+                shared.next_generation,
+                generation,
+            ) {
+                return;
+            }
+            let Some(pending) = shared.pending_recording_begin.as_mut() else {
+                return;
+            };
+            if pending.generation != generation || pending.local_asr_result.is_none() {
+                return;
+            }
+            (
+                pending
+                    .local_asr_result
+                    .take()
+                    .expect("validated local ASR prepare result"),
+                pending.config.clone(),
+                pending.runtime_handle.clone(),
+                pending.config_path.clone(),
+                pending.session_id.clone(),
+            )
+        };
+        let local_asr_ready = match result {
+            Ok(ready) => ready,
+            Err(error) => {
+                if let Ok(mut shared) = state.shared.lock() {
+                    if recording_begin_completion_allowed(
+                        shared.shutting_down,
+                        shared.shell_state,
+                        shared.next_generation,
+                        generation,
+                    ) {
+                        advance_local_asr_daemon_epoch(&mut shared);
+                        shared.local_asr_bootstrap_status =
+                            LocalAsrBootstrapStatus::FallbackCloud(error);
+                    }
+                }
+                false
+            }
+        };
+        spawn_recording_audio_prepare(
+            Arc::clone(&state.shared),
+            hwnd,
+            generation,
+            config,
+            runtime_handle,
+            config_path,
+            session_id,
+            local_asr_ready,
+        );
+    }
+
+    fn handle_recording_audio_start_done(hwnd: HWND, generation: u64) {
+        let state = match unsafe { get_window_state(hwnd) } {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let (pending, result) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if !recording_begin_completion_allowed(
+                shared.shutting_down,
+                shared.shell_state,
+                shared.next_generation,
+                generation,
+            ) {
+                return;
+            }
+            let Some(pending) = shared.pending_recording_begin.as_ref() else {
+                return;
+            };
+            if pending.generation != generation || pending.audio_start_result.is_none() {
+                return;
+            }
+            let mut pending = shared
+                .pending_recording_begin
+                .take()
+                .expect("validated pending recording begin");
+            let result = pending
+                .audio_start_result
+                .take()
+                .expect("validated recording audio start result");
+            (pending, result)
+        };
+
+        match result {
+            Ok(prepared) => {
+                if let Err(error) = finish_recording_begin(hwnd, state, pending, prepared) {
+                    eprintln!("Talk recording preparation completion failed: {error:#}");
+                    let _ = release_recording_begin_reservation(&state.shared, generation);
+                    let _ = show_hud_text(
+                        hwnd,
+                        &compose_hud_message("Talk: unavailable", Some(&error.to_string())),
+                        Some(1800),
+                    );
+                }
+            }
+            Err(failure) => {
+                set_failed_last_session_if_current(
+                    &state.shared,
+                    generation,
+                    failure.message.clone(),
+                );
+                spawn_failed_session_persistence_worker(
+                    &pending.runtime_handle,
+                    Some(pending.config.clone()),
+                    pending.session,
+                    pending.trigger_events,
+                    pending.mode_override,
+                    anyhow::anyhow!(failure.message),
+                    failure.reason,
+                );
+                let _ = release_recording_begin_reservation(&state.shared, generation);
+                let _ = refresh_idle_tray_status(hwnd);
+                let _ = show_hud_text(
+                    hwnd,
+                    &compose_hud_message("Talk: failed", Some(&failure.hud_detail)),
+                    Some(1800),
+                );
+            }
+        }
+    }
+
     fn begin_recording(
         hwnd: HWND,
-        state: &mut WindowState,
+        state: &WindowState,
         source: ActivationSource,
         action_index: usize,
     ) -> Result<()> {
@@ -3028,14 +4927,16 @@ mod windows_app {
             trigger_mode,
             max_recording_seconds,
             session_id,
-            shell_state,
             config_path,
             pending_hotkey_origin_insert_target,
-            mut pending_document_correction_task,
+            pending_document_correction_task,
         ) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             if shared.shutting_down {
                 anyhow::bail!("Talk desktop is shutting down");
+            }
+            if shared.pending_config_reload.is_some() {
+                anyhow::bail!("Talk config reload is in progress");
             }
             if !shared.shell_state.can_start_session() {
                 anyhow::bail!("Talk desktop is already busy");
@@ -3056,7 +4957,11 @@ mod windows_app {
                 action.mode_override
             };
             let generation = shared.next_generation;
-            shared.next_generation += 1;
+            shared.next_generation = shared.next_generation.saturating_add(1);
+            shared.shell_state = shared
+                .shell_state
+                .begin_local_asr_preparation()
+                .expect("idle shell state should begin local ASR preparation");
             if let Some(mode) = mode_override {
                 if action.route != DesktopActionRoute::Primary {
                     shared.selected_voice_mode = mode;
@@ -3071,7 +4976,6 @@ mod windows_app {
                 config.trigger.mode,
                 config.audio.max_recording_seconds,
                 Uuid::new_v4().to_string(),
-                shared.shell_state,
                 shared.config_path.clone(),
                 if source == ActivationSource::Hotkey {
                     shared.pending_hotkey_origin_insert_target.take()
@@ -3081,17 +4985,24 @@ mod windows_app {
                 shared.pending_document_correction_task.take(),
             )
         };
-        runtime_handle.block_on(abort_pending_task(&mut pending_document_correction_task));
+        if let Some((_, task)) = pending_document_correction_task {
+            task.abort();
+        }
 
         let mut session = VoiceSession::new(session_id.clone());
-        session
-            .apply(VoiceEvent::TriggerStart)
-            .context("start Talk desktop voice session")?;
+        if let Err(error) = session.apply(VoiceEvent::TriggerStart) {
+            let _ = release_recording_begin_reservation(&state.shared, generation);
+            return Err(anyhow::anyhow!(error.to_string()))
+                .context("start Talk desktop voice session");
+        }
         let trigger_events = vec!["trigger_start"];
         let (origin_insert_target, origin_insert_target_source, release_time_origin_target) =
             if source == ActivationSource::Hotkey {
+                // HWND-only snapshot keeps the hotkey activation path free of
+                // blocking UI Automation calls; spawn_hotkey_origin_enrichment
+                // upgrades the captured target on a background thread.
                 let release_time_origin_target =
-                    capture_foreground_insert_target_context(hwnd, state.hud_hwnd);
+                    capture_foreground_insert_target_context_snapshot(hwnd, state.hud_hwnd.get());
                 let origin_insert_target = resolve_hotkey_origin_insert_target(
                     pending_hotkey_origin_insert_target.as_ref(),
                     release_time_origin_target.as_ref(),
@@ -3113,7 +5024,7 @@ mod windows_app {
                 )
             } else {
                 (
-                    capture_foreground_insert_target_context(hwnd, state.hud_hwnd),
+                    capture_foreground_insert_target_context(hwnd, state.hud_hwnd.get()),
                     Some("record_start_capture".to_string()),
                     None,
                 )
@@ -3122,34 +5033,167 @@ mod windows_app {
             desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(&config));
         let configured_streaming_speculative_asr =
             speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::StreamingService;
-        let local_asr_ready = if configured_streaming_speculative_asr {
-            let ensure_result = {
-                let mut shared = state.shared.lock().expect("Talk desktop shared state");
-                ensure_packaged_local_asr_daemon(&mut shared, &config)
-            };
-            match ensure_result {
-                Ok(ready) => ready,
-                Err(error) => {
-                    {
-                        let mut shared = state.shared.lock().expect("Talk desktop shared state");
-                        shared.local_asr_bootstrap_status =
-                            LocalAsrBootstrapStatus::FallbackCloud(error.to_string());
-                    }
-                    false
+        let explicit_audio_override_present =
+            std::env::var_os(TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV).is_some();
+        let prepare_streaming_route = recording_streaming_route_prepare_needed(
+            configured_streaming_speculative_asr,
+            explicit_audio_override_present,
+        );
+        if let Some((summary, detail)) =
+            recording_streaming_preflight_message(prepare_streaming_route)
+        {
+            let _ = update_tray_icon(hwnd, summary);
+            let _ = show_hud_text(hwnd, &compose_hud_message(summary, Some(detail)), None);
+        }
+        if trigger_mode == TriggerMode::PushToTalk && source == ActivationSource::Hotkey {
+            if let Some(hotkey) = hotkey.as_ref() {
+                if select_windows_hotkey_binding_strategy(hotkey)
+                    == WindowsHotkeyBindingStrategy::RegisterHotKey
+                {
+                    spawn_preparation_release_watcher(hwnd, generation, hotkey.clone());
                 }
             }
-        } else {
-            false
+        }
+
+        let pending = PendingRecordingBegin {
+            action_index,
+            source,
+            config: config.clone(),
+            runtime_handle,
+            hotkey,
+            mode_override,
+            generation,
+            trigger_mode,
+            max_recording_seconds,
+            session_id,
+            config_path,
+            session,
+            trigger_events,
+            origin_insert_target,
+            origin_insert_target_source,
+            pending_hotkey_origin_insert_target,
+            release_time_origin_target,
+            local_asr_result: None,
+            audio_start_result: None,
         };
-        let use_streaming_speculative_asr =
-            desktop_effective_streaming_asr_enabled(speculative_local_asr_route, local_asr_ready);
+        let audio_prepare_config = pending.config.clone();
+        let audio_prepare_runtime_handle = pending.runtime_handle.clone();
+        let audio_prepare_config_path = pending.config_path.clone();
+        let audio_prepare_session_id = pending.session_id.clone();
+        let stored = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if recording_begin_completion_allowed(
+                shared.shutting_down,
+                shared.shell_state,
+                shared.next_generation,
+                generation,
+            ) {
+                shared.pending_recording_begin = Some(pending);
+                true
+            } else {
+                false
+            }
+        };
+        if !stored {
+            let _ = release_recording_begin_reservation(&state.shared, generation);
+            return Ok(());
+        }
+        if prepare_streaming_route {
+            spawn_local_asr_recording_prepare(Arc::clone(&state.shared), hwnd, generation, config);
+        } else {
+            spawn_recording_audio_prepare(
+                Arc::clone(&state.shared),
+                hwnd,
+                generation,
+                audio_prepare_config,
+                audio_prepare_runtime_handle,
+                audio_prepare_config_path,
+                audio_prepare_session_id,
+                false,
+            );
+        }
+        Ok(())
+    }
+
+    fn finish_recording_begin(
+        hwnd: HWND,
+        state: &WindowState,
+        pending: PendingRecordingBegin,
+        prepared: PreparedRecordingAudio,
+    ) -> Result<()> {
+        let PendingRecordingBegin {
+            action_index,
+            source,
+            config,
+            runtime_handle,
+            hotkey,
+            mode_override,
+            generation,
+            trigger_mode,
+            max_recording_seconds,
+            session_id: _,
+            config_path: _,
+            session,
+            trigger_events,
+            origin_insert_target,
+            origin_insert_target_source,
+            pending_hotkey_origin_insert_target,
+            release_time_origin_target,
+            local_asr_result: _,
+            audio_start_result: _,
+        } = pending;
+        let PreparedRecordingAudio {
+            source: recording_source,
+            use_streaming_speculative_asr,
+        } = prepared;
+        let preparation_is_current = state.shared.lock().ok().is_some_and(|shared| {
+            recording_begin_completion_allowed(
+                shared.shutting_down,
+                shared.shell_state,
+                shared.next_generation,
+                generation,
+            )
+        });
+        if !preparation_is_current {
+            spawn_recording_source_cancel_worker(
+                &runtime_handle,
+                recording_source,
+                "stale recording audio completion",
+            );
+            return Ok(());
+        }
+        if trigger_mode == TriggerMode::PushToTalk
+            && source == ActivationSource::Hotkey
+            && hotkey.as_ref().is_some_and(|hotkey| !hotkey.is_pressed())
+        {
+            spawn_recording_source_cancel_worker(
+                &runtime_handle,
+                recording_source,
+                "push-to-talk release during audio preparation",
+            );
+            let _ = release_recording_begin_reservation(&state.shared, generation);
+            let _ = hide_hud(hwnd);
+            let _ = refresh_idle_tray_status(hwnd);
+            return Ok(());
+        }
+
+        let speculative_local_asr_route =
+            desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(&config));
+        let configured_streaming_speculative_asr =
+            speculative_local_asr_route == DesktopSpeculativeLocalAsrRoute::StreamingService;
+        let streaming_unavailable_hint = {
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            recording_streaming_unavailable_hint(
+                configured_streaming_speculative_asr,
+                use_streaming_speculative_asr,
+                &shared.local_asr_bootstrap_status,
+            )
+            .map(str::to_string)
+        };
         if configured_streaming_speculative_asr && !use_streaming_speculative_asr {
             let _ = update_tray_icon(hwnd, "Talk: cloud ASR fallback");
             if !matches!(
-                state
-                    .shared
-                    .lock()
-                    .expect("Talk desktop shared state")
+                lock_recovering(&state.shared, "Talk desktop shared state")
                     .local_asr_bootstrap_status,
                 LocalAsrBootstrapStatus::Downloading
             ) {
@@ -3163,106 +5207,6 @@ mod windows_app {
                 );
             }
         }
-        let audio_override_raw = std::env::var(TALK_DESKTOP_AUDIO_FILE_OVERRIDE_ENV).ok();
-        let recording_source = match resolve_desktop_audio_file_override(
-            audio_override_raw.as_deref(),
-            &config_path,
-        ) {
-            Ok(Some(audio_path)) => ActiveRecordingSource::ExplicitAudioFile(audio_path),
-            Ok(None) => {
-                let recording_request = AudioCaptureRequest {
-                    backend: config.audio.backend,
-                    temp_dir: config.audio.temp_dir.clone(),
-                    session_id: session_id.clone(),
-                    input_device: config.audio.input_device.clone(),
-                    wav_settings: WavSettings {
-                        sample_rate_hz: config.audio.sample_rate_hz,
-                        channels: config.audio.channels,
-                    },
-                    max_recording_seconds: config.audio.max_recording_seconds,
-                    silent_samples: 320,
-                };
-
-                match start_recording(&recording_request) {
-                    Ok(recording) => {
-                        let streaming_session = if use_streaming_speculative_asr {
-                            match runtime_handle.block_on(LocalStreamingAsrLiveSession::start(
-                                &config,
-                                &session_id,
-                                None,
-                            )) {
-                                Ok(streaming_session) => Some(streaming_session),
-                                Err(error) => {
-                                    let _ = recording.cancel();
-                                    let _ = complete_failed_session_with_mode_override(
-                                        &config,
-                                        session,
-                                        trigger_events,
-                                        mode_override,
-                                        error,
-                                        false,
-                                        |_| {},
-                                    );
-                                    let _ = refresh_idle_tray_status(hwnd);
-                                    let _ = show_hud_text(
-                                        hwnd,
-                                        &compose_hud_message(
-                                            "Talk: failed",
-                                            Some("local streaming ASR unavailable"),
-                                        ),
-                                        Some(1800),
-                                    );
-                                    return Ok(());
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                        ActiveRecordingSource::Live {
-                            recording,
-                            streaming_session,
-                        }
-                    }
-                    Err(error) => {
-                        let _ = complete_failed_session_with_mode_override(
-                            &config,
-                            session,
-                            trigger_events,
-                            mode_override,
-                            anyhow::anyhow!(error.to_string()),
-                            false,
-                            |_| {},
-                        );
-                        let _ = refresh_idle_tray_status(hwnd);
-                        let _ = show_hud_text(
-                            hwnd,
-                            &compose_hud_message("Talk: failed", Some(&error.to_string())),
-                            Some(1800),
-                        );
-                        return Ok(());
-                    }
-                }
-            }
-            Err(error) => {
-                let _ = complete_failed_session_with_mode_override(
-                    &config,
-                    session,
-                    trigger_events,
-                    mode_override,
-                    anyhow::anyhow!(error.clone()),
-                    false,
-                    |_| {},
-                );
-                let _ = refresh_idle_tray_status(hwnd);
-                let _ = show_hud_text(
-                    hwnd,
-                    &compose_hud_message("Talk: failed", Some(&error)),
-                    Some(1800),
-                );
-                return Ok(());
-            }
-        };
-
         let correction_policy = desktop_live_correction_worker_policy();
         let (live_correction_sender, mut live_correction_receiver) =
             tokio::sync::mpsc::channel::<SpeculativeCloudCorrectionJob>(
@@ -3271,10 +5215,7 @@ mod windows_app {
         let live_correction_tracker = Arc::new(LiveCorrectionTracker::new(generation));
         let live_correction_shared = Arc::clone(&state.shared);
         let live_correction_worker_tracker = Arc::clone(&live_correction_tracker);
-        let correction_worker_gate = state
-            .shared
-            .lock()
-            .expect("Talk desktop shared state")
+        let correction_worker_gate = lock_recovering(&state.shared, "Talk desktop shared state")
             .correction_worker_gate
             .clone();
         runtime_handle.spawn(async move {
@@ -3295,10 +5236,12 @@ mod windows_app {
         });
 
         {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
-            shared.shell_state = shell_state
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            shared.shell_state = shared
+                .shell_state
                 .begin_recording()
-                .expect("idle shell state should begin recording");
+                .expect("preparing shell state should begin recording");
+            shared.pending_recording_begin = None;
             shared.current_phase = Some(RuntimePhase::Recording);
             shared.active_recording = Some(ActiveRecording {
                 action_index,
@@ -3314,28 +5257,41 @@ mod windows_app {
                 source: recording_source,
                 use_streaming_speculative_asr,
                 speculative_runtime_state: SpeculativeRuntimeState::default(),
-                speculative_segmenter_config: SegmenterConfig::default(),
+                speculative_segmenter_config: desktop_live_streaming_segmenter_config(),
                 live_streaming_inserted_anchors: HashMap::new(),
                 live_streaming_inserted_segment_ids: Vec::new(),
-                hud_streaming_segments: Vec::new(),
+                hud_streaming_segments: Arc::new(Vec::new()),
+                hud_streaming_segments_revision: 0,
                 live_streaming_correction_sender: Some(live_correction_sender),
                 live_streaming_correction_tracker: live_correction_tracker,
+                live_correction_snapshot_revision: 0,
+                live_correction_snapshot: Vec::new(),
                 last_streaming_asr_event: None,
                 last_streaming_asr_event_at: None,
+                last_streaming_idle_evaluated_ms: 0,
+                hud_waveform: [0.0; HUD_WAVEFORM_BUCKET_COUNT],
+                pending_streaming_pump_results: VecDeque::new(),
+                streaming_unavailable_hint,
             });
         }
 
         if source == ActivationSource::Hotkey {
             spawn_hotkey_origin_enrichment(
                 hwnd,
-                state.hud_hwnd,
+                state.hud_hwnd.get(),
                 generation,
                 Arc::clone(&state.shared),
             );
         }
 
-        update_tray_icon(hwnd, "Talk: listening")?;
-        show_hud_text(hwnd, hud_message_for_phase(RuntimePhase::Recording), None)?;
+        if let Err(error) = update_tray_icon(hwnd, "Talk: listening") {
+            eprintln!("Talk listening tray status update failed: {error:#}");
+        }
+        if let Err(error) =
+            show_hud_text(hwnd, hud_message_for_phase(RuntimePhase::Recording), None)
+        {
+            eprintln!("Talk listening HUD update failed: {error:#}");
+        }
 
         let stop_watcher_policy =
             recording_stop_watcher_policy(trigger_mode, max_recording_seconds);
@@ -3343,26 +5299,30 @@ mod windows_app {
             if let Some(hotkey) = hotkey {
                 match select_windows_hotkey_binding_strategy(&hotkey) {
                     WindowsHotkeyBindingStrategy::RegisterHotKey => {
-                        spawn_release_watcher(hwnd, generation, hotkey, max_recording_seconds);
+                        if let DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) =
+                            stop_watcher_policy
+                        {
+                            arm_recording_timeout_timer(hwnd, generation, seconds);
+                        }
                     }
                     WindowsHotkeyBindingStrategy::LowLevelHook => {
                         if let DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) =
                             stop_watcher_policy
                         {
-                            spawn_timeout_watcher(hwnd, generation, seconds);
+                            arm_recording_timeout_timer(hwnd, generation, seconds);
                         }
                     }
                 }
             } else if let DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) =
                 stop_watcher_policy
             {
-                spawn_timeout_watcher(hwnd, generation, seconds);
+                arm_recording_timeout_timer(hwnd, generation, seconds);
             }
         } else {
             match stop_watcher_policy {
                 DesktopRecordingStopWatcherPolicy::ManualOnly => {}
                 DesktopRecordingStopWatcherPolicy::TimeoutAfterSeconds(seconds) => {
-                    spawn_timeout_watcher(hwnd, generation, seconds);
+                    arm_recording_timeout_timer(hwnd, generation, seconds);
                 }
             }
         }
@@ -3457,10 +5417,14 @@ mod windows_app {
         };
         let inserter = ClipboardPasteInserter::with_settle_delay(
             WindowsClipboardBackend,
-            WindowsPasteShortcut,
+            configured_windows_paste_shortcut(
+                None,
+                desktop_direct_control_paste_focus_handle(current_context.as_ref()),
+            ),
             restore_policy,
             Duration::from_millis(desktop_live_clipboard_settle_delay_ms()),
-        );
+        )
+        .with_deferred_restore();
         inserter.insert_text(corrected_text)?;
         Ok(true)
     }
@@ -3578,11 +5542,16 @@ mod windows_app {
         } else {
             ClipboardRestorePolicy::LeaveInsertedText
         };
-        let inserter = ClipboardPasteInserter::new(
+        let inserter = ClipboardPasteInserter::with_settle_delay(
             WindowsClipboardBackend,
-            WindowsPasteShortcut,
+            configured_windows_paste_shortcut(
+                None,
+                desktop_direct_control_paste_focus_handle(Some(current_context)),
+            ),
             restore_policy,
-        );
+            Duration::from_millis(desktop_live_clipboard_settle_delay_ms()),
+        )
+        .with_deferred_restore();
         inserter.insert_text(corrected_text)?;
         Ok(true)
     }
@@ -3697,14 +5666,13 @@ mod windows_app {
         let corrected_context = live_tracker.as_ref().map(|tracker| {
             tracker.corrected_context_before(
                 job.segment_id.as_str(),
-                SegmenterConfig::default().correction_context_chars,
+                desktop_live_streaming_segmenter_config().correction_context_chars,
             )
         });
         if let Some(context_before) = corrected_context
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .or_else(|| job.context_before.as_deref())
-            .as_deref()
+            .or(job.context_before.as_deref())
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
@@ -3719,6 +5687,7 @@ mod windows_app {
         let RuntimeProcessedOutput {
             text: corrected_text,
             faithful_validation,
+            ..
         } = match wait_for_speculative_provider(
             live_tracker.as_deref(),
             provider_timeout,
@@ -3855,9 +5824,7 @@ mod windows_app {
                 ) {
                     mirror_live_streaming_inserted_anchor(&shared, job.generation, anchor);
                 }
-                let inserted = tracker.snapshot().iter().any(|segment| {
-                    segment.segment_id == job.segment_id && segment.insert_anchor.is_some()
-                });
+                let inserted = tracker.has_insert_anchor(&job.segment_id);
                 drop(foreground_apply_lease);
 
                 if tracker.should_show_live_feedback() {
@@ -4095,6 +6062,7 @@ mod windows_app {
         let tracker = live_tracker?;
         let text = tracker.local_fallback_text(job.segment_id.as_str())?;
         Some(RuntimeProcessedOutput {
+            provider_output_text: text.clone(),
             text,
             faithful_validation: None,
         })
@@ -4256,21 +6224,41 @@ mod windows_app {
         if active.generation != generation {
             return;
         }
-        if !active
-            .live_streaming_inserted_segment_ids
-            .iter()
-            .any(|segment_id| segment_id == &anchor.segment_id)
-        {
-            active
-                .live_streaming_inserted_segment_ids
-                .push(anchor.segment_id.clone());
+        if remove_hud_streaming_segments(
+            Arc::make_mut(&mut active.hud_streaming_segments),
+            std::slice::from_ref(&anchor.segment_id),
+        ) {
+            active.hud_streaming_segments_revision =
+                active.hud_streaming_segments_revision.wrapping_add(1);
         }
-        active
-            .hud_streaming_segments
-            .retain(|(segment_id, _)| segment_id != &anchor.segment_id);
-        active
-            .live_streaming_inserted_anchors
-            .insert(anchor.segment_id.clone(), anchor);
+        record_live_streaming_inserted_anchor(
+            &mut active.live_streaming_inserted_segment_ids,
+            &mut active.live_streaming_inserted_anchors,
+            anchor,
+        );
+    }
+
+    fn record_live_streaming_inserted_anchor(
+        inserted_segment_ids: &mut Vec<String>,
+        inserted_anchors: &mut HashMap<String, SpeculativeInsertAnchor>,
+        anchor: SpeculativeInsertAnchor,
+    ) {
+        let segment_id = anchor.segment_id.clone();
+        match inserted_anchors.entry(segment_id) {
+            Entry::Occupied(mut entry) => {
+                debug_assert!(inserted_segment_ids
+                    .iter()
+                    .any(|segment_id| segment_id == entry.key()));
+                entry.insert(anchor);
+            }
+            Entry::Vacant(entry) => {
+                debug_assert!(!inserted_segment_ids
+                    .iter()
+                    .any(|segment_id| segment_id == entry.key()));
+                inserted_segment_ids.push(entry.key().clone());
+                entry.insert(anchor);
+            }
+        }
     }
 
     fn insert_live_streaming_corrected_backlog_if_safe(
@@ -4280,7 +6268,7 @@ mod windows_app {
         origin_insert_target: Option<&DesktopInsertTargetContext>,
         tracker: &Arc<LiveCorrectionTracker>,
     ) -> Vec<SpeculativeInsertAnchor> {
-        let backlog = desktop_live_correction_ordered_backlog(&tracker.snapshot());
+        let backlog = tracker.ordered_backlog();
         let mut anchors = Vec::new();
         for item in backlog {
             let anchor = match insert_live_streaming_segment_if_safe(
@@ -4361,20 +6349,16 @@ mod windows_app {
         };
 
         let process_name = resolve_window_process_base_name(insert_target.window_handle);
-        let previous_paste_shortcut_env = desktop_preferred_paste_shortcut_for_target(
+        let preferred_mode = desktop_preferred_paste_shortcut_for_target(
             &config.desktop.paste.shortcut_overrides,
             process_name.as_deref(),
             current_context.as_ref(),
-        )
-        .map(|preferred_mode| {
-            let previous = std::env::var_os(TALK_WINDOWS_PASTE_SHORTCUT_ENV);
-            std::env::set_var(
-                TALK_WINDOWS_PASTE_SHORTCUT_ENV,
-                desktop_paste_shortcut_env_value(preferred_mode),
-            );
-            previous
-        });
+        );
+        let focus_handle = desktop_direct_control_paste_focus_handle(current_context.as_ref());
 
+        if should_prepare_paste_shortcut_modifiers(focus_handle.is_some()) {
+            let _modifier_preparation = prepare_paste_shortcut_modifier_state();
+        }
         let restore_policy = if config.output.restore_clipboard {
             ClipboardRestorePolicy::RestoreOriginal
         } else {
@@ -4382,20 +6366,12 @@ mod windows_app {
         };
         let inserter = ClipboardPasteInserter::with_settle_delay(
             WindowsClipboardBackend,
-            WindowsPasteShortcut,
+            configured_windows_paste_shortcut(preferred_mode, focus_handle),
             restore_policy,
             Duration::from_millis(desktop_live_clipboard_settle_delay_ms()),
-        );
-        let insert_result = inserter.insert_text(&text);
-
-        if let Some(previous) = previous_paste_shortcut_env {
-            match previous {
-                Some(previous) => std::env::set_var(TALK_WINDOWS_PASTE_SHORTCUT_ENV, previous),
-                None => std::env::remove_var(TALK_WINDOWS_PASTE_SHORTCUT_ENV),
-            }
-        }
-
-        insert_result?;
+        )
+        .with_deferred_restore();
+        inserter.insert_text(&text)?;
         let anchor = SpeculativeInsertAnchor::new(
             insert_target.window_handle,
             insert_target.focus_handle,
@@ -4408,7 +6384,7 @@ mod windows_app {
     }
 
     fn speculative_correction_job_for_live_segment(
-        config: &TalkConfig,
+        config: &Arc<TalkConfig>,
         pipeline_config: &DesktopSpeculativePipelineConfig,
         event: &SpeculativeRuntimeEvent,
         requested_mode: VoiceMode,
@@ -4439,7 +6415,7 @@ mod windows_app {
             DesktopSpeculativeCorrectionOutputTarget::CopyPopupOnly => return None,
         };
         Some(SpeculativeCloudCorrectionJob {
-            config: config.clone(),
+            config: Arc::clone(config),
             segment_id: model.segment_id,
             transcript: model.local_text,
             context_before: Some(model.context_before),
@@ -4460,7 +6436,7 @@ mod windows_app {
 
     #[allow(clippy::too_many_arguments)]
     fn speculative_correction_job_for_final_document(
-        config: &TalkConfig,
+        config: &Arc<TalkConfig>,
         segment_id: &str,
         transcript: String,
         requested_mode: VoiceMode,
@@ -4483,7 +6459,7 @@ mod windows_app {
         .map_err(|error| anyhow::anyhow!(error))?;
 
         Ok(SpeculativeCloudCorrectionJob {
-            config: config.clone(),
+            config: Arc::clone(config),
             segment_id: segment_id.to_string(),
             transcript,
             context_before: None,
@@ -4586,13 +6562,24 @@ mod windows_app {
         }
     }
 
+    async fn finish_recording_in_blocking_worker(
+        recording: RecordingSession,
+    ) -> Result<talk_audio::AudioArtifact> {
+        Ok(tokio::task::spawn_blocking(move || recording.finish())
+            .await
+            .map_err(|error| anyhow::anyhow!("Talk recording finalize worker failed: {error}"))??)
+    }
+
     fn request_stop_recording(hwnd: HWND, generation: u64) {
-        let state = match unsafe { get_window_state_mut(hwnd) } {
+        if cancel_pending_recording_begin(hwnd, Some(generation)).unwrap_or(false) {
+            return;
+        }
+        let state = match unsafe { get_window_state(hwnd) } {
             Ok(state) => state,
             Err(_) => return,
         };
         let (config, runtime_handle, mut active, foreground_apply_gate) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             let Some(active) = shared.active_recording.take() else {
                 return;
             };
@@ -4616,22 +6603,52 @@ mod windows_app {
                 shared.foreground_apply_gate.clone(),
             )
         };
+        cancel_recording_timeout_timer(hwnd);
         let live_correction_tracker = Arc::clone(&active.live_streaming_correction_tracker);
         let Some(config) = config else {
+            let error_message = "Talk config unavailable while stopping recording".to_string();
             live_correction_tracker.cancel();
+            active.live_streaming_correction_sender.take();
+            set_failed_last_session_if_current(&state.shared, generation, error_message.clone());
+            spawn_recording_source_cancel_worker(
+                &runtime_handle,
+                active.source,
+                "missing stop configuration",
+            );
+            let _ = show_hud_text(
+                hwnd,
+                &compose_hud_message("Talk: failed", Some(&error_message)),
+                Some(1800),
+            );
+            let _ = refresh_idle_tray_status(hwnd);
             return;
         };
 
         if let Err(error) = active.session.apply(VoiceEvent::TriggerStop) {
+            let error_message = error.to_string();
             live_correction_tracker.cancel();
-            let _ = complete_failed_session_with_mode_override(
-                &config,
-                active.session,
-                active.trigger_events,
-                active.mode_override,
-                anyhow::anyhow!(error.to_string()),
-                false,
-                |_| {},
+            active.live_streaming_correction_sender.take();
+            let ActiveRecording {
+                session,
+                trigger_events,
+                mode_override,
+                source,
+                ..
+            } = active;
+            spawn_recording_source_cancel_worker(
+                &runtime_handle,
+                source,
+                "stop transition failure",
+            );
+            set_failed_last_session_if_current(&state.shared, generation, error_message.clone());
+            spawn_failed_session_persistence_worker(
+                &runtime_handle,
+                Some(config.clone()),
+                session,
+                trigger_events,
+                mode_override,
+                anyhow::Error::new(error),
+                "stop transition failure",
             );
             let _ = mark_idle_after_terminal_state(hwnd);
             return;
@@ -4639,8 +6656,9 @@ mod windows_app {
         active.trigger_events.push("trigger_stop");
         let live_correction_sender = active.live_streaming_correction_sender.take();
         let mut speculative_runtime_state = std::mem::take(&mut active.speculative_runtime_state);
-        let speculative_segmenter_config = active.speculative_segmenter_config.clone();
-        let existing_live_streaming_anchors = active.live_streaming_inserted_anchors.clone();
+        let speculative_segmenter_config = active.speculative_segmenter_config;
+        let existing_live_streaming_anchors =
+            std::mem::take(&mut active.live_streaming_inserted_anchors);
         let mut hud_streaming_segments = std::mem::take(&mut active.hud_streaming_segments);
 
         if show_hud_text(
@@ -4663,60 +6681,32 @@ mod windows_app {
         let stopped_source = match active.source {
             ActiveRecordingSource::Live {
                 recording,
-                streaming_session,
+                streaming_pump,
             } if use_streaming_speculative_asr => StoppedRecordingSource::StreamingRecording {
                 recording,
-                streaming_session,
+                streaming_pump,
             },
             ActiveRecordingSource::Live {
                 recording,
-                streaming_session,
-            } => {
-                if let Some(streaming_session) = streaming_session {
-                    runtime_handle.spawn(async move {
-                        if let Err(cancel_error) = streaming_session.cancel().await {
-                            eprintln!(
-                                "Talk local streaming ASR cancel failed after route change: {cancel_error:#}"
-                            );
-                        }
-                    });
-                }
-                match recording.finish() {
-                    Ok(artifact) => StoppedRecordingSource::AudioFile(artifact.path),
-                    Err(error) => {
-                        live_correction_tracker.cancel();
-                        let _ = complete_failed_session_with_mode_override(
-                            &config,
-                            active.session,
-                            active.trigger_events,
-                            active.mode_override,
-                            anyhow::anyhow!(error.to_string()),
-                            false,
-                            |_| {},
-                        );
-                        let _ = show_hud_text(
-                            hwnd,
-                            &compose_hud_message("Talk: failed", Some(&error.to_string())),
-                            Some(1800),
-                        );
-                        let _ = mark_idle_after_terminal_state(hwnd);
-                        return;
-                    }
-                }
-            }
+                streaming_pump,
+            } => StoppedRecordingSource::LiveRecording {
+                recording,
+                streaming_pump,
+            },
             ActiveRecordingSource::ExplicitAudioFile(audio_path)
                 if use_streaming_speculative_asr =>
             {
                 let error = "streaming_service local ASR requires a live recording source";
                 live_correction_tracker.cancel();
-                let _ = complete_failed_session_with_mode_override(
-                    &config,
+                set_failed_last_session_if_current(&state.shared, generation, error.to_string());
+                spawn_failed_session_persistence_worker(
+                    &runtime_handle,
+                    Some(config.clone()),
                     active.session,
                     active.trigger_events,
                     active.mode_override,
                     anyhow::anyhow!(error),
-                    false,
-                    |_| {},
+                    "explicit audio streaming route rejection",
                 );
                 let _ = show_hud_text(
                     hwnd,
@@ -4746,6 +6736,36 @@ mod windows_app {
                 speculative_pipeline_config.local_asr
             );
             let worker_task = runtime_handle.spawn(async move {
+                match stopped_source {
+                    StoppedRecordingSource::LiveRecording {
+                        recording,
+                        streaming_pump,
+                    }
+                    | StoppedRecordingSource::StreamingRecording {
+                        recording,
+                        streaming_pump,
+                    } => {
+                        if let Some(streaming_pump) = streaming_pump {
+                            if let Err(cancel_error) = streaming_pump.cancel().await {
+                                eprintln!(
+                                    "Talk local streaming ASR cancel failed for unsupported route: {cancel_error:#}"
+                                );
+                            }
+                        }
+                        match tokio::task::spawn_blocking(move || recording.cancel()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(cancel_error)) => eprintln!(
+                                "Talk recording cancel failed for unsupported route: {cancel_error}"
+                            ),
+                            Err(cancel_error) => eprintln!(
+                                "Talk recording cancel worker failed for unsupported route: {cancel_error}"
+                            ),
+                        }
+                    }
+                    StoppedRecordingSource::AudioFile(_)
+                    | StoppedRecordingSource::StreamingEvents { .. }
+                    | StoppedRecordingSource::RecordingFinalizeFailed(_) => {}
+                }
                 let result = complete_failed_session_with_mode_override(
                     &config,
                     active.session,
@@ -4832,7 +6852,7 @@ mod windows_app {
         let worker_registration_shared = Arc::clone(&shared);
         let correction_runtime_handle = runtime_handle.clone();
         let hwnd_value = hwnd as usize;
-        let hud_hwnd_value = state.hud_hwnd as usize;
+        let hud_hwnd_value = state.hud_hwnd.get() as usize;
         let output_mode = config.output.mode;
         let mode_override = active.mode_override;
         let origin_insert_target = resolve_hotkey_origin_insert_target(
@@ -4858,7 +6878,7 @@ mod windows_app {
         let selected_show_result_in_gui = Arc::new(Mutex::new(false));
         let captured_insert_target_context =
             Arc::new(Mutex::new(None::<DesktopInsertTargetContext>));
-        let paste_shortcut_env_restore = Arc::new(Mutex::new(None::<Option<OsString>>));
+        let paste_override_restore = Arc::new(Mutex::new(None::<WindowsPasteOverrides>));
         let foreground_apply_lease = Arc::new(Mutex::new(None::<ForegroundApplyLease>));
         let runtime_voice_mode = mode_override.unwrap_or_else(|| config.default_voice_mode());
         let streaming_session_id = active.session.id().to_string();
@@ -4873,8 +6893,8 @@ mod windows_app {
         let captured_insert_target_context_for_before_hook =
             Arc::clone(&captured_insert_target_context);
         let captured_insert_target_context_for_report = Arc::clone(&captured_insert_target_context);
-        let paste_shortcut_env_restore_for_before_hook = Arc::clone(&paste_shortcut_env_restore);
-        let paste_shortcut_env_restore_for_after_hook = Arc::clone(&paste_shortcut_env_restore);
+        let paste_override_restore_for_before_hook = Arc::clone(&paste_override_restore);
+        let paste_override_restore_for_after_hook = Arc::clone(&paste_override_restore);
         let foreground_apply_gate_for_before_hook = foreground_apply_gate.clone();
         let foreground_apply_gate_for_stop_dispatch = foreground_apply_gate.clone();
         let foreground_apply_gate_for_stop_tail = foreground_apply_gate.clone();
@@ -4883,26 +6903,51 @@ mod windows_app {
         let shared_for_before_hook = Arc::clone(&shared);
         let worker_task = runtime_handle.spawn(async move {
             let mut final_runtime_segment_id = None::<String>;
+            let mut recording_finalize_error = None::<String>;
             let stopped_source = match stopped_source {
+                StoppedRecordingSource::LiveRecording {
+                    recording,
+                    streaming_pump,
+                } => {
+                    if let Some(streaming_pump) = streaming_pump {
+                        if let Err(cancel_error) = streaming_pump.cancel().await {
+                            eprintln!(
+                                "Talk local streaming ASR cancel failed after route change: {cancel_error:#}"
+                            );
+                        }
+                    }
+                    match finish_recording_in_blocking_worker(recording).await {
+                        Ok(artifact) => StoppedRecordingSource::AudioFile(artifact.path),
+                        Err(error) => {
+                            let error_message = error.to_string();
+                            live_correction_tracker.cancel();
+                            recording_finalize_error = Some(error_message.clone());
+                            StoppedRecordingSource::RecordingFinalizeFailed(error_message)
+                        }
+                    }
+                }
                 StoppedRecordingSource::StreamingRecording {
                     recording,
-                    streaming_session,
+                    streaming_pump,
                 } => {
-                    let events_result = if let Some(streaming_session) = streaming_session {
-                        streaming_session.stop(recording).await
+                    let events_result = if let Some(streaming_pump) = streaming_pump {
+                        streaming_pump.stop().await
                     } else {
-                        let events_result = run_local_streaming_asr_service_from_recording(
+                        run_local_streaming_asr_service_from_recording(
                             &config,
                             &streaming_session_id,
                             &recording,
                             None,
                         )
-                        .await;
-                        let cancel_result = recording.cancel();
-                        if let Err(error) = cancel_result {
-                            Err(anyhow::anyhow!(error.to_string()))
-                        } else {
-                            events_result
+                        .await
+                    };
+                    let audio_path = match finish_recording_in_blocking_worker(recording).await {
+                        Ok(artifact) => Some(artifact.path),
+                        Err(error) => {
+                            eprintln!(
+                                "Talk final streaming recording finalize failed; provider audio fallback disabled for this stop: {error}"
+                            );
+                            None
                         }
                     };
 
@@ -4930,7 +6975,7 @@ mod windows_app {
                                     text,
                                 } => {
                                     upsert_hud_streaming_segment(
-                                        &mut hud_streaming_segments,
+                                        Arc::make_mut(&mut hud_streaming_segments),
                                         segment_id,
                                         text,
                                     );
@@ -4943,7 +6988,7 @@ mod windows_app {
                                 }
                                 SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids } => {
                                     remove_hud_streaming_segments(
-                                        &mut hud_streaming_segments,
+                                        Arc::make_mut(&mut hud_streaming_segments),
                                         segment_ids,
                                     );
                                 }
@@ -4985,6 +7030,7 @@ mod windows_app {
 
                     StoppedRecordingSource::StreamingEvents {
                         events: events_result,
+                        audio_path,
                     }
                 }
                 source => source,
@@ -5082,10 +7128,38 @@ mod windows_app {
                     );
                 }
 
+                let mut restored_context = None::<DesktopInsertTargetContext>;
                 if output_mode == OutputMode::ClipboardPaste
                     && output_plan.strategy == DesktopOutputStrategy::HonorConfiguredOutput
                 {
-                    if let Some(preferred_mode) = desktop_preferred_paste_shortcut_for_target(
+                    if let Some(target) = output_plan.insert_target {
+                        if desktop_insert_target_restore_requested(target, current_context.as_ref())
+                        {
+                            let (effective_target, diagnostic) =
+                                begin_restore_foreground_insert_target(
+                                    target,
+                                    hwnd_value as HWND,
+                                    hud_hwnd_value as HWND,
+                                );
+                            if let Ok(mut slot) = restored_insert_target_for_before_hook.lock() {
+                                *slot = Some(effective_target);
+                            }
+                            if let Ok(mut slot) = restore_diagnostic_for_before_hook.lock() {
+                                *slot = Some(diagnostic);
+                            }
+                            restored_context = capture_foreground_insert_target_context(
+                                hwnd_value as HWND,
+                                hud_hwnd_value as HWND,
+                            );
+                        }
+                    }
+
+                    let matched_insert_context = desktop_target_matched_context_for_paste(
+                        output_plan.insert_target,
+                        current_context.as_ref(),
+                        restored_context.as_ref(),
+                    );
+                    let preferred_mode = desktop_preferred_paste_shortcut_for_target(
                         &paste_shortcut_overrides,
                         output_plan
                             .insert_target
@@ -5093,53 +7167,34 @@ mod windows_app {
                                 resolve_window_process_base_name(target.window_handle)
                             })
                             .as_deref(),
-                        current_context.as_ref(),
-                    ) {
-                        if let Ok(mut slot) = paste_shortcut_env_restore_for_before_hook.lock() {
+                        matched_insert_context,
+                    );
+                    let focus_handle =
+                        desktop_direct_control_paste_focus_handle(matched_insert_context);
+                    let overrides =
+                        windows_paste_overrides_for_target(preferred_mode, focus_handle);
+                    if overrides != WindowsPasteOverrides::default() {
+                        if let Ok(mut slot) = paste_override_restore_for_before_hook.lock() {
                             if slot.is_none() {
-                                *slot = Some(std::env::var_os(TALK_WINDOWS_PASTE_SHORTCUT_ENV));
+                                *slot = Some(set_windows_paste_thread_overrides(overrides));
+                            } else {
+                                let _ = set_windows_paste_thread_overrides(overrides);
                             }
+                        } else {
+                            let _ = set_windows_paste_thread_overrides(overrides);
                         }
-                        std::env::set_var(
-                            TALK_WINDOWS_PASTE_SHORTCUT_ENV,
-                            desktop_paste_shortcut_env_value(preferred_mode),
-                        );
                     }
-                }
 
-                if let Some(target) = output_plan.insert_target {
-                    if desktop_insert_target_restore_requested(target, current_context.as_ref()) {
-                        let (effective_target, diagnostic) = begin_restore_foreground_insert_target(
-                            target,
-                            hwnd_value as HWND,
-                            hud_hwnd_value as HWND,
-                        );
-                        if let Ok(mut slot) = restored_insert_target_for_before_hook.lock() {
-                            *slot = Some(effective_target);
-                        }
-                        if let Ok(mut slot) = restore_diagnostic_for_before_hook.lock() {
-                            *slot = Some(diagnostic);
-                        }
+                    if should_prepare_paste_shortcut_modifiers(focus_handle.is_some()) {
+                        let _modifier_preparation = prepare_paste_shortcut_modifier_state();
                     }
-                }
-                if output_mode == OutputMode::ClipboardPaste
-                    && output_plan.strategy == DesktopOutputStrategy::HonorConfiguredOutput
-                {
-                    let _ = wait_for_paste_shortcut_modifier_release();
                 }
                 RuntimeInsertDirective::UseConfiguredOutput
             };
             let after_insert = move || {
-                if let Ok(mut slot) = paste_shortcut_env_restore_for_after_hook.lock() {
+                if let Ok(mut slot) = paste_override_restore_for_after_hook.lock() {
                     if let Some(previous) = slot.take() {
-                        match previous {
-                            Some(previous) => {
-                                std::env::set_var(TALK_WINDOWS_PASTE_SHORTCUT_ENV, previous);
-                            }
-                            None => {
-                                std::env::remove_var(TALK_WINDOWS_PASTE_SHORTCUT_ENV);
-                            }
-                        }
+                        let _ = set_windows_paste_thread_overrides(previous);
                     }
                 }
 
@@ -5148,7 +7203,13 @@ mod windows_app {
                     .ok()
                     .and_then(|slot| *slot);
                 if let Some(target) = effective_target {
-                    let post_insert_hold = end_restore_foreground_insert_target(target);
+                    let restore_applied = restore_diagnostic_for_after_hook
+                        .lock()
+                        .ok()
+                        .and_then(|slot| slot.as_ref().map(|diagnostic| diagnostic.restore_applied))
+                        .unwrap_or(true);
+                    let post_insert_hold =
+                        end_restore_foreground_insert_target(target, restore_applied);
                     if let Ok(mut slot) = restore_diagnostic_for_after_hook.lock() {
                         if let Some(diagnostic) = slot.as_mut() {
                             diagnostic.post_insert_release_reason =
@@ -5207,7 +7268,7 @@ mod windows_app {
                 (
                     None,
                     true,
-                    StoppedRecordingSource::StreamingEvents { events },
+                    StoppedRecordingSource::StreamingEvents { events, audio_path },
                 ) => {
                     match events {
                         Ok(events) => {
@@ -5244,35 +7305,9 @@ mod windows_app {
                                 if session_transcript.trim().is_empty() {
                                     session_transcript = transcript.clone();
                                 }
-                                if streaming_stop_policy.insert_final_transcript
-                                    && provider_text_processing_credentials_available(&config)
-                                {
-                                    run_voice_session_from_transcript_with_route_evidence_and_insert_hooks(
-                                        &config,
-                                        session,
-                                        trigger_events,
-                                        session_transcript,
-                                        mode_override,
-                                        route_evidence,
-                                        FrontContext::default(),
-                                        before_insert,
-                                        after_insert,
-                                        phase_callback,
-                                    )
-                                    .await
-                                } else if streaming_stop_policy.insert_final_transcript {
-                                    run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks(
-                                        &config,
-                                        session,
-                                        trigger_events,
-                                        session_transcript,
-                                        mode_override,
-                                        route_evidence,
-                                        before_insert,
-                                        after_insert,
-                                        phase_callback,
-                                    )
-                                } else {
+                                let provider_text_processing_available =
+                                    provider_text_processing_credentials_available(&config);
+                                if !streaming_stop_policy.insert_final_transcript {
                                     let reconciliation_plan =
                                         desktop_streaming_stop_reconciliation_plan(
                                             &tracker_snapshot,
@@ -5441,6 +7476,45 @@ mod windows_app {
                                         }
                                         DesktopStreamingStopReconciliationPlan::NoAction => {}
                                     }
+                                }
+
+                                if provider_text_processing_available {
+                                    let mock_text = if config.provider.kind == ProviderKind::Mock {
+                                        Some(session_transcript.clone())
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(audio_path) = audio_path.clone() {
+                                        run_voice_session_from_audio_artifact_with_route_evidence_and_insert_hooks(
+                                            &config,
+                                            session,
+                                            trigger_events,
+                                            audio_path,
+                                            mock_text,
+                                            mode_override,
+                                            route_evidence,
+                                            FrontContext::default(),
+                                            before_insert,
+                                            after_insert,
+                                            phase_callback,
+                                        )
+                                        .await
+                                    } else {
+                                        run_voice_session_from_transcript_with_route_evidence_and_insert_hooks(
+                                            &config,
+                                            session,
+                                            trigger_events,
+                                            session_transcript,
+                                            mode_override,
+                                            route_evidence,
+                                            FrontContext::default(),
+                                            before_insert,
+                                            after_insert,
+                                            phase_callback,
+                                        )
+                                        .await
+                                    }
+                                } else {
                                     run_voice_session_from_local_transcript_with_route_evidence_and_insert_hooks(
                                         &config,
                                         session,
@@ -5496,13 +7570,17 @@ mod windows_app {
                 (
                     _,
                     _,
-                    StoppedRecordingSource::StreamingRecording {
+                    StoppedRecordingSource::LiveRecording {
                         recording,
-                        streaming_session,
+                        streaming_pump,
+                    }
+                    | StoppedRecordingSource::StreamingRecording {
+                        recording,
+                        streaming_pump,
                     },
                 ) => {
-                    if let Some(streaming_session) = streaming_session {
-                        let _ = streaming_session.cancel().await;
+                    if let Some(streaming_pump) = streaming_pump {
+                        let _ = streaming_pump.cancel().await;
                     }
                     let _ = recording.cancel();
                     complete_failed_session_with_mode_override(
@@ -5513,6 +7591,17 @@ mod windows_app {
                         anyhow::anyhow!(
                             "streaming recording source was selected for a non-streaming ASR route"
                         ),
+                        false,
+                        phase_callback,
+                    )
+                }
+                (_, _, StoppedRecordingSource::RecordingFinalizeFailed(error)) => {
+                    complete_failed_session_with_mode_override(
+                        &config,
+                        session,
+                        trigger_events,
+                        mode_override,
+                        anyhow::anyhow!(error),
                         false,
                         phase_callback,
                     )
@@ -5678,6 +7767,9 @@ mod windows_app {
                         set_last_session(&mut shared, "failed", Some(error.to_string()));
                     }
                 }
+                if let Some(error_message) = recording_finalize_error.as_ref() {
+                    shared.pending_worker_error = Some((generation, error_message.clone()));
+                }
             }
 
             if let Some(job) = correction_job {
@@ -5701,12 +7793,12 @@ mod windows_app {
     }
 
     fn apply_runtime_phase(hwnd: HWND, phase: RuntimePhase, generation: u64) {
-        let state = match unsafe { get_window_state_mut(hwnd) } {
+        let state = match unsafe { get_window_state(hwnd) } {
             Ok(state) => state,
             Err(_) => return,
         };
         let active_generation = {
-            let shared = state.shared.lock().expect("Talk desktop shared state");
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
             shared.worker_generation
         };
         if active_generation != Some(generation) {
@@ -5730,11 +7822,11 @@ mod windows_app {
 
     fn handle_worker_done(hwnd: HWND, generation: u64) {
         let (unexpected_error, pending_copy_popup, pending_corrected_hud) = {
-            let state = match unsafe { get_window_state_mut(hwnd) } {
+            let state = match unsafe { get_window_state(hwnd) } {
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             if shared.worker_generation != Some(generation) {
                 return;
             }
@@ -5800,11 +7892,11 @@ mod windows_app {
 
     fn handle_corrected_hud(hwnd: HWND, generation: u64) {
         let corrected_text = {
-            let state = match unsafe { get_window_state_mut(hwnd) } {
+            let state = match unsafe { get_window_state(hwnd) } {
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let shared = state.shared.lock().expect("Talk desktop shared state");
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
             shared
                 .pending_corrected_hud
                 .as_ref()
@@ -5821,116 +7913,203 @@ mod windows_app {
         }
     }
 
-    fn drain_active_live_correction_backlog(hwnd: HWND, generation: u64) {
-        let state = match unsafe { get_window_state_mut(hwnd) } {
+    fn drain_active_live_correction_backlog(
+        hwnd: HWND,
+        generation: u64,
+    ) -> Option<DesktopStreamingHudTranscriptParts> {
+        let state = match unsafe { get_window_state(hwnd) } {
             Ok(state) => state,
-            Err(_) => return,
+            Err(_) => return None,
         };
-        let (config, origin_insert_target, tracker, requested_mode, smart_routed_mode, gate) = {
+        let (
+            tracker,
+            hud_streaming_segments,
+            hud_streaming_segments_revision,
+            latest_asr_text,
+            fallback_text,
+            route_was_requested,
+            gate,
+        ) = {
+            let shared = match state.shared.lock() {
+                Ok(shared) => shared,
+                Err(_) => return None,
+            };
+            let default_voice_mode = shared
+                .config
+                .as_ref()
+                .map(|config| config.default_voice_mode())?;
+            let gate = shared.foreground_apply_gate.clone();
+            let active = shared
+                .active_recording
+                .as_ref()
+                .filter(|active| active.generation == generation)?;
+            let requested_mode = active.mode_override.unwrap_or(default_voice_mode);
+            (
+                Arc::clone(&active.live_streaming_correction_tracker),
+                Arc::clone(&active.hud_streaming_segments),
+                active.hud_streaming_segments_revision,
+                active
+                    .last_streaming_asr_event
+                    .as_ref()
+                    .map(StreamingAsrEvent::text)
+                    .map(str::to_string),
+                active.streaming_unavailable_hint.clone(),
+                requested_mode == VoiceMode::Smart && active.live_smart_routed_mode.is_none(),
+                gate,
+            )
+        };
+        let pending_transcript =
+            tracker
+                .snapshot_with_revision()
+                .map(|(tracker_revision, tracker_snapshot)| {
+                    let transcript_summary = desktop_streaming_hud_transcript_summary_owned(
+                        &tracker_snapshot,
+                        hud_streaming_segments.as_slice(),
+                    );
+                    let routed_mode = if !route_was_requested
+                        || transcript_summary.parts.corrected_prefix.trim().is_empty()
+                    {
+                        None
+                    } else {
+                        let transcript =
+                            desktop_streaming_hud_transcript_parts_text(&transcript_summary.parts);
+                        live_smart_route_for_corrected_transcript(
+                            VoiceMode::Smart,
+                            None,
+                            transcript.as_ref(),
+                            transcript_summary.effective_segment_count,
+                        )
+                    };
+                    let transcript_summary =
+                        desktop_streaming_hud_transcript_summary_apply_fallback_text(
+                            transcript_summary,
+                            latest_asr_text.as_deref(),
+                            fallback_text.as_deref(),
+                        );
+                    PendingLiveCorrectionTranscript {
+                        tracker_revision,
+                        tracker_snapshot,
+                        hud_streaming_segments_revision,
+                        latest_asr_text,
+                        fallback_text,
+                        transcript_parts: transcript_summary.parts,
+                        route_was_requested,
+                        routed_mode,
+                    }
+                });
+
+        let (config, origin_insert_target, requested_mode, smart_routed_mode, transcript_parts) = {
             let mut shared = match state.shared.lock() {
                 Ok(shared) => shared,
-                Err(_) => return,
+                Err(_) => return None,
             };
-            let Some(config) = shared.config.clone() else {
-                return;
-            };
-            let gate = shared.foreground_apply_gate.clone();
-            let Some(active) = shared
+            let config = shared.config.clone()?;
+            let active = shared
                 .active_recording
                 .as_mut()
-                .filter(|active| active.generation == generation)
-            else {
-                return;
-            };
+                .filter(|active| active.generation == generation)?;
+            if !Arc::ptr_eq(&active.live_streaming_correction_tracker, &tracker) {
+                return None;
+            }
             let requested_mode = active
                 .mode_override
                 .unwrap_or_else(|| config.default_voice_mode());
-            if requested_mode == VoiceMode::Smart && active.live_smart_routed_mode.is_none() {
-                let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
-                let pending_segments = active
-                    .hud_streaming_segments
-                    .iter()
-                    .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
-                    .collect::<Vec<_>>();
-                let transcript_parts =
-                    desktop_streaming_hud_transcript_parts(&tracker_snapshot, &pending_segments);
-                if !transcript_parts.corrected_prefix.trim().is_empty() {
-                    let transcript = format!(
-                        "{}{}",
-                        transcript_parts.corrected_prefix, transcript_parts.pre_recognized_tail
-                    );
-                    active.live_smart_routed_mode = live_smart_route_for_corrected_transcript(
-                        requested_mode,
-                        active.live_smart_routed_mode,
-                        &transcript,
-                        desktop_streaming_effective_segment_count(
-                            &tracker_snapshot,
-                            &pending_segments,
-                        ),
-                    );
+            let mut transcript_parts = None;
+            if let Some(candidate) = pending_transcript {
+                let candidate_is_current = active.hud_streaming_segments_revision
+                    == candidate.hud_streaming_segments_revision
+                    && active
+                        .last_streaming_asr_event
+                        .as_ref()
+                        .map(StreamingAsrEvent::text)
+                        == candidate.latest_asr_text.as_deref()
+                    && active.streaming_unavailable_hint.as_deref()
+                        == candidate.fallback_text.as_deref()
+                    && tracker.current_revision() == Some(candidate.tracker_revision);
+                if candidate_is_current {
+                    active.live_correction_snapshot_revision = candidate.tracker_revision;
+                    active.live_correction_snapshot = candidate.tracker_snapshot;
+                    if candidate.route_was_requested {
+                        active.live_smart_routed_mode = commit_live_smart_route_candidate(
+                            requested_mode,
+                            active.live_smart_routed_mode,
+                            true,
+                            candidate.routed_mode,
+                        );
+                    }
+                    transcript_parts = Some(candidate.transcript_parts);
                 }
             }
             (
                 config,
                 active.origin_insert_target.clone(),
-                Arc::clone(&active.live_streaming_correction_tracker),
                 requested_mode,
                 active.live_smart_routed_mode,
-                gate,
+                transcript_parts,
             )
         };
         if !desktop_live_correction_target_apply_allowed(requested_mode, smart_routed_mode) {
-            return;
+            return transcript_parts;
         }
 
         let _foreground_apply_lease = gate.acquire();
         if !correction_foreground_side_effects_allowed_for_shared(&state.shared, generation) {
-            return;
+            return None;
         }
         let anchors = insert_live_streaming_corrected_backlog_if_safe(
             &config,
             hwnd,
-            state.hud_hwnd,
+            state.hud_hwnd.get(),
             origin_insert_target.as_ref(),
             &tracker,
         );
         for anchor in anchors {
             mirror_live_streaming_inserted_anchor(&state.shared, generation, anchor);
         }
+        transcript_parts
     }
 
     fn handle_streaming_corrected_hud(hwnd: HWND, generation: u64) {
-        drain_active_live_correction_backlog(hwnd, generation);
-        let state = match unsafe { get_window_state_mut(hwnd) } {
+        let Some(transcript_parts) = drain_active_live_correction_backlog(hwnd, generation) else {
+            return;
+        };
+        let state = match unsafe { get_window_state(hwnd) } {
             Ok(state) => state,
             Err(_) => return,
         };
-        let transcript_parts = state.shared.lock().ok().and_then(|shared| {
+        let generation_is_current = state.shared.lock().ok().is_some_and(|shared| {
             shared
                 .active_recording
                 .as_ref()
-                .filter(|active| active.generation == generation)
-                .map(active_recording_hud_transcript_parts)
+                .is_some_and(|active| active.generation == generation)
         });
-        let Some(transcript_parts) = transcript_parts else {
+        if !generation_is_current {
             return;
-        };
+        }
 
         let updated_model = overlay_ui_state().lock().ok().and_then(|mut overlay| {
             let corrected_prefix = (!transcript_parts.corrected_prefix.trim().is_empty())
-                .then(|| transcript_parts.corrected_prefix.clone());
+                .then_some(transcript_parts.corrected_prefix.as_str());
             let partial_tail = (!transcript_parts.pre_recognized_tail.trim().is_empty())
-                .then(|| transcript_parts.pre_recognized_tail.clone());
-            let transcript_changed = overlay.hud_streaming_corrected_prefix != corrected_prefix
-                || overlay.hud_streaming_partial_tail != partial_tail;
-            overlay.hud_streaming_corrected_prefix = corrected_prefix;
-            overlay.hud_streaming_partial_tail = partial_tail;
-            if transcript_changed && !overlay.hud_streaming_scroll_user_scrolled {
+                .then_some(transcript_parts.pre_recognized_tail.as_str());
+            let transcript_changed = overlay.hud_streaming_corrected_prefix.as_deref()
+                != corrected_prefix
+                || overlay.hud_streaming_partial_tail.as_deref() != partial_tail;
+            if !transcript_changed {
+                return None;
+            }
+            overlay.hud_streaming_corrected_prefix = corrected_prefix.map(str::to_string);
+            overlay.hud_streaming_partial_tail = partial_tail.map(str::to_string);
+            if !overlay.hud_streaming_scroll_user_scrolled {
                 overlay.hud_streaming_scroll_line_offset = usize::MAX;
             }
 
+            let presented_parts = listening_hud_presented_transcript_parts(
+                &transcript_parts,
+                overlay.hud_streaming_scroll_user_scrolled,
+            );
             let (display_text, lifecycle) =
-                listening_hud_transcript_text_and_lifecycle(&transcript_parts);
+                listening_hud_transcript_text_and_lifecycle(&presented_parts);
             let meter_bins = overlay.hud_meter_bins;
             let hud_model = overlay.hud_model.as_mut()?;
             if hud_model.visual_state != DesktopHudVisualState::Listening {
@@ -5951,11 +8130,11 @@ mod windows_app {
 
     fn handle_correction_copy_popup(hwnd: HWND, generation: u64) {
         let pending_copy_popup = {
-            let state = match unsafe { get_window_state_mut(hwnd) } {
+            let state = match unsafe { get_window_state(hwnd) } {
                 Ok(state) => state,
                 Err(_) => return,
             };
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             match shared.pending_copy_popup.take() {
                 Some(popup)
                     if popup.generation == generation
@@ -5981,8 +8160,8 @@ mod windows_app {
     }
 
     fn mark_idle_after_terminal_state(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let mut shared = state.shared.lock().expect("Talk desktop shared state");
+        let state = unsafe { get_window_state(hwnd)? };
+        let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
         shared.shell_state = shared.shell_state.complete();
         shared.current_phase = None;
         shared.worker_generation = None;
@@ -5997,7 +8176,7 @@ mod windows_app {
 
         match command {
             MENU_START => {
-                if let Ok(state) = unsafe { get_window_state_mut(hwnd) } {
+                if let Ok(state) = unsafe { get_window_state(hwnd) } {
                     if let Err(error) = begin_recording(hwnd, state, ActivationSource::Tray, 0) {
                         let _ = show_hud_text(
                             hwnd,
@@ -6008,16 +8187,20 @@ mod windows_app {
                 }
             }
             MENU_STOP => {
-                let generation = unsafe { get_window_state_mut(hwnd) }
-                    .ok()
-                    .and_then(|state| {
-                        state.shared.lock().ok().and_then(|shared| {
-                            shared
-                                .active_recording
-                                .as_ref()
-                                .map(|active| active.generation)
-                        })
-                    });
+                let generation = unsafe { get_window_state(hwnd) }.ok().and_then(|state| {
+                    state.shared.lock().ok().and_then(|shared| {
+                        shared
+                            .active_recording
+                            .as_ref()
+                            .map(|active| active.generation)
+                            .or_else(|| {
+                                shared
+                                    .pending_recording_begin
+                                    .as_ref()
+                                    .map(|pending| pending.generation)
+                            })
+                    })
+                });
                 if let Some(generation) = generation {
                     request_stop_recording(hwnd, generation);
                 }
@@ -6035,7 +8218,13 @@ mod windows_app {
                 let _ = open_config_file(hwnd);
             }
             MENU_RELOAD_CONFIG => {
-                let _ = reload_config(hwnd);
+                if let Err(error) = reload_config(hwnd) {
+                    let _ = show_hud_text(
+                        hwnd,
+                        &compose_hud_message("Talk: unavailable", Some(&error.to_string())),
+                        Some(1800),
+                    );
+                }
             }
             MENU_EXIT => unsafe {
                 DestroyWindow(hwnd);
@@ -6068,9 +8257,9 @@ mod windows_app {
     }
 
     fn select_voice_mode_from_menu(hwnd: HWND, mode: VoiceMode) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
+        let state = unsafe { get_window_state(hwnd)? };
         let label = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
             if !shared.shell_state.can_start_session() {
                 anyhow::bail!("Talk mode can only be changed while idle");
             }
@@ -6087,42 +8276,58 @@ mod windows_app {
     }
 
     fn open_logs_folder(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let shared = state.shared.lock().expect("Talk desktop shared state");
-        let logs_dir = shared
-            .config
-            .as_ref()
-            .map(|config| resolve_logs_dir(&shared.config_path, &config.logging.dir))
-            .unwrap_or_else(|| {
-                shared
-                    .config_path
-                    .parent()
-                    .unwrap_or_else(|| Path::new("."))
-                    .join(".runtime")
-                    .join("talk")
-                    .join("logs")
-            });
-        std::process::Command::new("explorer")
-            .arg(&logs_dir)
-            .spawn()
-            .with_context(|| format!("open Talk logs folder {}", logs_dir.display()))?;
-        Ok(())
+        let state = unsafe { get_window_state(hwnd)? };
+        let logs_dir = {
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            shared
+                .config
+                .as_ref()
+                .map(|config| resolve_logs_dir(&shared.config_path, &config.logging.dir))
+                .unwrap_or_else(|| {
+                    shared
+                        .config_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(".runtime")
+                        .join("talk")
+                        .join("logs")
+                })
+        };
+        spawn_external_open("explorer", logs_dir, "Talk logs folder")
     }
 
     fn open_config_file(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let shared = state.shared.lock().expect("Talk desktop shared state");
-        std::process::Command::new("notepad.exe")
-            .arg(&shared.config_path)
-            .spawn()
-            .with_context(|| format!("open Talk config {}", shared.config_path.display()))?;
+        let state = unsafe { get_window_state(hwnd)? };
+        let config_path = {
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            shared.config_path.clone()
+        };
+        spawn_external_open("notepad.exe", config_path, "Talk config")
+    }
+
+    fn spawn_external_open(
+        program: &'static str,
+        target: PathBuf,
+        description: &'static str,
+    ) -> Result<()> {
+        thread::Builder::new()
+            .name("talk-shell-open".to_string())
+            .spawn(move || {
+                if let Err(error) = std::process::Command::new(program).arg(&target).spawn() {
+                    eprintln!("open {description} {} failed: {error}", target.display());
+                }
+            })
+            .with_context(|| format!("schedule opening {description}"))?;
         Ok(())
     }
 
     fn show_status_dialog(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let shared = state.shared.lock().expect("Talk desktop shared state");
-        let report = build_status_report(&status_snapshot(&shared));
+        let state = unsafe { get_window_state(hwnd)? };
+        let snapshot = {
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            status_snapshot(&shared)
+        };
+        let report = build_status_report(&snapshot);
         unsafe {
             MessageBoxW(
                 hwnd,
@@ -6134,50 +8339,220 @@ mod windows_app {
         Ok(())
     }
 
-    fn reload_config(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let (config_path, runtime_handle) = {
-            let shared = state.shared.lock().expect("Talk desktop shared state");
-            (shared.config_path.clone(), shared.runtime_handle.clone())
+    fn config_reload_completion_allowed(
+        shutting_down: bool,
+        current_generation: u64,
+        generation: u64,
+    ) -> bool {
+        !shutting_down && current_generation == generation
+    }
+
+    fn prepare_config_reload(
+        runtime_handle: &tokio::runtime::Handle,
+        config_path: &Path,
+    ) -> std::result::Result<PreparedConfigReload, String> {
+        let config = runtime_handle
+            .block_on(load_effective_config(config_path))
+            .with_context(|| format!("reload Talk config {}", config_path.display()))
+            .map_err(|error| format!("{error:#}"))?;
+        let selected_voice_mode = config.default_voice_mode();
+        let shortcut_label = desktop_shortcut_label_from_config(&config);
+        let hotkey_binding = initial_hotkey_binding(&config);
+        let native_readiness = configured_native_readiness(&config);
+        let uses_streaming_service =
+            desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(&config))
+                == DesktopSpeculativeLocalAsrRoute::StreamingService;
+
+        Ok(PreparedConfigReload {
+            config,
+            selected_voice_mode,
+            shortcut_label,
+            hotkey_binding,
+            native_readiness,
+            uses_streaming_service,
+        })
+    }
+
+    fn release_config_reload_reservation(
+        shared: &Arc<Mutex<SharedState>>,
+        generation: u64,
+    ) -> bool {
+        let Ok(mut shared) = shared.lock() else {
+            return false;
+        };
+        if !config_reload_completion_allowed(
+            shared.shutting_down,
+            shared.config_reload_generation,
+            generation,
+        ) || shared
+            .pending_config_reload
+            .as_ref()
+            .is_none_or(|pending| pending.generation != generation)
+        {
+            return false;
+        }
+        shared.pending_config_reload = None;
+        true
+    }
+
+    fn spawn_config_reload_prepare(
+        shared: Arc<Mutex<SharedState>>,
+        hwnd: HWND,
+        generation: u64,
+        config_path: PathBuf,
+        runtime_handle: tokio::runtime::Handle,
+    ) {
+        let hwnd_value = hwnd as usize;
+        thread::spawn(move || {
+            let mut result = Some(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    prepare_config_reload(&runtime_handle, &config_path)
+                }))
+                .unwrap_or_else(|_| Err("Talk config reload preparation panicked".to_string())),
+            );
+            let should_post = shared.lock().ok().is_some_and(|mut shared| {
+                if !config_reload_completion_allowed(
+                    shared.shutting_down,
+                    shared.config_reload_generation,
+                    generation,
+                ) {
+                    return false;
+                }
+                let Some(pending) = shared.pending_config_reload.as_mut() else {
+                    return false;
+                };
+                if pending.generation != generation || pending.result.is_some() {
+                    return false;
+                }
+                pending.result = result.take();
+                true
+            });
+            if !should_post {
+                return;
+            }
+            let posted = unsafe {
+                PostMessageW(
+                    hwnd_value as HWND,
+                    CONFIG_RELOAD_DONE_MESSAGE,
+                    generation as usize,
+                    0,
+                )
+            };
+            if posted == 0 {
+                let _ = release_config_reload_reservation(&shared, generation);
+            }
+        });
+    }
+
+    fn spawn_config_reload_daemon_reconcile(
+        shared: Arc<Mutex<SharedState>>,
+        daemon_to_stop: Option<ManagedLocalAsrDaemon>,
+        should_prewarm: bool,
+    ) {
+        if daemon_to_stop.is_none() && !should_prewarm {
+            return;
+        }
+        thread::spawn(move || {
+            if let Some(daemon) = daemon_to_stop {
+                stop_managed_local_asr_daemon(daemon);
+            }
+            if should_prewarm {
+                if let Err(error) = run_product_local_asr_daemon_prewarm(&shared) {
+                    eprintln!("Talk product local ASR prewarm failed after reload: {error:#}");
+                }
+            }
+        });
+    }
+
+    fn handle_config_reload_done(hwnd: HWND, generation: u64) {
+        let state = match unsafe { get_window_state(hwnd) } {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let result = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if !config_reload_completion_allowed(
+                shared.shutting_down,
+                shared.config_reload_generation,
+                generation,
+            ) {
+                return;
+            }
+            let Some(pending) = shared.pending_config_reload.as_ref() else {
+                return;
+            };
+            if pending.generation != generation || pending.result.is_none() {
+                return;
+            }
+            let mut pending = shared
+                .pending_config_reload
+                .take()
+                .expect("validated pending config reload");
+            pending
+                .result
+                .take()
+                .expect("validated config reload result")
         };
 
-        let (status_text, tray_status) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
-            match runtime_handle
-                .block_on(load_effective_config(&config_path))
-                .with_context(|| format!("reload Talk config {}", config_path.display()))
-            {
-                Ok(config) => {
-                    let selected_voice_mode = config.default_voice_mode();
-                    shared.config = Some(config.clone());
+        let (
+            status_text,
+            tray_status,
+            daemon_to_stop,
+            should_prewarm,
+            should_start_product_bootstrap,
+            model_task_to_abort,
+        ) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            let mut daemon_to_stop = None;
+            let mut should_prewarm = false;
+            let mut should_start_product_bootstrap = false;
+            let mut model_task_to_abort = None;
+            match result {
+                Ok(PreparedConfigReload {
+                    config,
+                    selected_voice_mode,
+                    shortcut_label,
+                    hotkey_binding,
+                    native_readiness,
+                    uses_streaming_service,
+                }) => {
+                    let daemon_config_changed = shared
+                        .config
+                        .as_ref()
+                        .is_none_or(|current| !local_asr_daemon_config_matches(current, &config));
+                    if daemon_config_changed || !uses_streaming_service {
+                        advance_local_asr_daemon_epoch(&mut shared);
+                        daemon_to_stop = shared.local_asr_daemon.take();
+                    }
+                    should_prewarm = uses_streaming_service;
+                    should_start_product_bootstrap = uses_streaming_service;
+                    if !uses_streaming_service {
+                        shared.product_bootstrap_generation =
+                            shared.product_bootstrap_generation.saturating_add(1);
+                        shared.pending_product_bootstrap_prepare_generation = None;
+                        model_task_to_abort = shared.pending_model_bootstrap_task.take();
+                        shared.local_asr_bootstrap_status = LocalAsrBootstrapStatus::NotStarted;
+                    }
+                    shared.config = Some(Arc::new(config));
                     shared.config_status = ConfigAvailability::ready();
                     shared.selected_voice_mode = selected_voice_mode;
-                    match initial_hotkey_binding(&config) {
+                    match hotkey_binding {
                         Ok((desktop_actions, hotkey)) => {
                             shared.desktop_actions = desktop_actions;
                             shared.hotkey = hotkey;
                         }
                         Err(error) => {
                             shared.desktop_actions = Vec::new();
-                            shared.hotkey = HotkeyBindingState::invalid_config(
-                                desktop_shortcut_label_from_config(&config),
-                                error,
-                            );
+                            shared.hotkey =
+                                HotkeyBindingState::invalid_config(shortcut_label, error);
                         }
                     }
-                    shared.native_readiness = Some(configured_native_readiness(&config));
-                    if desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
-                        &config,
-                    )) != DesktopSpeculativeLocalAsrRoute::StreamingService
-                    {
-                        if let Some(daemon) = shared.local_asr_daemon.take() {
-                            stop_managed_local_asr_daemon(daemon);
-                        }
-                    }
+                    shared.native_readiness = Some(native_readiness);
                 }
                 Err(error) => {
+                    eprintln!("Talk config reload failed: {error}");
                     if shared.config.is_none() {
-                        shared.config_status = ConfigAvailability::unavailable(error.to_string());
+                        shared.config_status = ConfigAvailability::unavailable(error);
                         shared.hotkey = HotkeyBindingState::Unconfigured;
                         shared.desktop_actions = Vec::new();
                         shared.native_readiness = None;
@@ -6189,11 +8564,62 @@ mod windows_app {
             (
                 compose_hud_message(summary, current_idle_detail(&shared).as_deref()),
                 summary.to_string(),
+                daemon_to_stop,
+                should_prewarm,
+                should_start_product_bootstrap,
+                model_task_to_abort,
             )
         };
 
-        update_tray_icon(hwnd, &tray_status)?;
-        show_hud_text(hwnd, &status_text, Some(1800))?;
+        if let Some(task) = model_task_to_abort {
+            task.abort();
+        }
+        spawn_config_reload_daemon_reconcile(
+            Arc::clone(&state.shared),
+            daemon_to_stop,
+            should_prewarm,
+        );
+        if should_start_product_bootstrap {
+            start_product_bootstrap(hwnd, Arc::clone(&state.shared));
+        }
+        if let Err(error) = update_tray_icon(hwnd, &tray_status) {
+            eprintln!("Talk config reload tray status update failed: {error:#}");
+        }
+        if let Err(error) = show_hud_text(hwnd, &status_text, Some(1800)) {
+            eprintln!("Talk config reload HUD update failed: {error:#}");
+        }
+    }
+
+    fn reload_config(hwnd: HWND) -> Result<()> {
+        let _ = cancel_pending_recording_begin(hwnd, None);
+        let state = unsafe { get_window_state(hwnd)? };
+        let (generation, config_path, runtime_handle) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if shared.shutting_down {
+                anyhow::bail!("Talk desktop is shutting down");
+            }
+            if !shared.shell_state.can_start_session() || shared.active_recording.is_some() {
+                anyhow::bail!("Talk config can only be reloaded while idle");
+            }
+            shared.config_reload_generation = shared.config_reload_generation.saturating_add(1);
+            let generation = shared.config_reload_generation;
+            shared.pending_config_reload = Some(PendingConfigReload {
+                generation,
+                result: None,
+            });
+            (
+                generation,
+                shared.config_path.clone(),
+                shared.runtime_handle.clone(),
+            )
+        };
+        spawn_config_reload_prepare(
+            Arc::clone(&state.shared),
+            hwnd,
+            generation,
+            config_path,
+            runtime_handle,
+        );
         Ok(())
     }
 
@@ -6209,9 +8635,9 @@ mod windows_app {
     }
 
     fn show_tray_menu(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
+        let state = unsafe { get_window_state(hwnd)? };
         let (shell_state, config_status, hotkey_state, native_readiness, selected_voice_mode) = {
-            let shared = state.shared.lock().expect("Talk desktop shared state");
+            let shared = lock_recovering(&state.shared, "Talk desktop shared state");
             (
                 shared.shell_state,
                 shared.config_status.clone(),
@@ -6369,12 +8795,12 @@ mod windows_app {
         model: DesktopHudViewModel,
         auto_hide_ms: Option<u32>,
     ) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        if state.hud_hwnd.is_null() {
+        let state = unsafe { get_window_state(hwnd)? };
+        if state.hud_hwnd.get().is_null() {
             anyhow::bail!("Talk desktop HUD is unavailable");
         }
 
-        let dpi = overlay_dpi_for_window(state.hud_hwnd);
+        let dpi = overlay_dpi_for_window(state.hud_hwnd.get());
         let metrics = scale_hud_metrics_for_dpi(desktop_hud_metrics_for_view_model(&model), dpi);
         let (screen_width, screen_height) = current_screen_size();
         let x = ((screen_width - metrics.width).max(0)) / 2;
@@ -6467,7 +8893,7 @@ mod windows_app {
         unsafe {
             if geometry_plan.reposition {
                 SetWindowPos(
-                    state.hud_hwnd,
+                    state.hud_hwnd.get(),
                     (-1isize) as HWND,
                     x,
                     y,
@@ -6478,14 +8904,14 @@ mod windows_app {
             }
             if geometry_plan.reshape {
                 apply_rounded_window_region(
-                    state.hud_hwnd,
+                    state.hud_hwnd.get(),
                     metrics.width,
                     metrics.height,
                     metrics.corner_radius,
                 );
             }
-            InvalidateRect(state.hud_hwnd, ptr::null(), 0);
-            ShowWindow(state.hud_hwnd, SW_SHOWNOACTIVATE);
+            InvalidateRect(state.hud_hwnd.get(), ptr::null(), 0);
+            ShowWindow(state.hud_hwnd.get(), SW_SHOWNOACTIVATE);
             if let Some(timeout) = auto_hide_ms {
                 SetTimer(hwnd, TIMER_HIDE_HUD, timeout, None);
             }
@@ -6631,10 +9057,10 @@ mod windows_app {
     }
 
     fn invalidate_recording_hud_waveform(state: &WindowState) {
-        if state.hud_hwnd.is_null() {
+        if state.hud_hwnd.get().is_null() {
             return;
         }
-        let dpi = overlay_dpi_for_window(state.hud_hwnd);
+        let dpi = overlay_dpi_for_window(state.hud_hwnd.get());
         let waveform = overlay_ui_state().lock().ok().and_then(|overlay| {
             overlay
                 .hud_streaming_partial_layout
@@ -6648,7 +9074,7 @@ mod windows_app {
         let waveform = waveform.unwrap_or_else(|| {
             let mut client_rect = RECT::default();
             unsafe {
-                GetClientRect(state.hud_hwnd, &mut client_rect);
+                GetClientRect(state.hud_hwnd.get(), &mut client_rect);
             }
             desktop_listening_hud_waveform_rect(
                 client_rect.right - client_rect.left,
@@ -6658,23 +9084,242 @@ mod windows_app {
         });
         let waveform_rect = desktop_overlay_rect_to_rect(waveform);
         unsafe {
-            InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
+            InvalidateRect(state.hud_hwnd.get(), &waveform_rect, 0);
+        }
+    }
+
+    fn latest_streaming_asr_text_changed(
+        current: Option<&StreamingAsrEvent>,
+        incoming: &[StreamingAsrEvent],
+    ) -> bool {
+        let Some(latest) = incoming.last() else {
+            return false;
+        };
+        current.map(|event| event.text().trim()) != Some(latest.text().trim())
+    }
+
+    fn streaming_idle_segmentation_due(
+        previous_silence_ms: u64,
+        current_silence_ms: u64,
+        config: &SegmenterConfig,
+    ) -> bool {
+        [config.punctuation_pause_ms, config.soft_pause_ms]
+            .into_iter()
+            .any(|threshold_ms| {
+                previous_silence_ms < threshold_ms && current_silence_ms >= threshold_ms
+            })
+    }
+
+    fn take_streaming_asr_events_for_hud_refresh(
+        pending_results: &mut VecDeque<std::result::Result<Vec<StreamingAsrEvent>, String>>,
+        max_events: usize,
+    ) -> (Vec<StreamingAsrEvent>, Option<String>) {
+        let mut events = Vec::with_capacity(max_events.min(16));
+        let mut error = None;
+        while events.len() < max_events {
+            let Some(result) = pending_results.pop_front() else {
+                break;
+            };
+            match result {
+                Ok(mut available) => {
+                    let remaining_capacity = max_events - events.len();
+                    if available.len() <= remaining_capacity {
+                        events.extend(available);
+                        continue;
+                    }
+
+                    events.extend(available.drain(..remaining_capacity));
+                    pending_results.push_front(Ok(available));
+                    break;
+                }
+                Err(message) => {
+                    error = Some(message);
+                    break;
+                }
+            }
+        }
+        (events, error)
+    }
+
+    fn process_recording_hud_refresh(
+        mut work: PendingRecordingHudRefresh,
+    ) -> ProcessedRecordingHudRefresh {
+        let (pumped_asr_events, streaming_pump_error) = take_streaming_asr_events_for_hud_refresh(
+            &mut work.pending_streaming_pump_results,
+            HUD_STREAMING_ASR_EVENTS_PER_REFRESH,
+        );
+        if streaming_pump_error.is_none() {
+            if let Some(streaming_pump) = work.streaming_pump.as_ref() {
+                streaming_pump.request_pump();
+            }
+        }
+
+        if let Some(waveform_source) = work.waveform_source.as_ref() {
+            if waveform_source
+                .current_waveform_into(&mut work.raw_waveform)
+                .is_err()
+            {
+                work.raw_waveform.fill(0.0);
+            }
+        } else {
+            work.raw_waveform.fill(0.0);
+        }
+
+        let latest_asr_text_changed = latest_streaming_asr_text_changed(
+            work.processing_state.last_streaming_asr_event.as_ref(),
+            &pumped_asr_events,
+        );
+        let mut runtime_events = Vec::with_capacity(pumped_asr_events.len());
+        let had_pumped_asr_events = !pumped_asr_events.is_empty();
+        if let Some(latest_event) = pumped_asr_events.last().cloned() {
+            work.processing_state.last_streaming_asr_event = Some(latest_event);
+            work.processing_state.last_streaming_asr_event_at = Some(Instant::now());
+            work.processing_state.last_streaming_idle_evaluated_ms = 0;
+        }
+        for event in pumped_asr_events {
+            match work
+                .processing_state
+                .speculative_runtime_state
+                .accept_asr_event_with_segmentation(event, 0, &work.segmenter_config)
+            {
+                Ok(events) => runtime_events.extend(events),
+                Err(error) => eprintln!("Talk speculative ASR event rejected: {error}"),
+            }
+        }
+
+        if !had_pumped_asr_events {
+            if let (Some(last_event), Some(last_event_at)) = (
+                work.processing_state.last_streaming_asr_event.as_ref(),
+                work.processing_state.last_streaming_asr_event_at,
+            ) {
+                let trailing_silence_ms = last_event_at.elapsed().as_millis() as u64;
+                let should_evaluate = !last_event.is_final()
+                    && streaming_idle_segmentation_due(
+                        work.processing_state.last_streaming_idle_evaluated_ms,
+                        trailing_silence_ms,
+                        &work.segmenter_config,
+                    );
+                work.processing_state.last_streaming_idle_evaluated_ms = trailing_silence_ms;
+                if should_evaluate {
+                    let last_event = last_event.clone();
+                    match work
+                        .processing_state
+                        .speculative_runtime_state
+                        .accept_asr_event_with_segmentation(
+                            last_event,
+                            trailing_silence_ms,
+                            &work.segmenter_config,
+                        ) {
+                        Ok(events) => runtime_events.extend(events),
+                        Err(error) => {
+                            eprintln!("Talk speculative ASR idle event rejected: {error}")
+                        }
+                    }
+                }
+            }
+        }
+
+        for event in &runtime_events {
+            match event {
+                SpeculativeRuntimeEvent::DraftUpdated { segment_id, text }
+                | SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text } => {
+                    if upsert_hud_streaming_segment(
+                        Arc::make_mut(&mut work.processing_state.hud_streaming_segments),
+                        segment_id,
+                        text,
+                    ) {
+                        work.processing_state.hud_streaming_segments_revision = work
+                            .processing_state
+                            .hud_streaming_segments_revision
+                            .wrapping_add(1);
+                    }
+                }
+                SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids } => {
+                    if remove_hud_streaming_segments(
+                        Arc::make_mut(&mut work.processing_state.hud_streaming_segments),
+                        segment_ids,
+                    ) {
+                        work.processing_state.hud_streaming_segments_revision = work
+                            .processing_state
+                            .hud_streaming_segments_revision
+                            .wrapping_add(1);
+                    }
+                }
+                SpeculativeRuntimeEvent::CorrectionRequested { .. } => {}
+            }
+        }
+
+        let transcript_changed = !runtime_events.is_empty() || latest_asr_text_changed;
+        let requested_mode = work.requested_mode;
+        let previous_smart_route = work.processing_state.live_smart_routed_mode;
+        let refreshed_hud_transcript_parts = if transcript_changed {
+            work.live_correction_tracker.refresh_snapshot_if_changed(
+                &mut work.processing_state.live_correction_snapshot_revision,
+                &mut work.processing_state.live_correction_snapshot,
+            );
+            let transcript_summary =
+                desktop_streaming_hud_transcript_summary_with_fallback_text_owned(
+                    &work.processing_state.live_correction_snapshot,
+                    &work.processing_state.hud_streaming_segments,
+                    work.processing_state
+                        .last_streaming_asr_event
+                        .as_ref()
+                        .map(StreamingAsrEvent::text),
+                    work.streaming_unavailable_hint.as_deref(),
+                );
+            let transcript = desktop_streaming_hud_transcript_parts_text(&transcript_summary.parts);
+            work.processing_state.live_smart_routed_mode = live_smart_route_for_transcript(
+                requested_mode,
+                previous_smart_route,
+                transcript.as_ref(),
+                transcript_summary.effective_segment_count,
+            );
+            Some(transcript_summary.parts)
+        } else {
+            None
+        };
+        let flush_corrected_backlog = previous_smart_route != Some(VoiceMode::Transcribe)
+            && work.processing_state.live_smart_routed_mode == Some(VoiceMode::Transcribe);
+        let live_dispatch_seed = if transcript_changed {
+            Some(PendingLiveStreamingDispatchSeed {
+                live_correction_tracker: work.live_correction_tracker,
+                events: runtime_events,
+                requested_mode,
+                smart_routed_mode: work.processing_state.live_smart_routed_mode,
+                flush_corrected_backlog,
+            })
+        } else {
+            None
+        };
+
+        ProcessedRecordingHudRefresh {
+            generation: work.generation,
+            processing_state: work.processing_state,
+            pending_streaming_pump_results: work.pending_streaming_pump_results,
+            raw_waveform: work.raw_waveform,
+            streaming_unavailable_hint: work.streaming_unavailable_hint,
+            refreshed_hud_transcript_parts,
+            live_dispatch_seed,
+            streaming_pump_error,
         }
     }
 
     fn refresh_recording_hud_level(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        let (raw_waveform, refreshed_hud_transcript_parts, live_dispatch, streaming_pump_error) = {
-            let mut shared = state.shared.lock().expect("Talk desktop shared state");
-            if shared.current_phase != Some(RuntimePhase::Recording) {
+        let state = unsafe { get_window_state(hwnd)? };
+        let work = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if shared.shutting_down || shared.current_phase != Some(RuntimePhase::Recording) {
                 unsafe {
                     KillTimer(hwnd, TIMER_RECORDING_LEVEL);
                 }
                 return Ok(());
             }
 
-            let config = shared.config.clone();
-            let runtime_handle = shared.runtime_handle.clone();
+            let default_voice_mode = shared
+                .config
+                .as_ref()
+                .map(|config| config.default_voice_mode())
+                .unwrap_or(VoiceMode::Smart);
             let Some(active) = shared.active_recording.as_mut() else {
                 unsafe {
                     KillTimer(hwnd, TIMER_RECORDING_LEVEL);
@@ -6682,155 +9327,118 @@ mod windows_app {
                 return Ok(());
             };
 
-            let mut pumped_asr_events = Vec::<StreamingAsrEvent>::new();
-            let mut streaming_pump_error = None::<String>;
-            let raw_waveform = match &mut active.source {
+            let (waveform_source, streaming_pump) = match &active.source {
                 ActiveRecordingSource::Live {
                     recording,
-                    streaming_session,
-                } => {
-                    if let Some(streaming_session) = streaming_session.as_mut() {
-                        match runtime_handle.block_on(
-                            streaming_session
-                                .pump_available_audio(recording, Duration::from_millis(1)),
-                        ) {
-                            Ok(events) => {
-                                pumped_asr_events = events;
-                            }
-                            Err(error) => {
-                                let error = error.to_string();
-                                eprintln!("Talk local streaming ASR live pump failed: {error}");
-                                streaming_pump_error = Some(error);
-                            }
-                        }
-                    }
-                    recording
-                        .current_waveform(9)
-                        .unwrap_or_else(|_| vec![0.0; 9])
-                }
-                ActiveRecordingSource::ExplicitAudioFile(_) => vec![0.0; 9],
+                    streaming_pump,
+                } => (
+                    recording.streaming_pcm_source().ok(),
+                    streaming_pump.clone(),
+                ),
+                ActiveRecordingSource::ExplicitAudioFile(_) => (None, None),
             };
-
-            let now = Instant::now();
-            let mut runtime_events = Vec::<SpeculativeRuntimeEvent>::new();
-            for event in pumped_asr_events.iter().cloned() {
-                active.last_streaming_asr_event = Some(event.clone());
-                active.last_streaming_asr_event_at = Some(now);
-                match active
-                    .speculative_runtime_state
-                    .accept_asr_event_with_segmentation(
-                        event,
-                        0,
-                        &active.speculative_segmenter_config,
-                    ) {
-                    Ok(events) => runtime_events.extend(events),
-                    Err(error) => eprintln!("Talk speculative ASR event rejected: {error}"),
-                }
+            PendingRecordingHudRefresh {
+                generation: active.generation,
+                requested_mode: active.mode_override.unwrap_or(default_voice_mode),
+                segmenter_config: active.speculative_segmenter_config,
+                processing_state: RecordingHudProcessingState {
+                    speculative_runtime_state: std::mem::take(
+                        &mut active.speculative_runtime_state,
+                    ),
+                    hud_streaming_segments: std::mem::take(&mut active.hud_streaming_segments),
+                    hud_streaming_segments_revision: active.hud_streaming_segments_revision,
+                    live_correction_snapshot_revision: active.live_correction_snapshot_revision,
+                    live_correction_snapshot: std::mem::take(&mut active.live_correction_snapshot),
+                    last_streaming_asr_event: active.last_streaming_asr_event.take(),
+                    last_streaming_asr_event_at: active.last_streaming_asr_event_at.take(),
+                    last_streaming_idle_evaluated_ms: std::mem::take(
+                        &mut active.last_streaming_idle_evaluated_ms,
+                    ),
+                    live_smart_routed_mode: active.live_smart_routed_mode,
+                },
+                pending_streaming_pump_results: std::mem::take(
+                    &mut active.pending_streaming_pump_results,
+                ),
+                waveform_source,
+                raw_waveform: active.hud_waveform,
+                streaming_pump,
+                streaming_unavailable_hint: active.streaming_unavailable_hint.take(),
+                live_correction_tracker: Arc::clone(&active.live_streaming_correction_tracker),
             }
-
-            if pumped_asr_events.is_empty() {
-                if let (Some(last_event), Some(last_event_at)) = (
-                    active.last_streaming_asr_event.clone(),
-                    active.last_streaming_asr_event_at,
-                ) {
-                    if !last_event.is_final() {
-                        let trailing_silence_ms = last_event_at.elapsed().as_millis() as u64;
-                        match active
-                            .speculative_runtime_state
-                            .accept_asr_event_with_segmentation(
-                                last_event,
-                                trailing_silence_ms,
-                                &active.speculative_segmenter_config,
-                            ) {
-                            Ok(events) => runtime_events.extend(events),
-                            Err(error) => {
-                                eprintln!("Talk speculative ASR idle event rejected: {error}")
-                            }
-                        }
-                    }
-                }
-            }
-
-            for event in &runtime_events {
-                match event {
-                    SpeculativeRuntimeEvent::DraftUpdated { segment_id, text }
-                    | SpeculativeRuntimeEvent::LocalSegmentCommitted { segment_id, text } => {
-                        upsert_hud_streaming_segment(
-                            &mut active.hud_streaming_segments,
-                            segment_id,
-                            text,
-                        );
-                    }
-                    SpeculativeRuntimeEvent::LocalSegmentsInvalidated { segment_ids } => {
-                        remove_hud_streaming_segments(
-                            &mut active.hud_streaming_segments,
-                            segment_ids,
-                        );
-                    }
-                    SpeculativeRuntimeEvent::CorrectionRequested { .. } => {}
-                }
-            }
-
-            let transcript_changed = !runtime_events.is_empty();
-            let requested_mode = active.mode_override.unwrap_or_else(|| {
-                config
-                    .as_ref()
-                    .map(TalkConfig::default_voice_mode)
-                    .unwrap_or(VoiceMode::Smart)
-            });
-            let previous_smart_route = active.live_smart_routed_mode;
-            let refreshed_hud_transcript_parts =
-                transcript_changed.then(|| active_recording_hud_transcript_parts(active));
-            if let Some(parts) = refreshed_hud_transcript_parts.as_ref() {
-                let tracker_snapshot = active.live_streaming_correction_tracker.snapshot();
-                let pending_segments = active
-                    .hud_streaming_segments
-                    .iter()
-                    .map(|(segment_id, text)| (segment_id.as_str(), text.as_str()))
-                    .collect::<Vec<_>>();
-                let transcript = format!("{}{}", parts.corrected_prefix, parts.pre_recognized_tail);
-                active.live_smart_routed_mode = live_smart_route_for_transcript(
-                    requested_mode,
-                    previous_smart_route,
-                    &transcript,
-                    desktop_streaming_effective_segment_count(&tracker_snapshot, &pending_segments),
-                );
-            }
-            let flush_corrected_backlog = previous_smart_route != Some(VoiceMode::Transcribe)
-                && active.live_smart_routed_mode == Some(VoiceMode::Transcribe);
-            let live_dispatch = config.filter(|_| transcript_changed).and_then(|config| {
-                Some(PendingLiveStreamingDispatch {
-                    pipeline_config: desktop_speculative_pipeline_config(&config),
-                    config,
-                    generation: active.generation,
-                    origin_insert_target: active.origin_insert_target.clone(),
-                    existing_anchors: active.live_streaming_inserted_anchors.clone(),
-                    live_correction_sender: active
-                        .live_streaming_correction_sender
-                        .as_ref()?
-                        .clone(),
-                    live_correction_tracker: Arc::clone(&active.live_streaming_correction_tracker),
-                    events: runtime_events,
-                    requested_mode,
-                    smart_routed_mode: active.live_smart_routed_mode,
-                    flush_corrected_backlog,
-                    latest_live_segment_guard: Some(LatestLiveSegmentGuard {
-                        generation: active.generation,
-                    }),
-                    allow_target_apply: true,
-                    hwnd_value: hwnd as usize,
-                    hud_hwnd_value: state.hud_hwnd as usize,
-                })
-            });
-
-            (
-                raw_waveform,
-                refreshed_hud_transcript_parts,
-                live_dispatch,
-                streaming_pump_error,
-            )
         };
-        if let Some(error) = streaming_pump_error {
+        let processed = process_recording_hud_refresh(work);
+        let ProcessedRecordingHudRefresh {
+            generation,
+            processing_state,
+            mut pending_streaming_pump_results,
+            raw_waveform,
+            streaming_unavailable_hint,
+            refreshed_hud_transcript_parts,
+            live_dispatch_seed,
+            streaming_pump_error,
+        } = processed;
+        let (committed, live_dispatch_metadata) = {
+            let mut shared = lock_recovering(&state.shared, "Talk desktop shared state");
+            if shared.shutting_down
+                || shared.current_phase != Some(RuntimePhase::Recording)
+                || shared
+                    .active_recording
+                    .as_ref()
+                    .is_none_or(|active| active.generation != generation)
+            {
+                (false, None)
+            } else {
+                let config = live_dispatch_seed
+                    .as_ref()
+                    .and_then(|_| shared.config.clone());
+                let active = shared
+                    .active_recording
+                    .as_mut()
+                    .expect("generation-checked active recording");
+                active.speculative_runtime_state = processing_state.speculative_runtime_state;
+                active.hud_streaming_segments = processing_state.hud_streaming_segments;
+                active.hud_streaming_segments_revision =
+                    processing_state.hud_streaming_segments_revision;
+                active.live_correction_snapshot_revision =
+                    processing_state.live_correction_snapshot_revision;
+                active.live_correction_snapshot = processing_state.live_correction_snapshot;
+                active.last_streaming_asr_event = processing_state.last_streaming_asr_event;
+                active.last_streaming_asr_event_at = processing_state.last_streaming_asr_event_at;
+                active.last_streaming_idle_evaluated_ms =
+                    processing_state.last_streaming_idle_evaluated_ms;
+                active.live_smart_routed_mode = processing_state.live_smart_routed_mode;
+                active.hud_waveform = raw_waveform;
+                active.streaming_unavailable_hint = streaming_unavailable_hint;
+                if !pending_streaming_pump_results.is_empty() {
+                    pending_streaming_pump_results
+                        .append(&mut active.pending_streaming_pump_results);
+                    active.pending_streaming_pump_results = pending_streaming_pump_results;
+                }
+                let metadata = config
+                    .zip(active.live_streaming_correction_sender.clone())
+                    .map(
+                        |(config, live_correction_sender)| LiveStreamingDispatchMetadata {
+                            config,
+                            origin_insert_target: active.origin_insert_target.clone(),
+                            existing_anchors: active.live_streaming_inserted_anchors.clone(),
+                            live_correction_sender,
+                        },
+                    );
+                (true, metadata)
+            }
+        };
+        if !committed {
+            return Ok(());
+        }
+        let dispatch_metadata_missing =
+            live_dispatch_seed.is_some() && live_dispatch_metadata.is_none();
+        let recording_error = streaming_pump_error.or_else(|| {
+            dispatch_metadata_missing.then(|| {
+                "Talk live streaming dispatch metadata is unavailable during recording".to_string()
+            })
+        });
+        if let Some(error) = recording_error {
+            eprintln!("Talk recording HUD refresh failed: {error}");
             let hud_transcript_parts = refreshed_hud_transcript_parts
                 .clone()
                 .unwrap_or_else(cached_hud_streaming_transcript_parts);
@@ -6840,6 +9448,27 @@ mod windows_app {
             );
             return fail_active_recording(hwnd, state, error, Some(copy_text));
         }
+
+        let live_dispatch =
+            live_dispatch_seed
+                .zip(live_dispatch_metadata)
+                .map(|(seed, metadata)| PendingLiveStreamingDispatch {
+                    pipeline_config: desktop_speculative_pipeline_config(&metadata.config),
+                    config: metadata.config,
+                    generation,
+                    origin_insert_target: metadata.origin_insert_target,
+                    existing_anchors: metadata.existing_anchors,
+                    live_correction_sender: metadata.live_correction_sender,
+                    live_correction_tracker: seed.live_correction_tracker,
+                    events: seed.events,
+                    requested_mode: seed.requested_mode,
+                    smart_routed_mode: seed.smart_routed_mode,
+                    flush_corrected_backlog: seed.flush_corrected_backlog,
+                    latest_live_segment_guard: Some(LatestLiveSegmentGuard { generation }),
+                    allow_target_apply: true,
+                    hwnd_value: hwnd as usize,
+                    hud_hwnd_value: state.hud_hwnd.get() as usize,
+                });
 
         if let Some(dispatch) = live_dispatch {
             let generation = dispatch.generation;
@@ -6856,18 +9485,11 @@ mod windows_app {
                         if let Some(active) = shared.active_recording.as_mut() {
                             if active.generation == generation {
                                 for anchor in newly_inserted_anchors {
-                                    if !active
-                                        .live_streaming_inserted_segment_ids
-                                        .iter()
-                                        .any(|segment_id| segment_id == &anchor.segment_id)
-                                    {
-                                        active
-                                            .live_streaming_inserted_segment_ids
-                                            .push(anchor.segment_id.clone());
-                                    }
-                                    active
-                                        .live_streaming_inserted_anchors
-                                        .insert(anchor.segment_id.clone(), anchor);
+                                    record_live_streaming_inserted_anchor(
+                                        &mut active.live_streaming_inserted_segment_ids,
+                                        &mut active.live_streaming_inserted_anchors,
+                                        anchor,
+                                    );
                                 }
                             }
                         }
@@ -6908,8 +9530,12 @@ mod windows_app {
                     if !overlay.hud_streaming_scroll_user_scrolled {
                         overlay.hud_streaming_scroll_line_offset = usize::MAX;
                     }
+                    let presented_parts = listening_hud_presented_transcript_parts(
+                        hud_transcript_parts,
+                        overlay.hud_streaming_scroll_user_scrolled,
+                    );
                     let (display_text, lifecycle) =
-                        listening_hud_transcript_text_and_lifecycle(hud_transcript_parts);
+                        listening_hud_transcript_text_and_lifecycle(&presented_parts);
                     let Some(hud_model) = overlay.hud_model.as_mut() else {
                         return Ok(());
                     };
@@ -6949,10 +9575,10 @@ mod windows_app {
             return Ok(());
         };
         let text_changed = true;
-        if state.hud_hwnd.is_null() {
+        if state.hud_hwnd.get().is_null() {
             return Ok(());
         }
-        let dpi = overlay_dpi_for_window(state.hud_hwnd);
+        let dpi = overlay_dpi_for_window(state.hud_hwnd.get());
         let metrics =
             scale_hud_metrics_for_dpi(desktop_hud_metrics_for_view_model(&updated_hud_model), dpi);
         let (screen_width, screen_height) = current_screen_size();
@@ -6965,7 +9591,8 @@ mod windows_app {
             height: metrics.height,
             corner_radius: metrics.corner_radius,
         };
-        let geometry_plan = if let Ok(mut overlay) = overlay_ui_state().lock() {
+        let (geometry_plan, dirty_content_rect) = if let Ok(mut overlay) = overlay_ui_state().lock()
+        {
             let plan = desktop_hud_geometry_update_plan(overlay.hud_geometry, next_geometry);
             overlay.hud_geometry = Some(next_geometry);
             if desktop_listening_hud_requires_text_layout(
@@ -6995,9 +9622,24 @@ mod windows_app {
                     overlay.hud_streaming_scroll_user_scrolled = false;
                 }
             }
-            plan
+            // The transcript, its scrollbar and the waveform are the only parts
+            // of the listening HUD a level refresh can change; the shell border
+            // and the two round buttons stay put, so keep them out of the dirty
+            // region instead of invalidating the whole window every ~48 ms.
+            let content_rect = overlay.hud_streaming_partial_layout.map(|layout| {
+                let mut rect = desktop_overlay_rect_to_rect(layout.text_rect);
+                union_overlay_rect(
+                    &mut rect,
+                    desktop_overlay_rect_to_rect(layout.waveform_rect),
+                );
+                if let Some(scrollbar_rect) = layout.scrollbar_rect {
+                    union_overlay_rect(&mut rect, desktop_overlay_rect_to_rect(scrollbar_rect));
+                }
+                rect
+            });
+            (plan, content_rect)
         } else {
-            desktop_hud_geometry_update_plan(None, next_geometry)
+            (desktop_hud_geometry_update_plan(None, next_geometry), None)
         };
         let waveform = desktop_listening_hud_waveform_rect(metrics.width, metrics.height, dpi);
         let waveform_rect = RECT {
@@ -7009,7 +9651,7 @@ mod windows_app {
         unsafe {
             if geometry_plan.reposition {
                 SetWindowPos(
-                    state.hud_hwnd,
+                    state.hud_hwnd.get(),
                     (-1isize) as HWND,
                     x,
                     y,
@@ -7020,23 +9662,27 @@ mod windows_app {
             }
             if geometry_plan.reshape {
                 apply_rounded_window_region(
-                    state.hud_hwnd,
+                    state.hud_hwnd.get(),
                     metrics.width,
                     metrics.height,
                     metrics.corner_radius,
                 );
             }
-            if text_changed || geometry_plan.reposition {
-                InvalidateRect(state.hud_hwnd, ptr::null(), 0);
+            if geometry_plan.reposition || geometry_plan.reshape {
+                InvalidateRect(state.hud_hwnd.get(), ptr::null(), 0);
+            } else if let Some(dirty_rect) = dirty_content_rect {
+                InvalidateRect(state.hud_hwnd.get(), &dirty_rect, 0);
+            } else if text_changed {
+                InvalidateRect(state.hud_hwnd.get(), ptr::null(), 0);
             } else {
-                InvalidateRect(state.hud_hwnd, &waveform_rect, 0);
+                InvalidateRect(state.hud_hwnd.get(), &waveform_rect, 0);
             }
         }
         Ok(())
     }
 
     fn refresh_thinking_hud_progress(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
+        let state = unsafe { get_window_state(hwnd)? };
         let mut should_invalidate = false;
         if let Ok(mut overlay) = overlay_ui_state().lock() {
             if matches!(
@@ -7051,9 +9697,12 @@ mod windows_app {
                 }
             }
         }
-        if should_invalidate && !state.hud_hwnd.is_null() {
+        if should_invalidate && !state.hud_hwnd.get().is_null() {
             unsafe {
-                InvalidateRect(state.hud_hwnd, ptr::null(), 1);
+                // erase = FALSE: the thinking HUD paints through a cached back
+                // buffer, so a system erase pass only adds a full-window
+                // background blit that the back buffer immediately overwrites.
+                InvalidateRect(state.hud_hwnd.get(), ptr::null(), 0);
             }
         }
         Ok(())
@@ -7121,6 +9770,25 @@ mod windows_app {
         shell_hwnd: HWND,
         hud_hwnd: HWND,
     ) -> Option<DesktopInsertTargetContext> {
+        capture_foreground_insert_target_context_impl(shell_hwnd, hud_hwnd, true)
+    }
+
+    /// Cheap press-time snapshot: HWND-level capture only, without any UI
+    /// Automation calls. Safe to run inside latency-sensitive paths such as
+    /// the WH_KEYBOARD_LL hook callback; automation fields are enriched later
+    /// on a background thread.
+    fn capture_foreground_insert_target_context_snapshot(
+        shell_hwnd: HWND,
+        hud_hwnd: HWND,
+    ) -> Option<DesktopInsertTargetContext> {
+        capture_foreground_insert_target_context_impl(shell_hwnd, hud_hwnd, false)
+    }
+
+    fn capture_foreground_insert_target_context_impl(
+        shell_hwnd: HWND,
+        hud_hwnd: HWND,
+        include_automation: bool,
+    ) -> Option<DesktopInsertTargetContext> {
         if let Some(target) = capture_explicit_insert_target_from_env(shell_hwnd, hud_hwnd) {
             return Some(DesktopInsertTargetContext {
                 target: Some(target),
@@ -7137,7 +9805,11 @@ mod windows_app {
 
         let foreground = unsafe { GetForegroundWindow() };
         let focus = capture_foreground_focus_target(foreground, shell_hwnd, hud_hwnd);
-        let automation_focus = capture_automation_focus_target(foreground);
+        let automation_focus = if include_automation {
+            capture_automation_focus_target(foreground)
+        } else {
+            CapturedAutomationFocusTarget::default()
+        };
         let target = select_foreground_insert_target(
             foreground as isize,
             focus.focus_hwnd.map(|handle| handle as isize),
@@ -7259,15 +9931,14 @@ mod windows_app {
             return true;
         }
 
-        match element
-            .get_control_type()
-            .ok()
-            .map(automation_control_type_label)
-            .as_deref()
-        {
-            Some("edit") | Some("document") => true,
-            _ => false,
-        }
+        matches!(
+            element
+                .get_control_type()
+                .ok()
+                .map(automation_control_type_label)
+                .as_deref(),
+            Some("edit") | Some("document")
+        )
     }
 
     fn automation_ui_element_capture_score(element: &UIElement) -> u32 {
@@ -7419,14 +10090,6 @@ mod windows_app {
         Some(String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    fn desktop_paste_shortcut_env_value(shortcut: DesktopPasteShortcut) -> &'static str {
-        match shortcut {
-            DesktopPasteShortcut::ControlV => "ctrl_v",
-            DesktopPasteShortcut::ControlShiftV => "ctrl_shift_v",
-            DesktopPasteShortcut::ShiftInsert => "shift_insert",
-        }
-    }
-
     fn resolve_window_process_base_name(window_handle: isize) -> Option<String> {
         let hwnd = window_handle as HWND;
         if hwnd.is_null() {
@@ -7470,14 +10133,18 @@ mod windows_app {
         }
     }
 
-    fn begin_foreground_insert_target_restore(target_hwnd: HWND) {
+    fn begin_foreground_insert_target_restore(target_hwnd: HWND) -> bool {
         if target_hwnd.is_null() {
-            return;
+            return false;
         }
 
         unsafe {
             if IsWindow(target_hwnd) == 0 {
-                return;
+                return false;
+            }
+
+            if GetForegroundWindow() == target_hwnd && IsIconic(target_hwnd) == 0 {
+                return false;
             }
 
             ShowWindow(target_hwnd, SW_RESTORE);
@@ -7498,6 +10165,7 @@ mod windows_app {
             SetForegroundWindow(target_hwnd);
         }
         thread::sleep(Duration::from_millis(80));
+        true
     }
 
     fn end_foreground_insert_target_restore(target_hwnd: HWND) {
@@ -7552,7 +10220,9 @@ mod windows_app {
             }
         }
 
-        thread::sleep(Duration::from_millis(40));
+        if unsafe { GetForegroundWindow() } != target_hwnd {
+            thread::sleep(Duration::from_millis(40));
+        }
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -7565,7 +10235,7 @@ mod windows_app {
 
     fn refresh_post_insert_foreground_target(target: ForegroundInsertTarget) {
         let target_hwnd = target.window_handle as HWND;
-        begin_foreground_insert_target_restore(target_hwnd);
+        let _ = begin_foreground_insert_target_restore(target_hwnd);
         if let Some(focus_handle) = target.focus_handle {
             restore_foreground_focus_target(target_hwnd, focus_handle as HWND);
         }
@@ -7636,7 +10306,7 @@ mod windows_app {
             }
         };
 
-        begin_foreground_insert_target_restore(target_hwnd);
+        let restore_applied = begin_foreground_insert_target_restore(target_hwnd);
         let restored_target =
             refresh_foreground_insert_target_focus_capture(target, shell_hwnd, hud_hwnd);
         let target_focus_exists = restored_target.focus_handle.map(|focus_handle| unsafe {
@@ -7659,6 +10329,7 @@ mod windows_app {
                 target_window_exists,
                 target_focus_exists,
                 focus_restore_requested: restored_target.focus_handle.is_some(),
+                restore_applied,
                 post_insert_release_reason: None,
                 post_insert_wait_duration_ms: None,
                 post_insert_poll_count: None,
@@ -7671,7 +10342,17 @@ mod windows_app {
 
     fn end_restore_foreground_insert_target(
         target: ForegroundInsertTarget,
+        restore_applied: bool,
     ) -> PostInsertForegroundHoldOutcome {
+        if !restore_applied {
+            return PostInsertForegroundHoldOutcome {
+                release_reason: ForegroundTargetReleaseReason::TargetStable,
+                wait_duration_ms: 0,
+                required_stable_foreground_polls: 0,
+                progress: ForegroundTargetStabilityProgress::default(),
+            };
+        }
+
         let target_hwnd = target.window_handle as HWND;
         let post_insert_hold = wait_for_post_insert_foreground_stability(target);
         end_foreground_insert_target_restore(target_hwnd);
@@ -7716,8 +10397,8 @@ mod windows_app {
     }
 
     fn hide_hud(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        if !state.hud_hwnd.is_null() {
+        let state = unsafe { get_window_state(hwnd)? };
+        if !state.hud_hwnd.get().is_null() {
             unsafe {
                 KillTimer(hwnd, TIMER_HIDE_HUD);
                 KillTimer(hwnd, TIMER_RECORDING_LEVEL);
@@ -7734,7 +10415,7 @@ mod windows_app {
                     overlay.hud_streaming_scroll_user_scrolled = false;
                     overlay.hud_thinking_pulse_tick = 0;
                 }
-                ShowWindow(state.hud_hwnd, SW_HIDE);
+                ShowWindow(state.hud_hwnd.get(), SW_HIDE);
             }
         }
         Ok(())
@@ -7765,14 +10446,29 @@ mod windows_app {
             .clone()
             .or_else(|| model.detail.clone())
             .unwrap_or_default();
-        let combined = format!("{corrected_prefix}{partial_tail}");
+        let presented_parts = listening_hud_presented_transcript_parts(
+            &DesktopStreamingHudTranscriptParts {
+                corrected_prefix,
+                pre_recognized_tail: partial_tail,
+            },
+            overlay.hud_streaming_scroll_user_scrolled,
+        );
+        let combined = format!(
+            "{}{}",
+            presented_parts.corrected_prefix, presented_parts.pre_recognized_tail
+        );
         let layout = overlay.hud_streaming_partial_layout.or_else(|| {
             desktop_listening_hud_partial_text_layout(width, height, dpi, Some(&combined))
         })?;
         let scroll_offset = overlay
             .hud_streaming_scroll_line_offset
             .min(desktop_listening_hud_scroll_max_offset(&layout));
-        Some((layout, corrected_prefix, partial_tail, scroll_offset))
+        Some((
+            layout,
+            presented_parts.corrected_prefix,
+            presented_parts.pre_recognized_tail,
+            scroll_offset,
+        ))
     }
 
     fn update_listening_hud_scroll_from_pointer(
@@ -7928,17 +10624,16 @@ mod windows_app {
                 let _ = cancel_active_recording(owner_hwnd);
             }
             DesktopListeningHudAction::Complete => {
-                let generation =
-                    unsafe { get_window_state_mut(owner_hwnd) }
-                        .ok()
-                        .and_then(|state| {
-                            state.shared.lock().ok().and_then(|shared| {
-                                shared
-                                    .active_recording
-                                    .as_ref()
-                                    .map(|active| active.generation)
-                            })
-                        });
+                let generation = unsafe { get_window_state(owner_hwnd) }
+                    .ok()
+                    .and_then(|state| {
+                        state.shared.lock().ok().and_then(|shared| {
+                            shared
+                                .active_recording
+                                .as_ref()
+                                .map(|active| active.generation)
+                        })
+                    });
                 if let Some(generation) = generation {
                     request_stop_recording(owner_hwnd, generation);
                 }
@@ -8005,19 +10700,22 @@ mod windows_app {
     ) -> Result<()> {
         let panes = copy_popup_visible_panes(model);
         let pane_count = panes.len().max(1);
-        let state = unsafe { get_window_state_mut(owner_hwnd)? };
+        let state = unsafe { get_window_state(owner_hwnd)? };
 
-        while state.copy_popup_pane_edit_hwnds.len() < pane_count {
-            let index = state.copy_popup_pane_edit_hwnds.len();
+        while state.copy_popup_pane_edit_hwnds.borrow().len() < pane_count {
+            let index = state.copy_popup_pane_edit_hwnds.borrow().len();
             let edit_hwnd = create_copy_popup_edit_control(
                 copy_popup_hwnd,
                 dpi,
                 copy_popup_edit_control_id(index),
             )?;
-            state.copy_popup_pane_edit_hwnds.push(edit_hwnd);
+            state
+                .copy_popup_pane_edit_hwnds
+                .borrow_mut()
+                .push(edit_hwnd);
         }
 
-        for (index, edit_hwnd) in state.copy_popup_pane_edit_hwnds.iter().enumerate() {
+        for (index, edit_hwnd) in state.copy_popup_pane_edit_hwnds.borrow().iter().enumerate() {
             unsafe {
                 if index < pane_count {
                     let pane = &panes[index];
@@ -8033,14 +10731,16 @@ mod windows_app {
         }
 
         let default_index = copy_popup_default_pane_index(&panes).min(pane_count - 1);
-        state.copy_popup_edit_hwnd = state.copy_popup_pane_edit_hwnds[default_index];
+        state
+            .copy_popup_edit_hwnd
+            .set(state.copy_popup_pane_edit_hwnds.borrow()[default_index]);
         Ok(())
     }
 
     fn show_copy_popup(hwnd: HWND, model: DesktopCopyPopupModel) -> Result<()> {
         let copy_popup_hwnd = {
-            let state = unsafe { get_window_state_mut(hwnd)? };
-            state.copy_popup_hwnd
+            let state = unsafe { get_window_state(hwnd)? };
+            state.copy_popup_hwnd.get()
         };
         if copy_popup_hwnd.is_null() {
             anyhow::bail!("Talk desktop copy popup is unavailable");
@@ -8061,6 +10761,8 @@ mod windows_app {
             overlay.copy_popup = Some(CopyPopupRenderState {
                 model: model.clone(),
                 hovered_control: CopyPopupHoveredControl::None,
+                pressed_control: CopyPopupHoveredControl::None,
+                keyboard_focused_control: CopyPopupHoveredControl::None,
             });
         }
 
@@ -8083,7 +10785,7 @@ mod windows_app {
                 scale_desktop_overlay_length(COPY_POPUP_CORNER_RADIUS, popup_dpi),
             );
             let _ = update_copy_popup_edit_layout(hwnd, copy_popup_hwnd);
-            InvalidateRect(copy_popup_hwnd, ptr::null(), 1);
+            InvalidateRect(copy_popup_hwnd, ptr::null(), 0);
             match desktop_copy_popup_activation_policy() {
                 DesktopOverlayActivationPolicy::NoActivate => {
                     ShowWindow(copy_popup_hwnd, SW_SHOWNOACTIVATE);
@@ -8097,25 +10799,54 @@ mod windows_app {
     }
 
     fn hide_copy_popup(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        if !state.copy_popup_hwnd.is_null() {
+        let (
+            copy_popup_hwnd,
+            edit_hwnds,
+            restore_foreground_hwnd,
+            restore_focus_hwnd,
+            should_restore_focus,
+        ) = {
+            let state = unsafe { get_window_state(hwnd)? };
+            let should_restore_focus = !state.copy_popup_hwnd.get().is_null()
+                && unsafe { GetForegroundWindow() == state.copy_popup_hwnd.get() };
+            let restore_foreground_hwnd = state.copy_popup_restore_foreground_hwnd.get();
+            let restore_focus_hwnd = state.copy_popup_restore_focus_hwnd.get();
+            state
+                .copy_popup_restore_foreground_hwnd
+                .set(ptr::null_mut());
+            state.copy_popup_restore_focus_hwnd.set(ptr::null_mut());
+            (
+                state.copy_popup_hwnd.get(),
+                state.copy_popup_pane_edit_hwnds.borrow().clone(),
+                restore_foreground_hwnd,
+                restore_focus_hwnd,
+                should_restore_focus,
+            )
+        };
+
+        if !copy_popup_hwnd.is_null() {
             if let Ok(mut overlay) = overlay_ui_state().lock() {
                 overlay.copy_popup = None;
             }
             unsafe {
-                for edit_hwnd in &state.copy_popup_pane_edit_hwnds {
+                for edit_hwnd in &edit_hwnds {
                     if !edit_hwnd.is_null() {
                         ShowWindow(*edit_hwnd, SW_HIDE);
                     }
                 }
-                ShowWindow(state.copy_popup_hwnd, SW_HIDE);
+                ShowWindow(copy_popup_hwnd, SW_HIDE);
             }
         }
+        restore_copy_popup_focus_after_hide(
+            should_restore_focus,
+            restore_foreground_hwnd,
+            restore_focus_hwnd,
+        );
         Ok(())
     }
 
     fn should_offer_shortcut_help(hwnd: HWND) -> bool {
-        unsafe { get_window_state_mut(hwnd) }
+        unsafe { get_window_state(hwnd) }
             .ok()
             .and_then(|state| {
                 state
@@ -8131,7 +10862,7 @@ mod windows_app {
         hwnd: HWND,
         candidate_context: Option<DesktopInsertTargetContext>,
     ) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd) }?;
+        let state = unsafe { get_window_state(hwnd) }?;
         if let Ok(mut shared) = state.shared.lock() {
             if shared.shell_state.can_start_session() {
                 shared.pending_hotkey_origin_insert_target = resolve_pending_hotkey_origin_capture(
@@ -8146,16 +10877,48 @@ mod windows_app {
     }
 
     fn capture_pending_hotkey_origin_insert_target(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd) }?;
-        let context = capture_foreground_insert_target_context(hwnd, state.hud_hwnd);
-        update_pending_hotkey_origin_insert_target(hwnd, context)
+        let state = unsafe { get_window_state(hwnd) }?;
+        let hud_hwnd = state.hud_hwnd.get();
+        let shared = Arc::clone(&state.shared);
+        let context = capture_foreground_insert_target_context_snapshot(hwnd, hud_hwnd);
+        update_pending_hotkey_origin_insert_target(hwnd, context)?;
+        spawn_pending_hotkey_origin_enrichment(hwnd, hud_hwnd, shared);
+        Ok(())
     }
 
     fn capture_pending_hotkey_origin_insert_target_from_hook(hwnd: HWND) {
-        let context = unsafe { get_window_state_mut(hwnd) }
-            .ok()
-            .and_then(|state| capture_foreground_insert_target_context(hwnd, state.hud_hwnd));
-        let _ = update_pending_hotkey_origin_insert_target(hwnd, context);
+        let _ = capture_pending_hotkey_origin_insert_target(hwnd);
+    }
+
+    /// Runs the expensive UI Automation focus capture off the hot path and
+    /// merges the richer context into the pending hotkey origin snapshot.
+    /// The merge keeps the press-time window snapshot semantics because
+    /// `resolve_pending_hotkey_origin_capture` rejects candidates from
+    /// another window and only upgrades weaker captures.
+    fn spawn_pending_hotkey_origin_enrichment(
+        hwnd: HWND,
+        hud_hwnd: HWND,
+        shared: Arc<Mutex<SharedState>>,
+    ) {
+        let hwnd_value = hwnd as usize;
+        let hud_hwnd_value = hud_hwnd as usize;
+        thread::spawn(move || {
+            let candidate_context = capture_foreground_insert_target_context(
+                hwnd_value as HWND,
+                hud_hwnd_value as HWND,
+            );
+            if let Ok(mut shared) = shared.lock() {
+                if shared.shell_state.can_start_session() {
+                    shared.pending_hotkey_origin_insert_target =
+                        resolve_pending_hotkey_origin_capture(
+                            shared.pending_hotkey_origin_insert_target.as_ref(),
+                            candidate_context.as_ref(),
+                        );
+                } else {
+                    shared.pending_hotkey_origin_insert_target = None;
+                }
+            }
+        });
     }
 
     fn spawn_hotkey_origin_enrichment(
@@ -8257,15 +11020,13 @@ mod windows_app {
             return Ok(());
         }
 
-        let model = unsafe { get_window_state_mut(hwnd) }
-            .ok()
-            .and_then(|state| {
-                state
-                    .shared
-                    .lock()
-                    .ok()
-                    .map(|shared| desktop_shortcut_help_model(&shared.desktop_actions))
-            });
+        let model = unsafe { get_window_state(hwnd) }.ok().and_then(|state| {
+            state
+                .shared
+                .lock()
+                .ok()
+                .map(|shared| desktop_shortcut_help_model(&shared.desktop_actions))
+        });
         if let Some(model) = model {
             show_shortcut_help(hwnd, model)?;
         }
@@ -8273,14 +11034,21 @@ mod windows_app {
     }
 
     fn show_shortcut_help(hwnd: HWND, model: DesktopShortcutHelpModel) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        if state.shortcut_help_hwnd.is_null() {
+        let shortcut_help_hwnd = unsafe { get_window_state(hwnd)? }.shortcut_help_hwnd.get();
+        show_shortcut_help_window(shortcut_help_hwnd, model)
+    }
+
+    fn show_shortcut_help_window(
+        shortcut_help_hwnd: HWND,
+        model: DesktopShortcutHelpModel,
+    ) -> Result<()> {
+        if shortcut_help_hwnd.is_null() {
             anyhow::bail!("Talk desktop shortcut help window is unavailable");
         }
 
         let metrics = scale_shortcut_help_metrics_for_dpi(
-            desktop_shortcut_help_metrics(),
-            overlay_dpi_for_window(state.shortcut_help_hwnd),
+            desktop_shortcut_help_metrics_for_entry_count(model.entries.len()),
+            overlay_dpi_for_window(shortcut_help_hwnd),
         );
         let (screen_width, screen_height) = current_screen_size();
         let position = desktop_shortcut_help_position(
@@ -8297,7 +11065,7 @@ mod windows_app {
 
         unsafe {
             SetWindowPos(
-                state.shortcut_help_hwnd,
+                shortcut_help_hwnd,
                 (-1isize) as HWND,
                 position.x,
                 position.y,
@@ -8306,21 +11074,21 @@ mod windows_app {
                 SWP_NOACTIVATE,
             );
             apply_rounded_window_region(
-                state.shortcut_help_hwnd,
+                shortcut_help_hwnd,
                 metrics.width,
                 metrics.height,
                 scale_desktop_overlay_length(
                     SHORTCUT_HELP_CORNER_RADIUS,
-                    overlay_dpi_for_window(state.shortcut_help_hwnd),
+                    overlay_dpi_for_window(shortcut_help_hwnd),
                 ),
             );
-            InvalidateRect(state.shortcut_help_hwnd, ptr::null(), 1);
+            InvalidateRect(shortcut_help_hwnd, ptr::null(), 0);
             match desktop_shortcut_help_activation_policy() {
                 DesktopOverlayActivationPolicy::NoActivate => {
-                    ShowWindow(state.shortcut_help_hwnd, SW_SHOWNOACTIVATE);
+                    ShowWindow(shortcut_help_hwnd, SW_SHOWNOACTIVATE);
                 }
                 DesktopOverlayActivationPolicy::ActivateOnInteract => {
-                    ShowWindow(state.shortcut_help_hwnd, SW_SHOWNOACTIVATE);
+                    ShowWindow(shortcut_help_hwnd, SW_SHOWNOACTIVATE);
                 }
             }
         }
@@ -8328,53 +11096,71 @@ mod windows_app {
     }
 
     fn hide_shortcut_help(hwnd: HWND) -> Result<()> {
-        let state = unsafe { get_window_state_mut(hwnd)? };
-        if !state.shortcut_help_hwnd.is_null() {
+        let shortcut_help_hwnd = unsafe { get_window_state(hwnd)? }.shortcut_help_hwnd.get();
+        hide_shortcut_help_window(shortcut_help_hwnd)
+    }
+
+    fn hide_shortcut_help_window(shortcut_help_hwnd: HWND) -> Result<()> {
+        if !shortcut_help_hwnd.is_null() {
             if let Ok(mut overlay) = overlay_ui_state().lock() {
                 overlay.shortcut_help = None;
             }
             unsafe {
-                ShowWindow(state.shortcut_help_hwnd, SW_HIDE);
+                ShowWindow(shortcut_help_hwnd, SW_HIDE);
             }
         }
         Ok(())
     }
 
-    fn spawn_timeout_watcher(hwnd: HWND, generation: u64, max_recording_seconds: u64) {
+    /// Arms the recording timeout on the UI thread with a window timer instead
+    /// of a dedicated sleeping thread, so an early stop/cancel simply kills the
+    /// timer instead of leaving a thread lingering until the deadline.
+    fn arm_recording_timeout_timer(hwnd: HWND, generation: u64, max_recording_seconds: u64) {
         if max_recording_seconds == 0 {
             return;
         }
-        let hwnd_value = hwnd as usize;
-        thread::spawn(move || {
-            let hwnd = hwnd_value as HWND;
-            thread::sleep(Duration::from_secs(max_recording_seconds));
-            unsafe {
-                let _ = PostMessageW(hwnd, STOP_MESSAGE, generation as usize, 0);
-            }
-        });
+        if let Ok(state) = unsafe { get_window_state(hwnd) } {
+            state.recording_timeout_generation.set(Some(generation));
+        }
+        let timeout_ms = max_recording_seconds.saturating_mul(1000).min(0x7FFF_FFFF) as u32;
+        unsafe {
+            SetTimer(hwnd, TIMER_RECORDING_TIMEOUT, timeout_ms, None);
+        }
     }
 
-    fn spawn_release_watcher(
-        hwnd: HWND,
-        generation: u64,
-        hotkey: HotkeySpec,
-        max_recording_seconds: u64,
-    ) {
+    fn cancel_recording_timeout_timer(hwnd: HWND) {
+        if let Ok(state) = unsafe { get_window_state(hwnd) } {
+            state.recording_timeout_generation.set(None);
+        }
+        unsafe {
+            KillTimer(hwnd, TIMER_RECORDING_TIMEOUT);
+        }
+    }
+
+    fn handle_recording_timeout_timer(hwnd: HWND) {
+        let generation = unsafe { get_window_state(hwnd) }
+            .ok()
+            .and_then(|state| state.recording_timeout_generation.take());
+        unsafe {
+            KillTimer(hwnd, TIMER_RECORDING_TIMEOUT);
+        }
+        if let Some(generation) = generation {
+            request_stop_recording(hwnd, generation);
+        }
+    }
+
+    fn spawn_preparation_release_watcher(hwnd: HWND, generation: u64, hotkey: HotkeySpec) {
         let hwnd_value = hwnd as usize;
         thread::spawn(move || {
             let hwnd = hwnd_value as HWND;
-            let deadline = (max_recording_seconds > 0)
-                .then(|| Instant::now() + Duration::from_secs(max_recording_seconds));
             loop {
-                if !hotkey.is_pressed()
-                    || deadline.is_some_and(|deadline| Instant::now() >= deadline)
-                {
+                if !hotkey.is_pressed() {
                     unsafe {
                         let _ = PostMessageW(hwnd, STOP_MESSAGE, generation as usize, 0);
                     }
                     break;
                 }
-                thread::sleep(Duration::from_millis(15));
+                thread::sleep(Duration::from_millis(40));
             }
         });
     }
@@ -8435,6 +11221,18 @@ mod windows_app {
             && left.bottom > right.top
     }
 
+    fn track_copy_popup_mouse_leave(hwnd: HWND) {
+        let mut event = TRACKMOUSEEVENT {
+            cbSize: mem::size_of::<TRACKMOUSEEVENT>() as u32,
+            dwFlags: TME_LEAVE,
+            hwndTrack: hwnd,
+            dwHoverTime: 0,
+        };
+        unsafe {
+            let _ = TrackMouseEvent(&mut event);
+        }
+    }
+
     fn copy_popup_hovered_control_for_point(
         copy_popup_hwnd: HWND,
         dpi: u32,
@@ -8463,7 +11261,7 @@ mod windows_app {
         }
         unsafe {
             if should_invalidate {
-                InvalidateRect(hwnd, ptr::null(), 1);
+                InvalidateRect(hwnd, ptr::null(), 0);
             }
         }
     }
@@ -8480,9 +11278,30 @@ mod windows_app {
         }
         if should_invalidate {
             unsafe {
-                InvalidateRect(hwnd, ptr::null(), 1);
+                InvalidateRect(hwnd, ptr::null(), 0);
             }
         }
+    }
+
+    fn set_copy_popup_pressed_control(hwnd: HWND, pressed: CopyPopupHoveredControl) {
+        let mut should_invalidate = false;
+        if let Ok(mut overlay) = overlay_ui_state().lock() {
+            if let Some(popup) = overlay.copy_popup.as_mut() {
+                if popup.pressed_control != pressed {
+                    popup.pressed_control = pressed;
+                    should_invalidate = true;
+                }
+            }
+        }
+        if should_invalidate {
+            unsafe {
+                InvalidateRect(hwnd, ptr::null(), 0);
+            }
+        }
+    }
+
+    fn clear_copy_popup_pressed_control(hwnd: HWND) {
+        set_copy_popup_pressed_control(hwnd, CopyPopupHoveredControl::None);
     }
 
     fn desktop_overlay_rect_to_rect(rect: talk_desktop::DesktopOverlayRect) -> RECT {
@@ -8492,6 +11311,15 @@ mod windows_app {
             right: rect.right,
             bottom: rect.bottom,
         }
+    }
+
+    /// Grows `target` so it also covers `other`, used to build a single dirty
+    /// region out of the HUD parts that actually changed.
+    fn union_overlay_rect(target: &mut RECT, other: RECT) {
+        target.left = target.left.min(other.left);
+        target.top = target.top.min(other.top);
+        target.right = target.right.max(other.right);
+        target.bottom = target.bottom.max(other.bottom);
     }
 
     fn copy_popup_client_metrics(copy_popup_hwnd: HWND, dpi: u32) -> DesktopCopyPopupMetrics {
@@ -8610,10 +11438,10 @@ mod windows_app {
 
     fn update_copy_popup_edit_layout(owner_hwnd: HWND, copy_popup_hwnd: HWND) -> Result<()> {
         let (copy_popup_edit_hwnd, edit_hwnds) = {
-            let state = unsafe { get_window_state_mut(owner_hwnd)? };
+            let state = unsafe { get_window_state(owner_hwnd)? };
             (
-                state.copy_popup_edit_hwnd,
-                state.copy_popup_pane_edit_hwnds.clone(),
+                state.copy_popup_edit_hwnd.get(),
+                state.copy_popup_pane_edit_hwnds.borrow().clone(),
             )
         };
         if copy_popup_edit_hwnd.is_null() || edit_hwnds.is_empty() {
@@ -8720,17 +11548,341 @@ mod windows_app {
         ) as isize
     }
 
-    unsafe fn measure_overlay_text_size(
+    #[derive(Default)]
+    struct OverlayFontCache {
+        dpi: u32,
+        fonts: HashMap<(i32, i32), isize>,
+    }
+
+    impl OverlayFontCache {
+        fn clear(&mut self) {
+            for font in self.fonts.values() {
+                unsafe {
+                    DeleteObject(*font as _);
+                }
+            }
+            self.fonts.clear();
+        }
+    }
+
+    impl Drop for OverlayFontCache {
+        fn drop(&mut self) {
+            self.clear();
+        }
+    }
+
+    thread_local! {
+        static OVERLAY_FONT_CACHE: RefCell<OverlayFontCache> =
+            RefCell::new(OverlayFontCache::default());
+    }
+
+    /// Returns a cached HFONT for the overlay windows. Cached fonts stay
+    /// selected for the lifetime of the UI thread and must NOT be deleted by
+    /// callers; the cache is invalidated (and the old fonts released) when the
+    /// DPI changes.
+    unsafe fn cached_overlay_font(dpi: u32, point_size: i32, weight: i32) -> isize {
+        OVERLAY_FONT_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.dpi != dpi {
+                cache.clear();
+                cache.dpi = dpi;
+            }
+            *cache
+                .fonts
+                .entry((point_size, weight))
+                .or_insert_with(|| create_overlay_font(dpi, point_size, weight))
+        })
+    }
+
+    #[derive(Default)]
+    struct OverlayGdiObjectCache {
+        brushes: HashMap<u32, isize>,
+        pens: HashMap<(i32, u32), isize>,
+    }
+
+    impl OverlayGdiObjectCache {
+        fn clear(&mut self) {
+            for handle in self.brushes.values().chain(self.pens.values()) {
+                unsafe {
+                    DeleteObject(*handle as _);
+                }
+            }
+            self.brushes.clear();
+            self.pens.clear();
+        }
+    }
+
+    impl Drop for OverlayGdiObjectCache {
+        fn drop(&mut self) {
+            self.clear();
+        }
+    }
+
+    thread_local! {
+        static OVERLAY_GDI_OBJECT_CACHE: RefCell<OverlayGdiObjectCache> =
+            RefCell::new(OverlayGdiObjectCache::default());
+    }
+
+    /// Returns a cached solid HBRUSH for `color`. Overlay colors all come from
+    /// the static design tokens, so the cache stays bounded to a handful of
+    /// entries for the lifetime of the UI thread. Callers must NOT delete the
+    /// returned handle; the cache releases it on thread teardown.
+    unsafe fn cached_overlay_brush(color: u32) -> isize {
+        OVERLAY_GDI_OBJECT_CACHE.with(|cache| {
+            *cache
+                .borrow_mut()
+                .brushes
+                .entry(color)
+                .or_insert_with(|| CreateSolidBrush(color) as isize)
+        })
+    }
+
+    /// Returns a cached solid HPEN for `width`/`color`, with the same ownership
+    /// rules as [`cached_overlay_brush`].
+    unsafe fn cached_overlay_pen(width: i32, color: u32) -> isize {
+        OVERLAY_GDI_OBJECT_CACHE.with(|cache| {
+            *cache
+                .borrow_mut()
+                .pens
+                .entry((width, color))
+                .or_insert_with(|| CreatePen(PS_SOLID, width, color) as isize)
+        })
+    }
+
+    /// Strokes a one pixel border around `rect` in `color`.
+    ///
+    /// `FrameRect` replaces the `SelectObject(pen)` + `SelectObject(HOLLOW_BRUSH)`
+    /// + `RoundRect(.., 0, 0)` + two restores that every square outline in the
+    /// overlay used to pay for. Same pixels, one call, no device state to save.
+    unsafe fn stroke_overlay_border(
         hdc: windows_sys::Win32::Graphics::Gdi::HDC,
-        text: &str,
+        rect: RECT,
+        color: u32,
+    ) {
+        FrameRect(hdc, &rect, cached_overlay_brush(color) as _);
+    }
+
+    /// Strokes a `thickness` pixel border inside `rect`. Unlike a pen, which
+    /// straddles the boundary, the whole stroke stays inside the rectangle, so a
+    /// focus border never bleeds into the neighbouring control.
+    unsafe fn stroke_overlay_border_thickness(
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        rect: RECT,
+        thickness: i32,
+        color: u32,
+    ) {
+        let thickness = thickness.max(1);
+        if thickness == 1 {
+            stroke_overlay_border(hdc, rect, color);
+            return;
+        }
+        let brush = cached_overlay_brush(color) as _;
+        let edges = [
+            RECT {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.top + thickness,
+            },
+            RECT {
+                left: rect.left,
+                top: rect.bottom - thickness,
+                right: rect.right,
+                bottom: rect.bottom,
+            },
+            RECT {
+                left: rect.left,
+                top: rect.top,
+                right: rect.left + thickness,
+                bottom: rect.bottom,
+            },
+            RECT {
+                left: rect.right - thickness,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+            },
+        ];
+        for edge in edges {
+            FillRect(hdc, &edge, brush);
+        }
+    }
+
+    /// Identifies which overlay window a cached back buffer belongs to. Each
+    /// window keeps its own DC/bitmap pair because they have different sizes.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum OverlayBackBufferSlot {
+        Hud,
+        CopyPopup,
+        ShortcutHelp,
+    }
+
+    struct OverlayBackBuffer {
+        width: i32,
+        height: i32,
+        memory_dc: isize,
+        memory_bitmap: isize,
+        old_bitmap: isize,
+    }
+
+    impl Drop for OverlayBackBuffer {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = SelectObject(self.memory_dc as _, self.old_bitmap as _);
+                DeleteObject(self.memory_bitmap as _);
+                DeleteDC(self.memory_dc as _);
+            }
+        }
+    }
+
+    thread_local! {
+        static OVERLAY_BACK_BUFFERS: RefCell<HashMap<OverlayBackBufferSlot, OverlayBackBuffer>> =
+            RefCell::new(HashMap::new());
+    }
+
+    /// Returns a memory DC backing one overlay window, reusing the cached
+    /// DC/bitmap pair across frames and recreating it only when that window's
+    /// size changes. The cached GDI objects are released by
+    /// `OverlayBackBuffer`'s `Drop` implementation on replacement or thread
+    /// teardown.
+    unsafe fn overlay_back_buffer_dc(
+        window_hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        slot: OverlayBackBufferSlot,
+        width: i32,
+        height: i32,
+    ) -> Option<windows_sys::Win32::Graphics::Gdi::HDC> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        OVERLAY_BACK_BUFFERS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(buffer) = cache.get(&slot) {
+                if buffer.width == width && buffer.height == height {
+                    return Some(buffer.memory_dc as _);
+                }
+            }
+            cache.remove(&slot);
+
+            let memory_dc = CreateCompatibleDC(window_hdc);
+            if memory_dc.is_null() {
+                return None;
+            }
+            let memory_bitmap = CreateCompatibleBitmap(window_hdc, width, height);
+            if memory_bitmap.is_null() {
+                DeleteDC(memory_dc);
+                return None;
+            }
+            let old_bitmap = SelectObject(memory_dc, memory_bitmap as _);
+            if old_bitmap.is_null() {
+                DeleteObject(memory_bitmap as _);
+                DeleteDC(memory_dc);
+                return None;
+            }
+            cache.insert(
+                slot,
+                OverlayBackBuffer {
+                    width,
+                    height,
+                    memory_dc: memory_dc as isize,
+                    memory_bitmap: memory_bitmap as isize,
+                    old_bitmap: old_bitmap as isize,
+                },
+            );
+            Some(memory_dc)
+        })
+    }
+
+    /// Copies the freshly painted region of a back buffer onto the window DC.
+    unsafe fn blit_overlay_back_buffer(
+        window_hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        memory_dc: windows_sys::Win32::Graphics::Gdi::HDC,
+        paint_rect: RECT,
+    ) {
+        let paint_width = (paint_rect.right - paint_rect.left).max(0);
+        let paint_height = (paint_rect.bottom - paint_rect.top).max(0);
+        if paint_width == 0 || paint_height == 0 {
+            return;
+        }
+        BitBlt(
+            window_hdc,
+            paint_rect.left,
+            paint_rect.top,
+            paint_width,
+            paint_height,
+            memory_dc,
+            paint_rect.left,
+            paint_rect.top,
+            SRCCOPY,
+        );
+    }
+
+    /// Measures text that has already been converted to UTF-16, so callers that
+    /// also draw it convert once instead of once per measurement and once per
+    /// `TextOutW`. `wide` is expected to be NUL-terminated like `to_wide`
+    /// returns.
+    unsafe fn measure_overlay_wide_text_size(
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        wide: &[u16],
     ) -> SIZE {
-        let wide = to_wide(text);
         let mut size = SIZE { cx: 0, cy: 0 };
         let text_len = wide.len().saturating_sub(1) as i32;
         if text_len > 0 {
             let _ = GetTextExtentPoint32W(hdc, wide.as_ptr(), text_len, &mut size);
         }
         size
+    }
+
+    fn encode_overlay_glyph_utf16(glyph: char) -> ([u16; 2], usize) {
+        let mut buffer = [0u16; 2];
+        let length = glyph.encode_utf16(&mut buffer).len();
+        (buffer, length)
+    }
+
+    unsafe fn measure_overlay_glyph_size(
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        glyph: char,
+    ) -> SIZE {
+        let (wide, length) = encode_overlay_glyph_utf16(glyph);
+        let mut size = SIZE { cx: 0, cy: 0 };
+        let _ = GetTextExtentPoint32W(hdc, wide.as_ptr(), length as i32, &mut size);
+        size
+    }
+
+    #[derive(Default)]
+    struct OverlayGlyphMetricCache {
+        dpi: u32,
+        glyphs: HashMap<char, (i32, i32)>,
+    }
+
+    thread_local! {
+        static OVERLAY_GLYPH_METRIC_CACHE: RefCell<OverlayGlyphMetricCache> =
+            RefCell::new(OverlayGlyphMetricCache::default());
+    }
+
+    /// Measures `glyph` once per DPI and reuses the result afterwards. The
+    /// thinking HUD re-lays out its title on every animation frame, and
+    /// `GetTextExtentPoint32W` was the dominant cost of that pass. Callers must
+    /// have the overlay title font selected into `hdc`, which is the only font
+    /// the wave text is drawn with.
+    unsafe fn cached_overlay_glyph_metrics(
+        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
+        dpi: u32,
+        glyph: char,
+    ) -> (i32, i32) {
+        OVERLAY_GLYPH_METRIC_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.dpi != dpi {
+                cache.glyphs.clear();
+                cache.dpi = dpi;
+            }
+            if let Some(metrics) = cache.glyphs.get(&glyph) {
+                return *metrics;
+            }
+            let size = measure_overlay_glyph_size(hdc, glyph);
+            let metrics = (size.cx, size.cy);
+            cache.glyphs.insert(glyph, metrics);
+            metrics
+        })
     }
 
     unsafe fn draw_thinking_wave_text(
@@ -8741,51 +11893,42 @@ mod windows_app {
         pulse_tick: u32,
     ) {
         let palette = desktop_hud_thinking_palette();
-        let glyphs: Vec<String> = text.chars().map(|glyph| glyph.to_string()).collect();
-        if glyphs.is_empty() {
+        let glyph_count = text.chars().count();
+        if glyph_count == 0 {
             return;
         }
 
-        let wave_offsets = desktop_hud_thinking_text_wave_offsets(glyphs.len(), pulse_tick);
+        let wave_offsets = desktop_hud_thinking_text_wave_offsets(glyph_count, pulse_tick);
         let letter_spacing = scale_desktop_overlay_length(1, dpi);
-        let shadow_offset = scale_desktop_overlay_length(1, dpi).max(1);
-        let mut glyph_widths = Vec::with_capacity(glyphs.len());
+        let min_width = scale_desktop_overlay_length(6, dpi);
+        let min_height = scale_desktop_overlay_length(14, dpi);
+        let mut glyph_widths = Vec::with_capacity(glyph_count);
         let mut total_width = 0i32;
         let mut max_height = 0i32;
 
-        for glyph in &glyphs {
-            let size = measure_overlay_text_size(hdc, glyph);
-            let width = size.cx.max(scale_desktop_overlay_length(6, dpi));
-            let height = size.cy.max(scale_desktop_overlay_length(14, dpi));
+        for glyph in text.chars() {
+            let (glyph_width, glyph_height) = cached_overlay_glyph_metrics(hdc, dpi, glyph);
+            let width = glyph_width.max(min_width);
             glyph_widths.push(width);
             total_width += width;
-            max_height = max_height.max(height);
+            max_height = max_height.max(glyph_height.max(min_height));
         }
 
-        total_width += letter_spacing * (glyphs.len().saturating_sub(1) as i32);
+        total_width += letter_spacing * (glyph_count.saturating_sub(1) as i32);
         let mut current_x = rect.left + ((rect.right - rect.left - total_width).max(0) / 2);
         let base_y = rect.top + ((rect.bottom - rect.top - max_height).max(0) / 2);
 
-        for ((glyph, width), wave_offset_px) in glyphs
-            .iter()
-            .zip(glyph_widths.iter())
-            .zip(wave_offsets.into_iter())
+        // One text pass, not two: the drop shadow doubled the TextOutW calls per
+        // frame for a 1px offset nobody could read at this font size.
+        SetTextColor(hdc, rgb_triplet(palette.text_rgb));
+        for ((glyph, width), wave_offset_px) in
+            text.chars().zip(glyph_widths.iter()).zip(wave_offsets)
         {
             let wave_direction = if wave_offset_px.is_negative() { -1 } else { 1 };
             let wave_magnitude = scale_desktop_overlay_length(i32::from(wave_offset_px.abs()), dpi);
             let y = base_y + (wave_direction * wave_magnitude);
-            let wide = to_wide(glyph);
-            let text_len = wide.len().saturating_sub(1) as i32;
-            SetTextColor(hdc, rgb_triplet(palette.text_shadow_rgb));
-            let _ = TextOutW(
-                hdc,
-                current_x + shadow_offset,
-                y + shadow_offset,
-                wide.as_ptr(),
-                text_len,
-            );
-            SetTextColor(hdc, rgb_triplet(palette.text_rgb));
-            let _ = TextOutW(hdc, current_x, y, wide.as_ptr(), text_len);
+            let (wide, text_len) = encode_overlay_glyph_utf16(glyph);
+            let _ = TextOutW(hdc, current_x, y, wide.as_ptr(), text_len as i32);
             current_x += *width + letter_spacing;
         }
     }
@@ -8809,26 +11952,35 @@ mod windows_app {
             return;
         }
 
-        let transcript_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
+        let transcript_font = cached_overlay_font(dpi, 9, FW_BOLD as i32);
         let old_transcript_font = SelectObject(hdc, transcript_font as _);
         let line_height = scale_desktop_overlay_length(17, dpi).max(12);
         let unit_width = desktop_listening_hud_text_unit_width(dpi);
         let mut line_top = text_rect.top;
 
         for line in visible_lines {
-            let run_widths = line
+            // Convert each run to UTF-16 once and keep the buffer: the same
+            // bytes were previously encoded twice per run per frame, once to
+            // measure the run and once to draw it.
+            let measured_runs = line
                 .runs
-                .iter()
+                .into_iter()
                 .map(|run| {
-                    let measured_width = measure_overlay_text_size(hdc, &run.text).cx;
-                    if measured_width > 0 {
+                    let wide = to_wide(&run.text);
+                    let measured_width = measure_overlay_wide_text_size(hdc, &wide).cx;
+                    let width = if measured_width > 0 {
                         measured_width
                     } else {
                         (display_text_units(&run.text) as i32 * unit_width).max(1)
-                    }
+                    };
+                    (run.lifecycle, wide, width)
                 })
                 .collect::<Vec<_>>();
-            let line_width = run_widths.iter().sum::<i32>().max(1);
+            let line_width = measured_runs
+                .iter()
+                .map(|(_, _, width)| *width)
+                .sum::<i32>()
+                .max(1);
             let mut current_x = desktop_listening_hud_line_origin(
                 DesktopOverlayRect {
                     left: text_rect.left,
@@ -8839,14 +11991,8 @@ mod windows_app {
                 line_width,
             );
 
-            for (run, run_width) in line.runs.into_iter().zip(run_widths) {
-                let color = match run.lifecycle {
-                    DesktopTextLifecycleState::Corrected => rgb(245, 247, 250),
-                    DesktopTextLifecycleState::PreRecognized => rgb(245, 190, 72),
-                    DesktopTextLifecycleState::AudioWave => terminal_text_soft_color(),
-                };
-                SetTextColor(hdc, color);
-                let wide = to_wide(&run.text);
+            for (lifecycle, wide, run_width) in measured_runs {
+                SetTextColor(hdc, text_lifecycle_color(lifecycle));
                 let text_len = wide.len().saturating_sub(1) as i32;
                 let _ = TextOutW(hdc, current_x, line_top, wide.as_ptr(), text_len);
                 current_x += run_width;
@@ -8856,7 +12002,6 @@ mod windows_app {
         }
 
         let _ = SelectObject(hdc, old_transcript_font);
-        DeleteObject(transcript_font as _);
     }
 
     fn desktop_hud_view_model_for_text(text: &str) -> DesktopHudViewModel {
@@ -8926,6 +12071,72 @@ mod windows_app {
         (!owner.is_null()).then_some(owner)
     }
 
+    fn activate_copy_popup_for_interaction(owner_hwnd: HWND) -> Result<()> {
+        let foreground_hwnd = unsafe { GetForegroundWindow() };
+        let (copy_popup_hwnd, copy_popup_edit_hwnd, hud_hwnd, needs_focus_capture) = {
+            let state = unsafe { get_window_state(owner_hwnd)? };
+            (
+                state.copy_popup_hwnd.get(),
+                state.copy_popup_edit_hwnd.get(),
+                state.hud_hwnd.get(),
+                state.copy_popup_restore_foreground_hwnd.get().is_null(),
+            )
+        };
+        if copy_popup_hwnd.is_null() || copy_popup_edit_hwnd.is_null() {
+            anyhow::bail!("Talk desktop copy popup is unavailable");
+        }
+
+        let can_capture_foreground = needs_focus_capture
+            && !foreground_hwnd.is_null()
+            && foreground_hwnd != copy_popup_hwnd
+            && foreground_hwnd != owner_hwnd
+            && foreground_hwnd != hud_hwnd
+            && unsafe { IsWindow(foreground_hwnd) != 0 };
+        if can_capture_foreground {
+            let focus_target =
+                capture_foreground_focus_target(foreground_hwnd, owner_hwnd, hud_hwnd)
+                    .focus_hwnd
+                    .unwrap_or(foreground_hwnd);
+            let state = unsafe { get_window_state(owner_hwnd)? };
+            if state.copy_popup_restore_foreground_hwnd.get().is_null() {
+                state
+                    .copy_popup_restore_foreground_hwnd
+                    .set(foreground_hwnd);
+                state.copy_popup_restore_focus_hwnd.set(focus_target);
+            }
+        }
+
+        unsafe {
+            clear_copy_popup_keyboard_focus(copy_popup_hwnd);
+            let _ = SetForegroundWindow(copy_popup_hwnd);
+            let _ = SetFocus(copy_popup_edit_hwnd);
+        }
+        Ok(())
+    }
+
+    fn restore_copy_popup_focus_after_hide(
+        should_restore_focus: bool,
+        foreground_hwnd: HWND,
+        focus_hwnd: HWND,
+    ) {
+        if !should_restore_focus || foreground_hwnd.is_null() {
+            return;
+        }
+
+        unsafe {
+            if IsWindow(foreground_hwnd) == 0 {
+                return;
+            }
+            let _ = SetForegroundWindow(foreground_hwnd);
+        }
+        let focus_hwnd = if focus_hwnd.is_null() {
+            foreground_hwnd
+        } else {
+            focus_hwnd
+        };
+        restore_foreground_focus_target(foreground_hwnd, focus_hwnd);
+    }
+
     fn window_text(hwnd: HWND) -> Option<String> {
         if hwnd.is_null() {
             return None;
@@ -8938,9 +12149,9 @@ mod windows_app {
     }
 
     fn copy_popup_current_text(owner_hwnd: HWND) -> Result<String> {
-        let state = unsafe { get_window_state_mut(owner_hwnd)? };
-        if !state.copy_popup_edit_hwnd.is_null() {
-            if let Some(text) = window_text(state.copy_popup_edit_hwnd) {
+        let state = unsafe { get_window_state(owner_hwnd)? };
+        if !state.copy_popup_edit_hwnd.get().is_null() {
+            if let Some(text) = window_text(state.copy_popup_edit_hwnd.get()) {
                 return Ok(text);
             }
         }
@@ -8963,12 +12174,7 @@ mod windows_app {
         clipboard
             .write_text(&raw_text)
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if let Ok(state) = unsafe { get_window_state_mut(owner_hwnd) } {
-            unsafe {
-                let _ = SetForegroundWindow(state.copy_popup_hwnd);
-                let _ = SetFocus(state.copy_popup_edit_hwnd);
-            }
-        }
+        let _ = activate_copy_popup_for_interaction(owner_hwnd);
         if desktop_copy_popup_copy_shows_follow_up_hud() {
             show_hud_text(
                 owner_hwnd,
@@ -8979,35 +12185,11 @@ mod windows_app {
         Ok(())
     }
 
-    unsafe fn gradient_fill_client_rect(
-        hdc: windows_sys::Win32::Graphics::Gdi::HDC,
-        rect: RECT,
-        start_color: u32,
-        end_color: u32,
-        vertical: bool,
-    ) {
-        let vertices = [
-            trivertex_at(rect.left, rect.top, start_color),
-            trivertex_at(rect.right, rect.bottom, end_color),
-        ];
-        let gradient_rect = GRADIENT_RECT {
-            UpperLeft: 0,
-            LowerRight: 1,
-        };
-        let _ = GradientFill(
-            hdc,
-            vertices.as_ptr(),
-            vertices.len() as u32,
-            (&gradient_rect as *const GRADIENT_RECT).cast(),
-            1,
-            if vertical {
-                GRADIENT_FILL_RECT_V
-            } else {
-                GRADIENT_FILL_RECT_H
-            },
-        );
-    }
-
+    /// Draws the overlay panel: a single hairline border and a short accent bar
+    /// that carries the state color. The caller owns the background fill, so the
+    /// same full-window blit is not paid twice. Decorative grid lines, corner
+    /// brackets and the second accent rail were removed so the HUD reads as one
+    /// surface and every animated frame costs a bounded number of GDI calls.
     unsafe fn draw_terminal_shell_chrome(
         hdc: windows_sys::Win32::Graphics::Gdi::HDC,
         rect: RECT,
@@ -9015,102 +12197,38 @@ mod windows_app {
         dpi: u32,
         corner_radius: i32,
     ) {
-        gradient_fill_client_rect(
-            hdc,
-            rect,
-            terminal_shell_top_color(),
-            terminal_shell_bottom_color(),
-            true,
-        );
-
-        let grid_pen = CreatePen(PS_SOLID, 1, terminal_grid_color());
-        let old_pen = SelectObject(hdc, grid_pen as _);
-        let step_y = scale_desktop_overlay_length(16, dpi).max(12);
-        let step_x = scale_desktop_overlay_length(24, dpi).max(20);
-        let grid_inset = scale_desktop_overlay_length(14, dpi).max(10);
-        let width = rect.right - rect.left;
-        let height = rect.bottom - rect.top;
-
-        let mut y = rect.top + grid_inset;
-        while y < rect.bottom - grid_inset {
-            let _ = MoveToEx(hdc, rect.left + grid_inset, y, ptr::null_mut());
-            let _ = LineTo(hdc, rect.right - grid_inset, y);
-            y += step_y;
-        }
-        let mut x = rect.left + grid_inset;
-        while x < rect.right - grid_inset {
-            let _ = MoveToEx(hdc, x, rect.top + grid_inset, ptr::null_mut());
-            let _ = LineTo(hdc, x, rect.bottom - grid_inset);
-            x += step_x;
+        if corner_radius > 0 {
+            let border_pen = cached_overlay_pen(1, terminal_border_color());
+            let old_pen = SelectObject(hdc, border_pen as _);
+            let old_brush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
+            RoundRect(
+                hdc,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                corner_radius,
+                corner_radius,
+            );
+            let _ = SelectObject(hdc, old_brush);
+            let _ = SelectObject(hdc, old_pen);
+        } else {
+            stroke_overlay_border(hdc, rect, terminal_border_color());
         }
 
-        let _ = SelectObject(hdc, old_pen);
-        DeleteObject(grid_pen as _);
-
-        let border_pen = CreatePen(PS_SOLID, 1, terminal_border_color());
-        let old_pen = SelectObject(hdc, border_pen as _);
-        let old_brush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
-        RoundRect(
-            hdc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            corner_radius,
-            corner_radius,
-        );
-        let _ = SelectObject(hdc, old_brush);
-        let _ = SelectObject(hdc, old_pen);
-        DeleteObject(border_pen as _);
-
-        let accent_brush = CreateSolidBrush(accent_color);
-        let support_brush = CreateSolidBrush(terminal_secondary_accent_color());
-        let old_brush = SelectObject(hdc, accent_brush as _);
-        let old_pen = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
-        let rail_height = scale_desktop_overlay_length(4, dpi).max(3);
-        let rail_left = rect.left + scale_desktop_overlay_length(18, dpi);
-        let rail_top = rect.top + scale_desktop_overlay_length(12, dpi);
-        let rail_width = (width / 3)
-            .min(scale_desktop_overlay_length(96, dpi))
-            .max(48);
-        RoundRect(
-            hdc,
-            rail_left,
-            rail_top,
-            rail_left + rail_width,
-            rail_top + rail_height,
-            rail_height,
-            rail_height,
-        );
-        let _ = SelectObject(hdc, support_brush as _);
-        let support_width = scale_desktop_overlay_length(40, dpi).max(28);
-        RoundRect(
-            hdc,
-            rect.right - scale_desktop_overlay_length(18, dpi) - support_width,
-            rail_top,
-            rect.right - scale_desktop_overlay_length(18, dpi),
-            rail_top + rail_height,
-            rail_height,
-            rail_height,
-        );
-        let _ = SelectObject(hdc, old_pen);
-        let _ = SelectObject(hdc, old_brush);
-        DeleteObject(accent_brush as _);
-        DeleteObject(support_brush as _);
-
-        let corner_pen = CreatePen(PS_SOLID, 1, accent_color);
-        let old_pen = SelectObject(hdc, corner_pen as _);
-        let corner_len = scale_desktop_overlay_length(18, dpi).max(12);
-        let corner_left = rect.left + scale_desktop_overlay_length(18, dpi);
-        let corner_top = rect.top + scale_desktop_overlay_length(18, dpi);
-        let _ = MoveToEx(hdc, corner_left, corner_top + corner_len, ptr::null_mut());
-        let _ = LineTo(hdc, corner_left, corner_top);
-        let _ = LineTo(hdc, corner_left + corner_len, corner_top);
-        let _ = SelectObject(hdc, old_pen);
-        DeleteObject(corner_pen as _);
-
-        let _ = width;
-        let _ = height;
+        let rail_height = scale_desktop_overlay_length(3, dpi).max(2);
+        let rail_left = rect.left + scale_desktop_overlay_length(14, dpi);
+        let rail_top = rect.top + scale_desktop_overlay_length(11, dpi);
+        let rail_width = ((rect.right - rect.left) / 4)
+            .min(scale_desktop_overlay_length(56, dpi))
+            .max(28);
+        let rail_rect = RECT {
+            left: rail_left,
+            top: rail_top,
+            right: rail_left + rail_width,
+            bottom: rail_top + rail_height,
+        };
+        FillRect(hdc, &rail_rect, cached_overlay_brush(accent_color) as _);
     }
 
     unsafe fn draw_terminal_pill(
@@ -9123,12 +12241,10 @@ mod windows_app {
         font: isize,
         text: &str,
     ) {
-        let brush = CreateSolidBrush(fill_color);
-        let pen = CreatePen(PS_SOLID, 1, border_color);
-        let old_brush = SelectObject(hdc, brush as _);
-        let old_pen = SelectObject(hdc, pen as _);
-        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 0, 0);
-        let _ = SelectObject(hdc, font as _);
+        let brush = cached_overlay_brush(fill_color);
+        FillRect(hdc, &rect, brush as _);
+        stroke_overlay_border(hdc, rect, border_color);
+        let old_font = SelectObject(hdc, font as _);
         SetTextColor(hdc, text_color);
         let mut text_rect = rect;
         DrawTextW(
@@ -9138,10 +12254,7 @@ mod windows_app {
             &mut text_rect,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE,
         );
-        let _ = SelectObject(hdc, old_pen);
-        let _ = SelectObject(hdc, old_brush);
-        DeleteObject(brush as _);
-        DeleteObject(pen as _);
+        let _ = SelectObject(hdc, old_font);
     }
 
     unsafe fn draw_terminal_thinking_indicator(
@@ -9150,14 +12263,12 @@ mod windows_app {
         dpi: u32,
         accent_color: u32,
     ) {
-        let shell_brush = CreateSolidBrush(terminal_panel_fill_color());
-        let border_pen = CreatePen(PS_SOLID, 1, terminal_border_color());
-        let old_brush = SelectObject(hdc, shell_brush as _);
-        let old_pen = SelectObject(hdc, border_pen as _);
-        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 0, 0);
+        let shell_brush = cached_overlay_brush(terminal_panel_fill_color());
+        FillRect(hdc, &rect, shell_brush as _);
+        stroke_overlay_border(hdc, rect, terminal_border_color());
 
-        let pulse_brush = CreateSolidBrush(accent_color);
-        let _ = SelectObject(hdc, pulse_brush as _);
+        let old_brush = SelectObject(hdc, cached_overlay_brush(accent_color) as _);
+        let old_pen = SelectObject(hdc, cached_overlay_pen(1, terminal_border_color()) as _);
         let dot_size = scale_desktop_overlay_length(8, dpi).max(6);
         let dot_gap = scale_desktop_overlay_length(8, dpi).max(6);
         let total_width = (dot_size * 3) + (dot_gap * 2);
@@ -9170,9 +12281,6 @@ mod windows_app {
 
         let _ = SelectObject(hdc, old_pen);
         let _ = SelectObject(hdc, old_brush);
-        DeleteObject(shell_brush as _);
-        DeleteObject(border_pen as _);
-        DeleteObject(pulse_brush as _);
     }
 
     unsafe fn paint_hud_window(hwnd: HWND) {
@@ -9208,24 +12316,16 @@ mod windows_app {
                         )
                     })
                     .unwrap_or(true);
-                let source_model = overlay
+                let mut model = overlay
                     .hud_model
                     .clone()
                     .unwrap_or_else(|| desktop_hud_view_model_for_phase(RuntimePhase::Recording));
-                let model = if source_model.visual_state == DesktopHudVisualState::Listening
-                    && !paint_text_region
-                {
-                    DesktopHudViewModel {
-                        visual_state: source_model.visual_state,
-                        title: source_model.title.clone(),
-                        detail: None,
-                        detail_lifecycle: source_model.detail_lifecycle,
-                        meter: source_model.meter.clone(),
-                        progress_percent: source_model.progress_percent,
-                    }
-                } else {
-                    source_model
-                };
+                if model.visual_state == DesktopHudVisualState::Listening && !paint_text_region {
+                    // Drop the detail in place instead of rebuilding the model:
+                    // the rebuild cloned the title and the meter a second time on
+                    // every frame the transcript region was skipped.
+                    model.detail = None;
+                }
                 (
                     model,
                     overlay.hud_thinking_pulse_tick,
@@ -9261,69 +12361,36 @@ mod windows_app {
                     true,
                 )
             });
-        let buffer = if width > 0 && height > 0 {
-            let memory_dc = CreateCompatibleDC(window_hdc);
-            if memory_dc.is_null() {
-                None
-            } else {
-                let memory_bitmap = CreateCompatibleBitmap(window_hdc, width, height);
-                if memory_bitmap.is_null() {
-                    DeleteDC(memory_dc);
-                    None
-                } else {
-                    let old_bitmap = SelectObject(memory_dc, memory_bitmap as _);
-                    if old_bitmap.is_null() {
-                        DeleteObject(memory_bitmap as _);
-                        DeleteDC(memory_dc);
-                        None
-                    } else {
-                        Some((memory_dc, memory_bitmap, old_bitmap))
-                    }
-                }
-            }
+        let buffer = overlay_back_buffer_dc(window_hdc, OverlayBackBufferSlot::Hud, width, height);
+        let hdc = buffer.unwrap_or(window_hdc);
+        // One background fill per frame, whichever surface we ended up with. The
+        // shell chrome below used to repeat it, so a full-window blit was paid
+        // twice on every animated frame.
+        let background_color = if model.visual_state == DesktopHudVisualState::Listening {
+            listening_shell_color()
         } else {
-            None
+            terminal_panel_fill_color()
         };
-        let hdc = buffer
-            .as_ref()
-            .map(|(memory_dc, _, _)| *memory_dc)
-            .unwrap_or(window_hdc);
-        if buffer.is_some() {
-            let background_color = if model.visual_state == DesktopHudVisualState::Listening {
-                listening_shell_color()
-            } else {
-                terminal_panel_fill_color()
-            };
-            let background_brush = CreateSolidBrush(background_color);
-            FillRect(hdc, &rect, background_brush);
-            DeleteObject(background_brush as _);
-        }
-        let title_font = create_overlay_font(dpi, 15, FW_BOLD as i32);
-        let badge_font = create_overlay_font(dpi, 9, FW_BOLD as i32);
-        let icon_font = create_overlay_font(dpi, 13, FW_BOLD as i32);
+        FillRect(hdc, &rect, cached_overlay_brush(background_color) as _);
+        let title_font = cached_overlay_font(dpi, 15, FW_BOLD as i32);
+        let badge_font = cached_overlay_font(dpi, 9, FW_BOLD as i32);
+        let icon_font = cached_overlay_font(dpi, 13, FW_BOLD as i32);
         let accent_color = accent_fill_color(model.visual_state);
         let old_font = SelectObject(hdc, title_font as _);
         SetBkMode(hdc, TRANSPARENT as i32);
 
         if model.visual_state == DesktopHudVisualState::Listening {
-            let shell_brush = CreateSolidBrush(listening_shell_color());
-            let border_pen = CreatePen(PS_SOLID, 1, listening_shell_border_color());
-            let old_brush = SelectObject(hdc, shell_brush as _);
-            let old_pen = SelectObject(hdc, border_pen as _);
-            RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 0, 0);
-            let _ = SelectObject(hdc, old_pen);
-            let _ = SelectObject(hdc, old_brush);
-            DeleteObject(shell_brush as _);
-            DeleteObject(border_pen as _);
-
+            // Background already laid down above; the shell only needs its
+            // hairline border here.
+            stroke_overlay_border(hdc, rect, listening_shell_border_color());
             let cancel_rect = desktop_listening_hud_cancel_button_rect(width, height, dpi);
             let confirm_rect = desktop_listening_hud_complete_button_rect(width, height, dpi);
             let mut waveform_rect = cached_partial_layout
                 .map(|layout| layout.waveform_rect)
                 .unwrap_or_else(|| desktop_listening_hud_waveform_rect(width, height, dpi));
 
-            let cancel_brush = CreateSolidBrush(listening_cancel_fill_color());
-            let cancel_pen = CreatePen(PS_SOLID, 1, listening_cancel_border_color());
+            let cancel_brush = cached_overlay_brush(listening_cancel_fill_color());
+            let cancel_pen = cached_overlay_pen(1, listening_cancel_border_color());
             let old_brush = SelectObject(hdc, cancel_brush as _);
             let old_pen = SelectObject(hdc, cancel_pen as _);
             Ellipse(
@@ -9335,11 +12402,9 @@ mod windows_app {
             );
             let _ = SelectObject(hdc, old_pen);
             let _ = SelectObject(hdc, old_brush);
-            DeleteObject(cancel_brush as _);
-            DeleteObject(cancel_pen as _);
 
-            let confirm_brush = CreateSolidBrush(listening_confirm_fill_color());
-            let confirm_pen = CreatePen(PS_SOLID, 1, listening_confirm_border_color());
+            let confirm_brush = cached_overlay_brush(listening_confirm_fill_color());
+            let confirm_pen = cached_overlay_pen(1, listening_confirm_border_color());
             let old_brush = SelectObject(hdc, confirm_brush as _);
             let old_pen = SelectObject(hdc, confirm_pen as _);
             Ellipse(
@@ -9351,8 +12416,6 @@ mod windows_app {
             );
             let _ = SelectObject(hdc, old_pen);
             let _ = SelectObject(hdc, old_brush);
-            DeleteObject(confirm_brush as _);
-            DeleteObject(confirm_pen as _);
 
             SelectObject(hdc, icon_font as _);
             SetTextColor(hdc, listening_cancel_glyph_color());
@@ -9419,49 +12482,43 @@ mod windows_app {
                         scroll_line_offset,
                     );
                     if let Some(scrollbar_rect) = partial_layout.scrollbar_rect {
-                        let track_brush = CreateSolidBrush(listening_shell_border_color());
-                        let thumb_brush = CreateSolidBrush(terminal_text_soft_color());
-                        let old_brush = SelectObject(hdc, track_brush as _);
-                        RoundRect(
+                        // Plain fills: the track and thumb are square, so the
+                        // RoundRect pass only added an outline stroked with
+                        // whatever pen happened to be selected.
+                        FillRect(
                             hdc,
-                            scrollbar_rect.left,
-                            scrollbar_rect.top,
-                            scrollbar_rect.right,
-                            scrollbar_rect.bottom,
-                            0,
-                            0,
+                            &RECT {
+                                left: scrollbar_rect.left,
+                                top: scrollbar_rect.top,
+                                right: scrollbar_rect.right,
+                                bottom: scrollbar_rect.bottom,
+                            },
+                            cached_overlay_brush(listening_shell_border_color()) as _,
                         );
-                        let _ = SelectObject(hdc, old_brush);
 
                         if let Some(thumb_rect) = desktop_listening_hud_scrollbar_thumb_rect(
                             &partial_layout,
                             dpi,
                             scroll_line_offset,
                         ) {
-                            let old_brush = SelectObject(hdc, thumb_brush as _);
-                            RoundRect(
+                            FillRect(
                                 hdc,
-                                thumb_rect.left,
-                                thumb_rect.top,
-                                thumb_rect.right,
-                                thumb_rect.bottom,
-                                0,
-                                0,
+                                &RECT {
+                                    left: thumb_rect.left,
+                                    top: thumb_rect.top,
+                                    right: thumb_rect.right,
+                                    bottom: thumb_rect.bottom,
+                                },
+                                cached_overlay_brush(terminal_text_soft_color()) as _,
                             );
-                            let _ = SelectObject(hdc, old_brush);
                         }
-                        DeleteObject(track_brush as _);
-                        DeleteObject(thumb_brush as _);
                     }
                     waveform_rect = partial_layout.waveform_rect;
                 }
             }
 
             if let Some(meter) = model.meter.as_ref() {
-                let bar_brush = CreateSolidBrush(listening_waveform_color());
-                let bar_pen = CreatePen(PS_SOLID, 1, listening_waveform_color());
-                let old_brush = SelectObject(hdc, bar_brush as _);
-                let old_pen = SelectObject(hdc, bar_pen as _);
+                let bar_brush = cached_overlay_brush(listening_waveform_color());
                 let bar_width = scale_desktop_overlay_length(4, dpi).max(2);
                 let bar_spacing = scale_desktop_overlay_length(3, dpi).max(2);
                 let total_width = (meter.bar_heights.len() as i32 * bar_width)
@@ -9473,13 +12530,17 @@ mod windows_app {
                     let x = start_x + (index as i32 * (bar_width + bar_spacing));
                     let scaled_height = scale_desktop_overlay_length(*bar_height, dpi).max(4);
                     let top = center_y - (scaled_height / 2);
-                    let bottom = top + scaled_height;
-                    RoundRect(hdc, x, top, x + bar_width, bottom, 0, 0);
+                    // FillRect instead of a pen-outlined RoundRect: the radius
+                    // was zero and the outline used the fill color, so each bar
+                    // paid for a pen it could not show.
+                    let bar_rect = RECT {
+                        left: x,
+                        top,
+                        right: x + bar_width,
+                        bottom: top + scaled_height,
+                    };
+                    FillRect(hdc, &bar_rect, bar_brush as _);
                 }
-                let _ = SelectObject(hdc, old_pen);
-                let _ = SelectObject(hdc, old_brush);
-                DeleteObject(bar_brush as _);
-                DeleteObject(bar_pen as _);
             }
         } else if model.visual_state == DesktopHudVisualState::Thinking {
             let palette = desktop_hud_thinking_palette();
@@ -9491,12 +12552,13 @@ mod windows_app {
                 right: rect.right,
                 bottom: rect.bottom,
             };
-            gradient_fill_client_rect(
+            // Flat fills instead of three per-frame GradientFill passes: the
+            // thinking HUD repaints ~14 times a second, and the gradient was
+            // only a few RGB steps wide at this size.
+            FillRect(
                 hdc,
-                progress_track_rect,
-                rgb_triplet(palette.track_start_rgb),
-                rgb_triplet(palette.track_end_rgb),
-                true,
+                &progress_track_rect,
+                cached_overlay_brush(rgb_triplet(palette.track_end_rgb)) as _,
             );
 
             let track_width = progress_track_rect.right - progress_track_rect.left;
@@ -9510,12 +12572,10 @@ mod windows_app {
                     right: progress_track_rect.left + fill_width,
                     bottom: progress_track_rect.bottom,
                 };
-                gradient_fill_client_rect(
+                FillRect(
                     hdc,
-                    fill_rect,
-                    rgb_triplet(palette.fill_start_rgb),
-                    rgb_triplet(palette.fill_end_rgb),
-                    false,
+                    &fill_rect,
+                    cached_overlay_brush(rgb_triplet(palette.fill_end_rgb)) as _,
                 );
 
                 let head_width = scale_desktop_overlay_length(8, dpi).max(4).min(fill_width);
@@ -9525,40 +12585,23 @@ mod windows_app {
                     right: fill_rect.right,
                     bottom: fill_rect.bottom,
                 };
-                gradient_fill_client_rect(
+                FillRect(
                     hdc,
-                    head_rect,
-                    rgb_triplet(palette.fill_end_rgb),
-                    rgb_triplet(palette.fill_head_rgb),
-                    false,
+                    &head_rect,
+                    cached_overlay_brush(rgb_triplet(palette.fill_head_rgb)) as _,
                 );
             }
 
-            let border_pen = CreatePen(PS_SOLID, 1, rgb_triplet(palette.border_rgb));
-            let old_pen = SelectObject(hdc, border_pen as _);
-            let old_brush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
-            RoundRect(
-                hdc,
-                progress_track_rect.left,
-                progress_track_rect.top,
-                progress_track_rect.right,
-                progress_track_rect.bottom,
-                0,
-                0,
-            );
-            let _ = SelectObject(hdc, old_brush);
-            let _ = SelectObject(hdc, old_pen);
-            DeleteObject(border_pen as _);
+            stroke_overlay_border(hdc, progress_track_rect, rgb_triplet(palette.border_rgb));
 
             if fill_width > 0 {
                 let edge_width = scale_desktop_overlay_length(1, dpi).max(1).min(fill_width);
-                let edge_pen = CreatePen(PS_SOLID, edge_width, rgb_triplet(palette.fill_head_rgb));
+                let edge_pen = cached_overlay_pen(edge_width, rgb_triplet(palette.fill_head_rgb));
                 let old_pen = SelectObject(hdc, edge_pen as _);
                 let edge_x = progress_track_rect.left + fill_width - (edge_width / 2);
                 let _ = MoveToEx(hdc, edge_x, progress_track_rect.top, ptr::null_mut());
                 let _ = LineTo(hdc, edge_x, progress_track_rect.bottom);
                 let _ = SelectObject(hdc, old_pen);
-                DeleteObject(edge_pen as _);
             }
 
             draw_thinking_wave_text(
@@ -9630,13 +12673,11 @@ mod windows_app {
                 .as_deref()
                 .filter(|detail| !detail.trim().is_empty())
             {
-                let detail_font = create_overlay_font(dpi, 10, 400);
+                let detail_font = cached_overlay_font(dpi, 10, 400);
                 let old_detail_font = SelectObject(hdc, detail_font as _);
-                let detail_color = match desktop_hud_detail_lifecycle(&model) {
-                    Some(DesktopTextLifecycleState::PreRecognized) => rgb(245, 190, 72),
-                    Some(DesktopTextLifecycleState::Corrected) => rgb(245, 247, 250),
-                    _ => terminal_text_soft_color(),
-                };
+                let detail_color = desktop_hud_detail_lifecycle(&model)
+                    .map(text_lifecycle_color)
+                    .unwrap_or_else(terminal_text_soft_color);
                 SetTextColor(hdc, detail_color);
                 DrawTextW(
                     hdc,
@@ -9651,42 +12692,20 @@ mod windows_app {
                     DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX,
                 );
                 let _ = SelectObject(hdc, old_detail_font);
-                DeleteObject(detail_font as _);
             }
         }
 
         SelectObject(hdc, old_font);
-        DeleteObject(title_font as _);
-        DeleteObject(badge_font as _);
-        DeleteObject(icon_font as _);
-        if let Some((memory_dc, memory_bitmap, old_bitmap)) = buffer {
-            let paint_rect = paint.rcPaint;
-            let paint_width = (paint_rect.right - paint_rect.left).max(0);
-            let paint_height = (paint_rect.bottom - paint_rect.top).max(0);
-            if paint_width > 0 && paint_height > 0 {
-                BitBlt(
-                    window_hdc,
-                    paint_rect.left,
-                    paint_rect.top,
-                    paint_width,
-                    paint_height,
-                    memory_dc,
-                    paint_rect.left,
-                    paint_rect.top,
-                    SRCCOPY,
-                );
-            }
-            let _ = SelectObject(memory_dc, old_bitmap);
-            DeleteObject(memory_bitmap as _);
-            DeleteDC(memory_dc);
+        if let Some(memory_dc) = buffer {
+            blit_overlay_back_buffer(window_hdc, memory_dc, paint.rcPaint);
         }
         EndPaint(hwnd, &paint);
     }
 
     unsafe fn paint_copy_popup_window(hwnd: HWND) {
         let mut paint = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut paint);
-        if hdc.is_null() {
+        let window_hdc = BeginPaint(hwnd, &mut paint);
+        if window_hdc.is_null() {
             return;
         }
 
@@ -9697,57 +12716,87 @@ mod windows_app {
             .ok()
             .and_then(|overlay| overlay.copy_popup.clone());
         let dpi = overlay_dpi_for_window(hwnd);
-        let title_font = create_overlay_font(dpi, 15, FW_BOLD as i32);
-        let label_font = create_overlay_font(dpi, 10, FW_BOLD as i32);
-        let button_font = create_overlay_font(dpi, 12, FW_BOLD as i32);
+        // Paint into a cached memory DC: the popup redraws whenever the pointer
+        // moves between its two buttons, and painting straight to the window DC
+        // made every hover flash the shell.
+        let buffer = overlay_back_buffer_dc(
+            window_hdc,
+            OverlayBackBufferSlot::CopyPopup,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        );
+        let hdc = buffer.unwrap_or(window_hdc);
+        FillRect(
+            hdc,
+            &rect,
+            cached_overlay_brush(typeless_popup_fill_color()) as _,
+        );
+        let title_font = cached_overlay_font(dpi, 15, FW_BOLD as i32);
+        let label_font = cached_overlay_font(dpi, 10, FW_BOLD as i32);
+        let button_font = cached_overlay_font(dpi, 12, FW_BOLD as i32);
         let copy_button_rect = copy_popup_copy_button_rect(hwnd, dpi);
         let close_button_rect = copy_popup_close_button_rect(hwnd, dpi);
         let editor_frame_rect = copy_popup_editor_frame_rect(hwnd, dpi);
         let old_font = SelectObject(hdc, title_font as _);
         SetBkMode(hdc, TRANSPARENT as i32);
-        let shell_brush = CreateSolidBrush(typeless_popup_fill_color());
-        let shell_pen = CreatePen(PS_SOLID, 1, typeless_popup_border_color());
-        let old_brush = SelectObject(hdc, shell_brush as _);
+        // The fill is already down; the window region clips the corners, so the
+        // rounded pass only needs to stroke the border.
+        let shell_pen = cached_overlay_pen(1, typeless_popup_border_color());
+        let old_brush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
         let old_pen = SelectObject(hdc, shell_pen as _);
-        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 0, 0);
+        let shell_radius = scale_desktop_overlay_length(COPY_POPUP_CORNER_RADIUS, dpi);
+        RoundRect(
+            hdc,
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            shell_radius,
+            shell_radius,
+        );
         let _ = SelectObject(hdc, old_pen);
         let _ = SelectObject(hdc, old_brush);
-        DeleteObject(shell_brush as _);
-        DeleteObject(shell_pen as _);
 
         if let Some(popup) = popup {
-            let close_fill = if popup.hovered_control == CopyPopupHoveredControl::Close {
+            let close_keyboard_focused =
+                popup.keyboard_focused_control == CopyPopupHoveredControl::Close;
+            let close_fill = if popup.pressed_control == CopyPopupHoveredControl::Close {
+                typeless_popup_close_button_pressed_fill_color()
+            } else if popup.hovered_control == CopyPopupHoveredControl::Close
+                || close_keyboard_focused
+            {
                 typeless_popup_close_button_hover_fill_color()
             } else {
                 typeless_popup_close_button_fill_color()
             };
-            let close_border = if popup.hovered_control == CopyPopupHoveredControl::Close {
+            let close_border = if popup.pressed_control == CopyPopupHoveredControl::Close {
+                typeless_popup_close_button_pressed_border_color()
+            } else if popup.hovered_control == CopyPopupHoveredControl::Close
+                || close_keyboard_focused
+            {
                 typeless_popup_close_button_hover_border_color()
             } else {
                 typeless_popup_close_button_border_color()
             };
-            let close_brush = CreateSolidBrush(close_fill);
-            let close_pen = CreatePen(PS_SOLID, 1, close_border);
-            let old_brush = SelectObject(hdc, close_brush as _);
-            let old_pen = SelectObject(hdc, close_pen as _);
-            RoundRect(
+            let close_rect = RECT {
+                left: close_button_rect.left,
+                top: close_button_rect.top,
+                right: close_button_rect.right,
+                bottom: close_button_rect.bottom,
+            };
+            FillRect(hdc, &close_rect, cached_overlay_brush(close_fill) as _);
+            stroke_overlay_border_thickness(
                 hdc,
-                close_button_rect.left,
-                close_button_rect.top,
-                close_button_rect.right,
-                close_button_rect.bottom,
-                0,
-                0,
+                close_rect,
+                if close_keyboard_focused { 2 } else { 1 },
+                close_border,
             );
-            let _ = SelectObject(hdc, old_pen);
-            let _ = SelectObject(hdc, old_brush);
-            DeleteObject(close_brush as _);
-            DeleteObject(close_pen as _);
 
             SelectObject(hdc, title_font as _);
             SetTextColor(
                 hdc,
-                if popup.hovered_control == CopyPopupHoveredControl::Close {
+                if popup.hovered_control == CopyPopupHoveredControl::Close || close_keyboard_focused
+                {
                     typeless_popup_close_hover_color()
                 } else {
                     typeless_popup_close_color()
@@ -9765,9 +12814,19 @@ mod windows_app {
                 },
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
+            if close_keyboard_focused {
+                let inset = scale_desktop_overlay_length(3, dpi);
+                let focus_rect = RECT {
+                    left: close_button_rect.left + inset,
+                    top: close_button_rect.top + inset,
+                    right: close_button_rect.right - inset,
+                    bottom: close_button_rect.bottom - inset,
+                };
+                let _ = DrawFocusRect(hdc, &focus_rect);
+            }
 
-            let editor_brush = CreateSolidBrush(typeless_popup_editor_fill_color());
-            let editor_pen = CreatePen(PS_SOLID, 1, typeless_popup_editor_border_color());
+            let editor_brush = cached_overlay_brush(typeless_popup_editor_fill_color());
+            let editor_pen = cached_overlay_pen(2, typeless_popup_editor_border_color());
             let old_brush = SelectObject(hdc, editor_brush as _);
             let old_pen = SelectObject(hdc, editor_pen as _);
             RoundRect(
@@ -9776,13 +12835,11 @@ mod windows_app {
                 editor_frame_rect.top,
                 editor_frame_rect.right,
                 editor_frame_rect.bottom,
-                0,
-                0,
+                scale_desktop_overlay_length(4, dpi),
+                scale_desktop_overlay_length(4, dpi),
             );
             let _ = SelectObject(hdc, old_pen);
             let _ = SelectObject(hdc, old_brush);
-            DeleteObject(editor_brush as _);
-            DeleteObject(editor_pen as _);
 
             let panes = copy_popup_visible_panes(&popup.model);
             if panes.len() > 1 {
@@ -9811,33 +12868,39 @@ mod windows_app {
                 }
             }
 
-            let copy_fill = if popup.hovered_control == CopyPopupHoveredControl::Copy {
+            let copy_keyboard_focused =
+                popup.keyboard_focused_control == CopyPopupHoveredControl::Copy;
+            let copy_fill = if popup.pressed_control == CopyPopupHoveredControl::Copy {
+                typeless_popup_button_pressed_fill_color()
+            } else if popup.hovered_control == CopyPopupHoveredControl::Copy
+                || copy_keyboard_focused
+            {
                 typeless_popup_button_hover_fill_color()
             } else {
                 typeless_popup_button_fill_color()
             };
-            let copy_border = if popup.hovered_control == CopyPopupHoveredControl::Copy {
+            let copy_border = if popup.pressed_control == CopyPopupHoveredControl::Copy {
+                typeless_popup_button_pressed_border_color()
+            } else if popup.hovered_control == CopyPopupHoveredControl::Copy
+                || copy_keyboard_focused
+            {
                 typeless_popup_button_hover_border_color()
             } else {
                 typeless_popup_button_border_color()
             };
-            let button_brush = CreateSolidBrush(copy_fill);
-            let button_pen = CreatePen(PS_SOLID, 1, copy_border);
-            let old_brush = SelectObject(hdc, button_brush as _);
-            let old_pen = SelectObject(hdc, button_pen as _);
-            RoundRect(
+            let copy_rect = RECT {
+                left: copy_button_rect.left,
+                top: copy_button_rect.top,
+                right: copy_button_rect.right,
+                bottom: copy_button_rect.bottom,
+            };
+            FillRect(hdc, &copy_rect, cached_overlay_brush(copy_fill) as _);
+            stroke_overlay_border_thickness(
                 hdc,
-                copy_button_rect.left,
-                copy_button_rect.top,
-                copy_button_rect.right,
-                copy_button_rect.bottom,
-                0,
-                0,
+                copy_rect,
+                if copy_keyboard_focused { 2 } else { 1 },
+                copy_border,
             );
-            let _ = SelectObject(hdc, old_pen);
-            let _ = SelectObject(hdc, old_brush);
-            DeleteObject(button_brush as _);
-            DeleteObject(button_pen as _);
 
             SelectObject(hdc, button_font as _);
             SetTextColor(hdc, typeless_popup_button_text_color());
@@ -9853,19 +12916,29 @@ mod windows_app {
                 },
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE,
             );
+            if copy_keyboard_focused {
+                let inset = scale_desktop_overlay_length(3, dpi);
+                let focus_rect = RECT {
+                    left: copy_button_rect.left + inset,
+                    top: copy_button_rect.top + inset,
+                    right: copy_button_rect.right - inset,
+                    bottom: copy_button_rect.bottom - inset,
+                };
+                let _ = DrawFocusRect(hdc, &focus_rect);
+            }
         }
 
         SelectObject(hdc, old_font);
-        DeleteObject(title_font as _);
-        DeleteObject(label_font as _);
-        DeleteObject(button_font as _);
+        if let Some(memory_dc) = buffer {
+            blit_overlay_back_buffer(window_hdc, memory_dc, paint.rcPaint);
+        }
         EndPaint(hwnd, &paint);
     }
 
     unsafe fn paint_shortcut_help_window(hwnd: HWND) {
         let mut paint = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut paint);
-        if hdc.is_null() {
+        let window_hdc = BeginPaint(hwnd, &mut paint);
+        if window_hdc.is_null() {
             return;
         }
 
@@ -9876,12 +12949,32 @@ mod windows_app {
             .ok()
             .and_then(|overlay| overlay.shortcut_help.clone());
         let dpi = overlay_dpi_for_window(hwnd);
-        let title_font = create_overlay_font(dpi, 15, FW_BOLD as i32);
-        let row_title_font = create_overlay_font(dpi, 12, FW_BOLD as i32);
-        let pill_font = create_overlay_font(dpi, 11, FW_BOLD as i32);
+        // Same reason as the copy popup: draw the whole sheet off-screen once,
+        // then blit, so opening the help window never shows a half-built list.
+        let buffer = overlay_back_buffer_dc(
+            window_hdc,
+            OverlayBackBufferSlot::ShortcutHelp,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        );
+        let hdc = buffer.unwrap_or(window_hdc);
+        FillRect(
+            hdc,
+            &rect,
+            cached_overlay_brush(terminal_panel_fill_color()) as _,
+        );
+        let title_font = cached_overlay_font(dpi, 15, FW_BOLD as i32);
+        let row_title_font = cached_overlay_font(dpi, 12, FW_BOLD as i32);
+        let pill_font = cached_overlay_font(dpi, 11, FW_BOLD as i32);
         let old_font = SelectObject(hdc, title_font as _);
         SetBkMode(hdc, TRANSPARENT as i32);
-        draw_terminal_shell_chrome(hdc, rect, terminal_signal_color(), dpi, 0);
+        draw_terminal_shell_chrome(
+            hdc,
+            rect,
+            terminal_signal_color(),
+            dpi,
+            scale_desktop_overlay_length(SHORTCUT_HELP_CORNER_RADIUS, dpi),
+        );
 
         if let Some(model) = model {
             SelectObject(hdc, title_font as _);
@@ -9916,28 +13009,12 @@ mod windows_app {
                     bottom: row_bottom,
                 };
 
-                gradient_fill_client_rect(
+                FillRect(
                     hdc,
-                    row_rect,
-                    terminal_panel_light_color(),
-                    terminal_panel_fill_color(),
-                    true,
+                    &row_rect,
+                    cached_overlay_brush(terminal_panel_light_color()) as _,
                 );
-                let row_pen = CreatePen(PS_SOLID, 1, terminal_border_color());
-                let old_pen = SelectObject(hdc, row_pen as _);
-                let old_brush = SelectObject(hdc, GetStockObject(HOLLOW_BRUSH) as _);
-                RoundRect(
-                    hdc,
-                    row_rect.left,
-                    row_rect.top,
-                    row_rect.right,
-                    row_rect.bottom,
-                    0,
-                    0,
-                );
-                let _ = SelectObject(hdc, old_brush);
-                let _ = SelectObject(hdc, old_pen);
-                DeleteObject(row_pen as _);
+                stroke_overlay_border(hdc, row_rect, terminal_border_color());
 
                 SelectObject(hdc, row_title_font as _);
                 SetTextColor(hdc, terminal_text_color());
@@ -9968,18 +13045,30 @@ mod windows_app {
         }
 
         SelectObject(hdc, old_font);
-        DeleteObject(title_font as _);
-        DeleteObject(row_title_font as _);
-        DeleteObject(pill_font as _);
+        if let Some(memory_dc) = buffer {
+            blit_overlay_back_buffer(window_hdc, memory_dc, paint.rcPaint);
+        }
         EndPaint(hwnd, &paint);
     }
 
-    fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    /// The Neuro semantic palette and the shades derived from it, evaluated at
+    /// compile time. The derived set costs about twenty channel mixes to build,
+    /// and every color accessor below used to rebuild it on each call - several
+    /// dozen times per painted frame.
+    const UI_COLOR_TOKENS: DesktopUiColorTokens = desktop_ui_color_tokens();
+    const UI_DERIVED_COLORS: DesktopUiDerivedColors = desktop_ui_derived_colors();
+
+    const fn rgb(r: u8, g: u8, b: u8) -> u32 {
         (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
     }
 
-    fn rgb_triplet(color: [u8; 3]) -> u32 {
+    const fn rgb_triplet(color: [u8; 3]) -> u32 {
         rgb(color[0], color[1], color[2])
+    }
+
+    fn terminal_window_class_background_brush() -> isize {
+        static BRUSH: OnceLock<isize> = OnceLock::new();
+        *BRUSH.get_or_init(|| unsafe { CreateSolidBrush(terminal_panel_fill_color()) as isize })
     }
 
     fn copy_popup_edit_brush() -> isize {
@@ -9989,191 +13078,195 @@ mod windows_app {
         })
     }
 
-    fn trivertex_at(x: i32, y: i32, color: u32) -> TRIVERTEX {
-        TRIVERTEX {
-            x,
-            y,
-            Red: ((color & 0xFF) as u16) << 8,
-            Green: (((color >> 8) & 0xFF) as u16) << 8,
-            Blue: (((color >> 16) & 0xFF) as u16) << 8,
-            Alpha: 0,
-        }
-    }
-
     fn terminal_signal_color() -> u32 {
-        rgb(217, 255, 56)
+        rgb_triplet(UI_COLOR_TOKENS.signal_yellow_rgb)
     }
 
     fn terminal_signal_border_color() -> u32 {
-        rgb(177, 207, 34)
-    }
-
-    fn terminal_secondary_accent_color() -> u32 {
-        rgb(34, 197, 94)
-    }
-
-    fn terminal_shell_top_color() -> u32 {
-        rgb(11, 14, 18)
-    }
-
-    fn terminal_shell_bottom_color() -> u32 {
-        rgb(15, 19, 24)
+        rgb_triplet(UI_DERIVED_COLORS.signal_yellow_line_rgb)
     }
 
     fn terminal_panel_fill_color() -> u32 {
-        rgb(11, 14, 18)
+        rgb_triplet(UI_COLOR_TOKENS.panel_rgb)
     }
 
     fn terminal_panel_light_color() -> u32 {
-        rgb(20, 24, 30)
+        rgb_triplet(UI_COLOR_TOKENS.control_rgb)
     }
 
     fn terminal_border_color() -> u32 {
-        rgb(42, 48, 55)
-    }
-
-    fn terminal_grid_color() -> u32 {
-        rgb(26, 30, 36)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
     }
 
     fn terminal_text_color() -> u32 {
-        rgb(247, 252, 230)
+        rgb_triplet(UI_COLOR_TOKENS.text_rgb)
     }
 
     fn terminal_text_soft_color() -> u32 {
-        rgb(193, 197, 179)
+        rgb_triplet(UI_COLOR_TOKENS.text_muted_rgb)
+    }
+
+    fn text_lifecycle_color(state: DesktopTextLifecycleState) -> u32 {
+        let colors = UI_COLOR_TOKENS;
+        rgb_triplet(match state {
+            DesktopTextLifecycleState::AudioWave => colors.text_muted_rgb,
+            DesktopTextLifecycleState::PreRecognized => colors.signal_yellow_rgb,
+            DesktopTextLifecycleState::Corrected => colors.text_rgb,
+        })
     }
 
     fn listening_shell_color() -> u32 {
-        rgb(22, 25, 30)
+        rgb_triplet(UI_COLOR_TOKENS.panel_rgb)
     }
 
     fn listening_shell_border_color() -> u32 {
-        rgb(58, 64, 72)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
     }
 
     fn listening_cancel_fill_color() -> u32 {
-        rgb(24, 29, 35)
+        rgb_triplet(UI_COLOR_TOKENS.control_rgb)
     }
 
     fn listening_cancel_border_color() -> u32 {
-        rgb(52, 59, 68)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
     }
 
     fn listening_cancel_glyph_color() -> u32 {
-        rgb(242, 244, 248)
+        rgb_triplet(UI_COLOR_TOKENS.text_rgb)
     }
 
     fn listening_confirm_fill_color() -> u32 {
-        rgb(249, 250, 252)
+        rgb_triplet(UI_COLOR_TOKENS.signal_yellow_rgb)
     }
 
     fn listening_confirm_border_color() -> u32 {
-        rgb(214, 218, 224)
+        rgb_triplet(UI_DERIVED_COLORS.signal_yellow_line_rgb)
     }
 
     fn listening_confirm_glyph_color() -> u32 {
-        rgb(20, 24, 29)
+        rgb_triplet(UI_DERIVED_COLORS.on_signal_yellow_rgb)
     }
 
     fn listening_waveform_color() -> u32 {
-        rgb(244, 246, 250)
+        terminal_signal_color()
     }
 
     fn typeless_popup_fill_color() -> u32 {
-        rgb(33, 27, 27)
+        rgb_triplet(UI_COLOR_TOKENS.panel_rgb)
     }
 
     fn typeless_popup_border_color() -> u32 {
-        rgb(70, 63, 63)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
     }
 
     fn typeless_popup_editor_fill_color() -> u32 {
-        rgb(35, 39, 47)
+        rgb_triplet(UI_COLOR_TOKENS.focus_surface_rgb)
     }
 
     fn typeless_popup_editor_border_color() -> u32 {
-        rgb(86, 92, 101)
+        terminal_signal_color()
     }
 
     fn typeless_popup_editor_text_color() -> u32 {
-        rgb(240, 243, 248)
+        rgb_triplet(UI_COLOR_TOKENS.focus_ink_rgb)
     }
 
     fn typeless_popup_close_color() -> u32 {
-        rgb(146, 139, 145)
+        rgb_triplet(UI_COLOR_TOKENS.text_muted_rgb)
     }
 
     fn typeless_popup_close_hover_color() -> u32 {
-        rgb(240, 243, 248)
+        rgb_triplet(UI_COLOR_TOKENS.text_rgb)
     }
 
     fn typeless_popup_close_button_fill_color() -> u32 {
-        rgb(49, 44, 49)
+        rgb_triplet(UI_COLOR_TOKENS.control_rgb)
     }
 
     fn typeless_popup_close_button_border_color() -> u32 {
-        rgb(88, 82, 88)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
     }
 
     fn typeless_popup_close_button_hover_fill_color() -> u32 {
-        rgb(68, 61, 68)
+        rgb_triplet(UI_COLOR_TOKENS.control_hover_rgb)
     }
 
     fn typeless_popup_close_button_hover_border_color() -> u32 {
-        rgb(118, 111, 118)
+        rgb_triplet(UI_DERIVED_COLORS.line_rgb)
+    }
+
+    fn typeless_popup_close_button_pressed_fill_color() -> u32 {
+        rgb_triplet(UI_COLOR_TOKENS.surface_rgb)
+    }
+
+    fn typeless_popup_close_button_pressed_border_color() -> u32 {
+        terminal_signal_border_color()
     }
 
     fn typeless_popup_button_fill_color() -> u32 {
-        rgb(71, 66, 72)
+        terminal_signal_color()
     }
 
     fn typeless_popup_button_border_color() -> u32 {
-        rgb(92, 86, 94)
+        terminal_signal_border_color()
     }
 
     fn typeless_popup_button_hover_fill_color() -> u32 {
-        rgb(92, 86, 96)
+        rgb_triplet(UI_DERIVED_COLORS.signal_yellow_hover_rgb)
     }
 
     fn typeless_popup_button_hover_border_color() -> u32 {
-        rgb(126, 118, 130)
+        terminal_signal_color()
+    }
+
+    fn typeless_popup_button_pressed_fill_color() -> u32 {
+        rgb_triplet(UI_DERIVED_COLORS.signal_yellow_pressed_rgb)
+    }
+
+    fn typeless_popup_button_pressed_border_color() -> u32 {
+        terminal_signal_border_color()
     }
 
     fn typeless_popup_button_text_color() -> u32 {
-        rgb(246, 247, 250)
+        rgb_triplet(UI_DERIVED_COLORS.on_signal_yellow_rgb)
     }
 
     fn accent_fill_color(state: DesktopHudVisualState) -> u32 {
+        let colors = UI_COLOR_TOKENS;
         match state {
-            DesktopHudVisualState::Listening => terminal_signal_color(),
-            DesktopHudVisualState::Thinking => terminal_secondary_accent_color(),
-            DesktopHudVisualState::Success => rgb(34, 197, 94),
-            DesktopHudVisualState::Error => rgb(239, 68, 68),
-            DesktopHudVisualState::Cancelled => rgb(116, 128, 145),
-            DesktopHudVisualState::Informational => terminal_signal_color(),
+            DesktopHudVisualState::Listening | DesktopHudVisualState::Thinking => {
+                rgb_triplet(colors.signal_yellow_rgb)
+            }
+            DesktopHudVisualState::Success => rgb_triplet(colors.signal_green_rgb),
+            DesktopHudVisualState::Error => rgb_triplet(colors.danger_red_rgb),
+            DesktopHudVisualState::Cancelled => rgb_triplet(colors.control_hover_rgb),
+            DesktopHudVisualState::Informational => rgb_triplet(colors.info_blue_rgb),
         }
     }
 
     fn accent_outline_color(state: DesktopHudVisualState) -> u32 {
+        let derived = UI_DERIVED_COLORS;
         match state {
-            DesktopHudVisualState::Listening => terminal_signal_border_color(),
-            DesktopHudVisualState::Thinking => rgb(27, 150, 73),
-            DesktopHudVisualState::Success => rgb(27, 150, 73),
-            DesktopHudVisualState::Error => rgb(201, 54, 54),
-            DesktopHudVisualState::Cancelled => rgb(86, 98, 114),
-            DesktopHudVisualState::Informational => terminal_signal_border_color(),
+            DesktopHudVisualState::Listening | DesktopHudVisualState::Thinking => {
+                rgb_triplet(derived.signal_yellow_line_rgb)
+            }
+            DesktopHudVisualState::Success => rgb_triplet(derived.signal_green_line_rgb),
+            DesktopHudVisualState::Error => rgb_triplet(derived.danger_red_line_rgb),
+            DesktopHudVisualState::Cancelled => rgb_triplet(derived.line_rgb),
+            DesktopHudVisualState::Informational => rgb_triplet(derived.info_blue_line_rgb),
         }
     }
 
     fn accent_badge_text_color(state: DesktopHudVisualState) -> u32 {
+        let derived = UI_DERIVED_COLORS;
         match state {
-            DesktopHudVisualState::Listening => rgb(12, 14, 18),
-            DesktopHudVisualState::Thinking => rgb(9, 18, 22),
-            DesktopHudVisualState::Success => rgb(10, 20, 14),
-            DesktopHudVisualState::Error
-            | DesktopHudVisualState::Cancelled
-            | DesktopHudVisualState::Informational => terminal_text_color(),
+            DesktopHudVisualState::Listening | DesktopHudVisualState::Thinking => {
+                rgb_triplet(derived.on_signal_yellow_rgb)
+            }
+            DesktopHudVisualState::Success => rgb_triplet(derived.on_signal_green_rgb),
+            DesktopHudVisualState::Error => rgb_triplet(derived.on_danger_red_rgb),
+            DesktopHudVisualState::Cancelled => terminal_text_color(),
+            DesktopHudVisualState::Informational => rgb_triplet(derived.on_info_blue_rgb),
         }
     }
 
@@ -10205,6 +13298,10 @@ mod windows_app {
 
         let key = &*(lparam as *const KBDLLHOOKSTRUCT);
         let mut consume = false;
+        // Origin capture is deferred until after the hook-state lock is
+        // released so the WH_KEYBOARD_LL callback never blocks other threads
+        // (or Windows' LowLevelHooksTimeout) on foreground-window inspection.
+        let mut origin_capture_hwnd_value: Option<isize> = None;
 
         if let Ok(mut state_guard) = low_level_hook_state().lock() {
             if let Some(state) = state_guard.as_mut() {
@@ -10216,9 +13313,7 @@ mod windows_app {
                         let event = tracker.handle_key_event(key.vkCode, is_key_down);
                         consume = false;
                         if event.transition == Some(LowLevelHotkeyTransition::Pressed) {
-                            capture_pending_hotkey_origin_insert_target_from_hook(
-                                *hwnd_value as HWND,
-                            );
+                            origin_capture_hwnd_value = Some(*hwnd_value);
                         }
                     }
                     LowLevelHookState::Single {
@@ -10231,9 +13326,7 @@ mod windows_app {
 
                         match event.transition {
                             Some(LowLevelHotkeyTransition::Pressed) => {
-                                capture_pending_hotkey_origin_insert_target_from_hook(
-                                    *hwnd_value as HWND,
-                                );
+                                origin_capture_hwnd_value = Some(*hwnd_value);
                                 let _ =
                                     PostMessageW(*hwnd_value as HWND, HOTKEY_ACTION_MESSAGE, 0, 0);
                             }
@@ -10255,9 +13348,7 @@ mod windows_app {
                         consume = event.consume;
                         match event.pending_hold {
                             ToggleDesktopHotkeyRouterPendingHold::Start { .. } => {
-                                capture_pending_hotkey_origin_insert_target_from_hook(
-                                    *hwnd_value as HWND,
-                                );
+                                origin_capture_hwnd_value = Some(*hwnd_value);
                                 let _ = PostMessageW(
                                     *hwnd_value as HWND,
                                     HOTKEY_PENDING_HOLD_START_MESSAGE,
@@ -10288,6 +13379,10 @@ mod windows_app {
             }
         }
 
+        if let Some(hwnd_value) = origin_capture_hwnd_value {
+            capture_pending_hotkey_origin_insert_target_from_hook(hwnd_value as HWND);
+        }
+
         if consume {
             1
         } else {
@@ -10298,6 +13393,1309 @@ mod windows_app {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn native_theme_roles_resolve_from_neuro_semantic_tokens() {
+            let colors = desktop_ui_color_tokens();
+            let derived = desktop_ui_derived_colors();
+
+            assert_eq!(
+                terminal_signal_color(),
+                rgb_triplet(colors.signal_yellow_rgb)
+            );
+            assert_eq!(terminal_border_color(), rgb_triplet(derived.line_rgb));
+            assert_eq!(terminal_text_color(), rgb_triplet(colors.text_rgb));
+            assert_eq!(
+                terminal_text_soft_color(),
+                rgb_triplet(colors.text_muted_rgb)
+            );
+            assert_eq!(listening_confirm_fill_color(), terminal_signal_color());
+            assert_eq!(typeless_popup_button_fill_color(), terminal_signal_color());
+            assert_eq!(
+                typeless_popup_button_pressed_fill_color(),
+                rgb_triplet(derived.signal_yellow_pressed_rgb)
+            );
+            assert_eq!(
+                typeless_popup_editor_fill_color(),
+                rgb_triplet(colors.focus_surface_rgb)
+            );
+            assert_eq!(
+                typeless_popup_editor_text_color(),
+                rgb_triplet(colors.focus_ink_rgb)
+            );
+            assert_eq!(
+                typeless_popup_editor_border_color(),
+                terminal_signal_color()
+            );
+            assert_eq!(
+                accent_fill_color(DesktopHudVisualState::Success),
+                rgb_triplet(colors.signal_green_rgb)
+            );
+            assert_eq!(
+                accent_fill_color(DesktopHudVisualState::Error),
+                rgb_triplet(colors.danger_red_rgb)
+            );
+            assert_eq!(
+                accent_fill_color(DesktopHudVisualState::Informational),
+                rgb_triplet(colors.info_blue_rgb)
+            );
+            assert_eq!(
+                text_lifecycle_color(DesktopTextLifecycleState::PreRecognized),
+                rgb_triplet(colors.signal_yellow_rgb)
+            );
+            assert_eq!(
+                text_lifecycle_color(DesktopTextLifecycleState::Corrected),
+                rgb_triplet(colors.text_rgb)
+            );
+        }
+
+        #[test]
+        fn listening_hud_transcript_join_preserves_boundaries_and_lifecycle() {
+            assert_eq!(
+                listening_hud_transcript_text_and_lifecycle(&DesktopStreamingHudTranscriptParts {
+                    corrected_prefix: "\u{3000}第一段。 ".to_string(),
+                    pre_recognized_tail: " 第二段\n".to_string(),
+                }),
+                (
+                    Some("第一段。  第二段".to_string()),
+                    DesktopTextLifecycleState::PreRecognized,
+                )
+            );
+            assert_eq!(
+                listening_hud_transcript_text_and_lifecycle(&DesktopStreamingHudTranscriptParts {
+                    corrected_prefix: "\n 已校正文本 \u{3000}".to_string(),
+                    pre_recognized_tail: String::new(),
+                }),
+                (
+                    Some("已校正文本".to_string()),
+                    DesktopTextLifecycleState::Corrected,
+                )
+            );
+            assert_eq!(
+                listening_hud_transcript_text_and_lifecycle(&DesktopStreamingHudTranscriptParts {
+                    corrected_prefix: " \u{3000}".to_string(),
+                    pre_recognized_tail: "\n\t".to_string(),
+                }),
+                (None, DesktopTextLifecycleState::PreRecognized)
+            );
+        }
+
+        #[test]
+        fn listening_hud_transcript_join_uses_one_owned_buffer() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn listening_hud_transcript_text_and_lifecycle")
+                .expect("listening HUD transcript join");
+            let end = source[start..]
+                .find("    const LISTENING_HUD_AUTO_FOLLOW_MAX_DISPLAY_UNITS")
+                .map(|offset| start + offset)
+                .expect("constant following listening HUD transcript join");
+            let join_source = &source[start..end];
+
+            assert!(join_source.contains("String::with_capacity("));
+            assert!(join_source.contains("display_text.push_str("));
+            assert!(!join_source.contains("format!("));
+            assert!(!join_source.contains("trim().to_string()"));
+        }
+
+        #[test]
+        fn native_window_classes_use_the_neuro_theme_background_brush() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn register_named_window_class")
+                .expect("window class registration function");
+            let end = source[start..]
+                .find("    fn initialize_window")
+                .map(|offset| start + offset)
+                .expect("function following window class registration");
+            let registration_source = &source[start..end];
+
+            assert!(registration_source.contains("terminal_window_class_background_brush()"));
+            assert!(!registration_source.contains("COLOR_WINDOW"));
+        }
+
+        #[test]
+        fn live_streaming_anchor_registry_preserves_first_insert_order_on_replacement() {
+            let mut inserted_segment_ids = Vec::new();
+            let mut inserted_anchors = HashMap::new();
+
+            record_live_streaming_inserted_anchor(
+                &mut inserted_segment_ids,
+                &mut inserted_anchors,
+                SpeculativeInsertAnchor::new(1, Some(2), "seg-1", "first", 10)
+                    .expect("first anchor"),
+            );
+            record_live_streaming_inserted_anchor(
+                &mut inserted_segment_ids,
+                &mut inserted_anchors,
+                SpeculativeInsertAnchor::new(1, Some(2), "seg-2", "second", 20)
+                    .expect("second anchor"),
+            );
+            record_live_streaming_inserted_anchor(
+                &mut inserted_segment_ids,
+                &mut inserted_anchors,
+                SpeculativeInsertAnchor::new(1, Some(2), "seg-1", "corrected", 30)
+                    .expect("replacement anchor"),
+            );
+
+            assert_eq!(inserted_segment_ids, vec!["seg-1", "seg-2"]);
+            assert_eq!(inserted_anchors.len(), 2);
+            assert_eq!(inserted_anchors["seg-1"].inserted_text, "corrected");
+            assert_eq!(inserted_anchors["seg-1"].inserted_at_ms, 30);
+            assert_eq!(inserted_anchors["seg-2"].inserted_text, "second");
+        }
+
+        #[test]
+        fn streaming_pump_partial_wait_stays_below_the_ui_refresh_interval() {
+            assert_eq!(STREAMING_PUMP_PARTIAL_IDLE_TIMEOUT_MS, 1);
+            assert!(STREAMING_PUMP_PARTIAL_IDLE_TIMEOUT_MS < HUD_RECORDING_LEVEL_REFRESH_MS.into());
+        }
+
+        #[test]
+        fn recording_hud_refresh_only_schedules_streaming_io() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn process_recording_hud_refresh")
+                .expect("recording HUD processing function");
+            let end = source[start..]
+                .find("    fn refresh_recording_hud_level")
+                .map(|offset| start + offset)
+                .expect("function following recording HUD processing");
+            let processing_source = &source[start..end];
+
+            assert!(processing_source.contains("streaming_pump.request_pump()"));
+            assert!(!processing_source.contains("block_on("));
+            assert!(!processing_source.contains("pump_available_audio("));
+        }
+
+        #[test]
+        fn recording_hud_transcript_refresh_reuses_revisioned_snapshot_and_one_summary() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn process_recording_hud_refresh")
+                .expect("recording HUD processing function");
+            let end = source[start..]
+                .find("    fn refresh_recording_hud_level")
+                .map(|offset| start + offset)
+                .expect("function following recording HUD processing");
+            let processing_source = &source[start..end];
+
+            assert_eq!(
+                processing_source
+                    .matches("refresh_snapshot_if_changed(")
+                    .count(),
+                1
+            );
+            assert!(!processing_source.contains("live_correction_tracker.snapshot()"));
+            assert!(processing_source.contains("live_correction_snapshot_revision"));
+            assert!(processing_source.contains("live_correction_snapshot"));
+            assert!(processing_source
+                .contains("desktop_streaming_hud_transcript_summary_with_fallback_text_owned("));
+            assert!(processing_source.contains("transcript_summary.effective_segment_count"));
+            assert!(processing_source.contains("desktop_streaming_hud_transcript_parts_text("));
+            assert!(!processing_source.contains("desktop_streaming_effective_segment_count_owned("));
+            assert!(!processing_source.contains("format!("));
+            assert!(!processing_source.contains("active_recording_hud_transcript_parts(active)"));
+        }
+
+        #[test]
+        fn live_correction_snapshot_cache_refreshes_only_for_segment_changes() {
+            let tracker = LiveCorrectionTracker::new(1);
+            let mut revision = 0;
+            let mut snapshot = Vec::new();
+
+            assert!(!tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert!(snapshot.is_empty());
+
+            assert!(tracker.register_job("seg-1", "local", None));
+            assert!(tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert_eq!(revision, 1);
+            assert_eq!(snapshot.len(), 1);
+            assert_eq!(snapshot[0].local_text, "local");
+            assert!(!tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+
+            tracker.record_result("seg-1", "corrected", None);
+            assert!(tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert_eq!(revision, 2);
+            assert_eq!(snapshot[0].corrected_text.as_deref(), Some("corrected"));
+            assert!(!tracker.has_insert_anchor("seg-1"));
+            let backlog = tracker.ordered_backlog();
+            assert_eq!(backlog.len(), 1);
+            assert_eq!(backlog[0].segment_id, "seg-1");
+            assert_eq!(backlog[0].corrected_text, "corrected");
+
+            tracker.record_result("seg-1", "corrected", None);
+            assert!(!tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            let anchor = SpeculativeInsertAnchor::new(1, Some(2), "seg-1", "corrected", 3)
+                .expect("test insert anchor");
+            tracker.record_result("seg-1", "corrected", Some(anchor.clone()));
+            assert!(tracker.has_insert_anchor("seg-1"));
+            assert!(tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert_eq!(revision, 3);
+            assert!(tracker.ordered_backlog().is_empty());
+            tracker.record_result("seg-1", "corrected", Some(anchor));
+            assert!(!tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            tracker.complete_job("seg-1", None, None);
+            assert!(!tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+
+            assert!(tracker.register_job("seg-2", "second", None));
+            assert!(tracker.ordered_backlog().is_empty());
+            assert!(tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert_eq!(revision, 4);
+            assert_eq!(snapshot.len(), 2);
+
+            tracker.complete_job("seg-2", Some("updated"), None);
+            assert!(tracker.refresh_snapshot_if_changed(&mut revision, &mut snapshot));
+            assert_eq!(revision, 5);
+            assert_eq!(snapshot[1].corrected_text.as_deref(), Some("updated"));
+            let backlog = tracker.ordered_backlog();
+            assert_eq!(backlog.len(), 1);
+            assert_eq!(backlog[0].segment_id, "seg-2");
+            assert_eq!(backlog[0].corrected_text, "updated");
+        }
+
+        #[test]
+        fn live_correction_tracker_indexes_segment_lookups_without_changing_order() {
+            let tracker = LiveCorrectionTracker::new(1);
+            for index in 0..256 {
+                assert!(tracker.register_job(
+                    format!("seg-{index}").as_str(),
+                    format!("local-{index}").as_str(),
+                    None,
+                ));
+            }
+            assert!(!tracker.register_job("seg-128", "duplicate", None));
+
+            {
+                let state = lock_recovering(&tracker.state, "live correction tracker state");
+                assert_eq!(state.segment_indices.len(), state.segments.len());
+                for (index, segment) in state.segments.iter().enumerate() {
+                    assert_eq!(state.segment_index(&segment.segment_id), Some(index));
+                }
+            }
+
+            assert!(tracker.can_process("seg-255"));
+            assert_eq!(
+                tracker.local_fallback_text("seg-255").as_deref(),
+                Some("local-255")
+            );
+            let anchor = SpeculativeInsertAnchor::new(1, Some(2), "seg-255", "corrected", 3)
+                .expect("test insert anchor");
+            tracker.record_result("seg-255", "corrected", Some(anchor));
+            assert!(!tracker.can_process("seg-255"));
+            assert!(tracker.local_fallback_text("seg-255").is_none());
+            assert!(tracker.has_insert_anchor("seg-255"));
+            assert!(!tracker.can_process("missing"));
+            assert!(tracker.local_fallback_text("missing").is_none());
+            assert!(!tracker.has_insert_anchor("missing"));
+        }
+
+        #[test]
+        fn live_correction_tracker_direct_id_lookups_do_not_scan_segments() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    struct LiveCorrectionTrackerState")
+                .expect("live correction tracker state");
+            let end = source[start..]
+                .find("    struct LatestLiveSegmentGuard")
+                .map(|offset| start + offset)
+                .expect("type following live correction tracker implementation");
+            let tracker_source = &source[start..end];
+
+            assert!(tracker_source.contains("segment_indices: HashMap<String, usize>"));
+            assert!(tracker_source.contains("state.segment_index(segment_id)?"));
+            assert!(!tracker_source.contains(".find(|segment| segment.segment_id == segment_id)"));
+            assert!(
+                !tracker_source.contains(".position(|segment| segment.segment_id == segment_id)")
+            );
+        }
+
+        #[test]
+        fn live_smart_route_candidate_commit_rejects_stale_or_superseded_work() {
+            assert_eq!(
+                commit_live_smart_route_candidate(
+                    VoiceMode::Smart,
+                    None,
+                    true,
+                    Some(VoiceMode::Transcribe),
+                ),
+                Some(VoiceMode::Transcribe)
+            );
+            assert_eq!(
+                commit_live_smart_route_candidate(
+                    VoiceMode::Smart,
+                    Some(VoiceMode::Command),
+                    true,
+                    Some(VoiceMode::Transcribe),
+                ),
+                Some(VoiceMode::Command)
+            );
+            assert_eq!(
+                commit_live_smart_route_candidate(
+                    VoiceMode::Smart,
+                    None,
+                    false,
+                    Some(VoiceMode::Transcribe),
+                ),
+                None
+            );
+            assert_eq!(
+                commit_live_smart_route_candidate(
+                    VoiceMode::Transcribe,
+                    None,
+                    true,
+                    Some(VoiceMode::Transcribe),
+                ),
+                None
+            );
+        }
+
+        #[test]
+        fn live_correction_smart_route_computation_runs_outside_shared_lock() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn drain_active_live_correction_backlog")
+                .expect("live correction backlog drain");
+            let end = source[start..]
+                .find("    fn handle_streaming_corrected_hud")
+                .map(|offset| start + offset)
+                .expect("function following live correction backlog drain");
+            let drain_source = &source[start..end];
+            let computation_start = drain_source
+                .find("        let pending_transcript =")
+                .expect("lock-free transcript computation");
+            let commit_start = drain_source[computation_start..]
+                .find("state.shared.lock()")
+                .map(|offset| computation_start + offset)
+                .expect("guarded transcript commit");
+            let snapshot_source = &drain_source[..computation_start];
+            let computation_source = &drain_source[computation_start..commit_start];
+
+            assert!(snapshot_source.contains("state.shared.lock()"));
+            assert!(!snapshot_source.contains("desktop_streaming_hud_transcript_summary_owned("));
+            assert!(!snapshot_source.contains("desktop_streaming_hud_transcript_parts_text("));
+            assert!(!snapshot_source.contains("live_smart_route_for_corrected_transcript("));
+            assert!(computation_source.contains(".snapshot_with_revision()"));
+            assert!(computation_source.contains("desktop_streaming_hud_transcript_summary_owned("));
+            assert!(computation_source.contains("desktop_streaming_hud_transcript_parts_text("));
+            assert!(computation_source.contains("live_smart_route_for_corrected_transcript("));
+            assert!(!computation_source.contains("state.shared.lock()"));
+        }
+
+        #[test]
+        fn live_correction_backlog_extraction_avoids_full_tracker_snapshot() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn insert_live_streaming_corrected_backlog_if_safe")
+                .expect("live correction backlog insertion helper");
+            let end = source[start..]
+                .find("    fn queue_live_streaming_corrected_hud")
+                .map(|offset| start + offset)
+                .expect("function following backlog insertion helper");
+            let helper_source = &source[start..end];
+
+            assert!(helper_source.contains("let backlog = tracker.ordered_backlog();"));
+            assert!(!helper_source.contains("tracker.snapshot()"));
+            assert!(!helper_source.contains("desktop_live_correction_ordered_backlog("));
+        }
+
+        #[test]
+        fn recording_hud_pending_segments_do_not_materialize_reference_vectors() {
+            let source = include_str!("main.rs");
+            let backlog_start = source
+                .find("    fn drain_active_live_correction_backlog")
+                .expect("live correction backlog drain");
+            let backlog_end = source[backlog_start..]
+                .find("    fn handle_streaming_corrected_hud")
+                .map(|offset| backlog_start + offset)
+                .expect("function following live correction backlog drain");
+            let backlog_source = &source[backlog_start..backlog_end];
+
+            assert!(backlog_source.contains("desktop_streaming_hud_transcript_summary_owned("));
+            assert!(backlog_source
+                .contains("desktop_streaming_hud_transcript_summary_apply_fallback_text("));
+            assert!(backlog_source.contains("transcript_summary.effective_segment_count"));
+            assert!(backlog_source.contains("desktop_streaming_hud_transcript_parts_text("));
+            assert!(backlog_source.contains("Arc::clone(&active.hud_streaming_segments)"));
+            assert!(!backlog_source.contains("active.hud_streaming_segments.clone()"));
+            assert_eq!(
+                backlog_source.matches(".snapshot_with_revision()").count(),
+                1
+            );
+            assert_eq!(
+                backlog_source
+                    .matches("desktop_streaming_hud_transcript_summary_owned(")
+                    .count(),
+                1
+            );
+            assert!(backlog_source.contains("active.live_correction_snapshot ="));
+            assert!(backlog_source.contains("active.hud_streaming_segments_revision"));
+            assert!(backlog_source.contains("== candidate.hud_streaming_segments_revision"));
+            assert!(!backlog_source.contains("== candidate.hud_streaming_segments\n"));
+            assert!(!backlog_source.contains("active.hud_streaming_segments\n                    == candidate.hud_streaming_segments"));
+            assert!(!backlog_source.contains("desktop_streaming_effective_segment_count_owned("));
+            assert!(!backlog_source.contains("format!("));
+            assert!(!backlog_source.contains("collect::<Vec<_>>()"));
+        }
+
+        #[test]
+        fn corrected_hud_reuses_validated_lock_free_transcript_parts() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn handle_streaming_corrected_hud")
+                .expect("streaming corrected HUD handler");
+            let end = source[start..]
+                .find("    fn handle_correction_copy_popup")
+                .map(|offset| start + offset)
+                .expect("function following streaming corrected HUD handler");
+            let handler_source = &source[start..end];
+
+            assert_eq!(
+                handler_source
+                    .matches("drain_active_live_correction_backlog(")
+                    .count(),
+                1
+            );
+            assert!(handler_source.contains("generation_is_current"));
+            assert!(handler_source.contains("overlay.hud_streaming_corrected_prefix.as_deref()"));
+            assert!(handler_source.contains("if !transcript_changed"));
+            assert!(handler_source.contains("return None;"));
+            assert!(!handler_source.contains(".then(|| transcript_parts.corrected_prefix.clone())"));
+            assert!(
+                !handler_source.contains(".then(|| transcript_parts.pre_recognized_tail.clone())")
+            );
+            assert!(!handler_source.contains("active_recording_hud_transcript_parts"));
+            assert!(!handler_source.contains("refresh_snapshot_if_changed"));
+            assert!(!handler_source.contains("desktop_streaming_hud_transcript_summary"));
+            assert!(!handler_source.contains("snapshot_with_revision"));
+        }
+
+        #[test]
+        fn hud_streaming_segment_revision_covers_processing_and_anchor_mutations() {
+            let source = include_str!("main.rs");
+            let processing_start = source
+                .find("    fn process_recording_hud_refresh")
+                .expect("recording HUD processing function");
+            let processing_end = source[processing_start..]
+                .find("    fn refresh_recording_hud_level")
+                .map(|offset| processing_start + offset)
+                .expect("function following recording HUD processing");
+            let processing_source = &source[processing_start..processing_end];
+            let mirror_start = source
+                .find("    fn mirror_live_streaming_inserted_anchor")
+                .expect("live streaming anchor mirror");
+            let mirror_end = source[mirror_start..]
+                .find("    fn record_live_streaming_inserted_anchor")
+                .map(|offset| mirror_start + offset)
+                .expect("function following live streaming anchor mirror");
+            let mirror_source = &source[mirror_start..mirror_end];
+
+            assert!(processing_source.contains("if upsert_hud_streaming_segment("));
+            assert!(processing_source.contains("if remove_hud_streaming_segments("));
+            assert!(
+                processing_source
+                    .matches("hud_streaming_segments_revision")
+                    .count()
+                    >= 4
+            );
+            assert!(mirror_source.contains("remove_hud_streaming_segments("));
+            assert!(mirror_source.contains("hud_streaming_segments_revision.wrapping_add(1)"));
+            assert!(mirror_source.contains("Arc::make_mut(&mut active.hud_streaming_segments)"));
+            assert!(processing_source
+                .contains("Arc::make_mut(&mut work.processing_state.hud_streaming_segments)"));
+        }
+
+        #[test]
+        fn recording_start_does_not_wait_for_streaming_ready_on_the_ui_thread() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn begin_recording")
+                .expect("begin recording function");
+            let end = source[start..]
+                .find("    fn finish_recording_begin")
+                .map(|offset| start + offset)
+                .expect("recording begin continuation");
+            let begin_recording_source = &source[start..end];
+            let worker_start = source
+                .find("    fn spawn_local_asr_recording_prepare")
+                .expect("local ASR recording prepare worker");
+            let worker_end = source[worker_start..]
+                .find("    fn handle_local_asr_prepare_done")
+                .map(|offset| worker_start + offset)
+                .expect("local ASR prepare completion handler");
+            let prepare_worker_source = &source[worker_start..worker_end];
+
+            assert!(begin_recording_source.contains("spawn_local_asr_recording_prepare"));
+            assert!(begin_recording_source.contains("spawn_recording_audio_prepare"));
+            assert!(begin_recording_source.contains("spawn_preparation_release_watcher"));
+            assert!(begin_recording_source.contains("recording_streaming_route_prepare_needed"));
+            assert!(!begin_recording_source.contains("ensure_packaged_local_asr_daemon"));
+            assert!(!begin_recording_source.contains("start_recording("));
+            assert!(!begin_recording_source.contains("block_on("));
+            assert!(prepare_worker_source.contains("thread::spawn"));
+            assert!(prepare_worker_source.contains("ensure_packaged_local_asr_daemon"));
+            assert!(prepare_worker_source.contains("LOCAL_ASR_PREPARE_DONE_MESSAGE"));
+        }
+
+        #[test]
+        fn explicit_audio_override_never_claims_a_live_streaming_source() {
+            assert!(recording_streaming_enabled_for_source(true, true));
+            assert!(!recording_streaming_enabled_for_source(true, false));
+            assert!(!recording_streaming_enabled_for_source(false, true));
+            assert!(!recording_streaming_enabled_for_source(false, false));
+            assert!(recording_streaming_route_prepare_needed(true, false));
+            assert!(!recording_streaming_route_prepare_needed(true, true));
+            assert!(!recording_streaming_route_prepare_needed(false, false));
+            assert!(!recording_streaming_route_prepare_needed(false, true));
+        }
+
+        #[test]
+        fn recording_audio_start_and_failures_stay_outside_the_ui_thread() {
+            let source = include_str!("main.rs");
+            let prepare_start = source
+                .find("    fn prepare_recording_audio")
+                .expect("recording audio preparation");
+            let worker_start = source[prepare_start..]
+                .find("    fn spawn_recording_audio_prepare")
+                .map(|offset| prepare_start + offset)
+                .expect("recording audio prepare worker");
+            let local_completion_start = source[worker_start..]
+                .find("    fn handle_local_asr_prepare_done")
+                .map(|offset| worker_start + offset)
+                .expect("local ASR completion handler");
+            let audio_completion_start = source[local_completion_start..]
+                .find("    fn handle_recording_audio_start_done")
+                .map(|offset| local_completion_start + offset)
+                .expect("recording audio completion handler");
+            let begin_start = source[audio_completion_start..]
+                .find("    fn begin_recording")
+                .map(|offset| audio_completion_start + offset)
+                .expect("recording begin handler");
+            let finish_start = source
+                .find("    fn finish_recording_begin")
+                .expect("recording begin continuation");
+            let finish_end = source[finish_start..]
+                .find("    fn desktop_speculative_pipeline_config")
+                .map(|offset| finish_start + offset)
+                .expect("function following recording begin continuation");
+            let prepare_source = &source[prepare_start..worker_start];
+            let worker_source = &source[worker_start..local_completion_start];
+            let completion_source = &source[audio_completion_start..begin_start];
+            let finish_source = &source[finish_start..finish_end];
+
+            assert!(prepare_source.contains("start_recording(&recording_request)"));
+            assert!(prepare_source.contains("recording.streaming_pcm_source()"));
+            assert!(prepare_source.contains("spawn_local_streaming_asr_pump"));
+            assert!(prepare_source.contains("audio_override.is_none()"));
+            assert!(worker_source.contains("thread::spawn"));
+            assert!(worker_source.contains("AUDIO_START_DONE_MESSAGE"));
+            assert!(worker_source.contains("cleanup_prepared_recording_audio"));
+            assert!(worker_source.contains("if posted == 0"));
+            assert!(worker_source.contains("release_recording_begin_reservation"));
+            assert!(completion_source.contains("spawn_failed_session_persistence_worker"));
+            assert!(completion_source.contains("release_recording_begin_reservation"));
+            assert!(completion_source.contains("finish_recording_begin"));
+            assert!(finish_source.contains("PreparedRecordingAudio"));
+            assert!(finish_source.contains("spawn_recording_source_cancel_worker"));
+            assert!(!finish_source.contains("start_recording("));
+            assert!(!finish_source.contains("streaming_pcm_source()"));
+            assert!(!finish_source.contains("resolve_desktop_audio_file_override"));
+            assert!(!finish_source.contains("recording.cancel()"));
+            assert!(finish_source.contains("Talk listening tray status update failed"));
+            assert!(finish_source.contains("Talk listening HUD update failed"));
+            assert!(finish_source.contains("arm_recording_timeout_timer"));
+            assert!(!finish_source.contains("spawn_timeout_watcher"));
+            assert!(!finish_source.contains("update_tray_icon(hwnd, \"Talk: listening\")?"));
+        }
+
+        #[test]
+        fn recording_stop_finalizes_live_audio_outside_the_ui_thread() {
+            let source = include_str!("main.rs");
+            let helper_start = source
+                .find("    async fn finish_recording_in_blocking_worker")
+                .expect("recording finalize helper");
+            let stop_start = source
+                .find("    fn request_stop_recording")
+                .expect("recording stop handler");
+            let stop_end = source[stop_start..]
+                .find("    fn apply_runtime_phase")
+                .map(|offset| stop_start + offset)
+                .expect("function following recording stop");
+            let helper_source = &source[helper_start..stop_start];
+            let stop_source = &source[stop_start..stop_end];
+
+            assert!(helper_source.contains("tokio::task::spawn_blocking"));
+            assert!(helper_source.contains("recording.finish()"));
+            assert!(stop_source.contains("StoppedRecordingSource::LiveRecording"));
+            assert!(stop_source.contains("finish_recording_in_blocking_worker(recording).await"));
+            assert!(!stop_source.contains("recording.finish()"));
+            assert!(!stop_source.contains("block_on("));
+        }
+
+        #[test]
+        fn recording_cancel_and_shutdown_cleanup_stay_off_the_ui_thread() {
+            let source = include_str!("main.rs");
+            let helper_start = source
+                .find("    fn spawn_recording_source_cancel_worker")
+                .expect("recording cancel worker helper");
+            let helper_end = source[helper_start..]
+                .find("    fn cleanup_shutdown_resources")
+                .map(|offset| helper_start + offset)
+                .expect("shutdown cleanup helper");
+            let cancel_start = source
+                .find("    fn cancel_active_recording")
+                .expect("active recording cancel handler");
+            let cancel_end = source[cancel_start..]
+                .find("    fn fail_active_recording")
+                .map(|offset| cancel_start + offset)
+                .expect("active recording failure handler");
+            let fail_end = source[cancel_end..]
+                .find("    fn register_or_mark_hotkey_failure")
+                .map(|offset| cancel_end + offset)
+                .expect("function following active recording failure");
+            let destroy_start = source
+                .find("            WM_DESTROY =>")
+                .expect("window destroy handler");
+            let destroy_end = source[destroy_start..]
+                .find("            WM_NCDESTROY =>")
+                .map(|offset| destroy_start + offset)
+                .expect("window non-client destroy handler");
+
+            let helper_source = &source[helper_start..helper_end];
+            let cancel_source = &source[cancel_start..cancel_end];
+            let fail_source = &source[cancel_end..fail_end];
+            let destroy_source = &source[destroy_start..destroy_end];
+            assert!(helper_source.contains("runtime_handle.spawn(async move"));
+            assert!(helper_source.contains("tokio::task::spawn_blocking"));
+            assert!(helper_source.contains("recording.cancel()"));
+            assert!(cancel_source.contains("spawn_recording_source_cancel_worker"));
+            assert!(cancel_source.contains("spawn_cancelled_session_persistence_worker"));
+            assert!(!cancel_source.contains("recording.cancel()"));
+            assert!(!cancel_source.contains("complete_cancelled_session("));
+            assert!(fail_source.contains("spawn_recording_source_cancel_worker"));
+            assert!(fail_source.contains("spawn_failed_session_persistence_worker"));
+            assert!(!fail_source.contains("recording.cancel()"));
+            assert!(!fail_source.contains("complete_failed_session_with_mode_override("));
+            assert!(destroy_source.contains("runtime_handle.spawn_blocking"));
+            assert!(destroy_source.contains("cleanup_shutdown_resources"));
+            assert!(destroy_source.contains("shared.pending_recording_begin.take()"));
+            assert!(destroy_source.contains("shared.pending_config_reload = None"));
+            assert!(destroy_source.contains("shared.config_reload_generation.saturating_add(1)"));
+            assert!(
+                destroy_source.contains("shared.product_bootstrap_generation.saturating_add(1)")
+            );
+            assert!(destroy_source
+                .contains("shared.pending_product_bootstrap_prepare_generation = None"));
+            assert!(destroy_source.contains("cleanup_shutdown_resources(active, pending"));
+            assert!(!destroy_source.contains("block_on("));
+            assert!(!destroy_source.contains("recording.cancel()"));
+        }
+
+        #[test]
+        fn recording_begin_completion_rejects_stale_idle_and_shutdown_results() {
+            let preparing = ShellState::idle()
+                .begin_local_asr_preparation()
+                .expect("begin local ASR preparation");
+
+            assert!(recording_begin_completion_allowed(false, preparing, 8, 7));
+            assert!(!recording_begin_completion_allowed(false, preparing, 9, 7));
+            assert!(!recording_begin_completion_allowed(
+                false,
+                ShellState::idle(),
+                8,
+                7
+            ));
+            assert!(!recording_begin_completion_allowed(true, preparing, 8, 7));
+        }
+
+        #[test]
+        fn pending_recording_prepare_is_connected_to_every_cancellation_boundary() {
+            let source = include_str!("main.rs");
+            let action_start = source
+                .find("    fn handle_desktop_action")
+                .expect("desktop action handler");
+            let action_end = source[action_start..]
+                .find("    fn handle_low_level_hotkey_release")
+                .map(|offset| action_start + offset)
+                .expect("low-level release handler");
+            let stop_start = source
+                .find("    fn request_stop_recording")
+                .expect("recording stop handler");
+            let stop_end = source[stop_start..]
+                .find("    fn apply_runtime_phase")
+                .map(|offset| stop_start + offset)
+                .expect("function following recording stop");
+            let reload_start = source
+                .find("    fn reload_config")
+                .expect("config reload handler");
+            let reload_end = source[reload_start..]
+                .find("    fn resolve_logs_dir")
+                .map(|offset| reload_start + offset)
+                .expect("function following config reload");
+            let cancel_start = source
+                .find("    fn cancel_pending_recording_begin")
+                .expect("pending recording preparation cancellation handler");
+            let cancel_end = source[cancel_start..]
+                .find("    fn spawn_local_asr_recording_prepare")
+                .map(|offset| cancel_start + offset)
+                .expect("function following pending preparation cancellation");
+
+            assert!(source[action_start..action_end].contains("cancel_pending_recording_begin"));
+            assert!(source[stop_start..stop_end].contains("cancel_pending_recording_begin"));
+            assert!(source[reload_start..reload_end].contains("cancel_pending_recording_begin"));
+            assert!(source[cancel_start..cancel_end].contains("cleanup_pending_recording_begin"));
+            assert!(source.contains("shared.pending_recording_begin = None;"));
+        }
+
+        #[test]
+        fn config_reload_completion_rejects_stale_and_shutdown_results() {
+            assert!(config_reload_completion_allowed(false, 7, 7));
+            assert!(!config_reload_completion_allowed(false, 8, 7));
+            assert!(!config_reload_completion_allowed(true, 7, 7));
+        }
+
+        #[test]
+        fn config_reload_io_and_daemon_reconcile_stay_outside_the_ui_thread() {
+            let source = include_str!("main.rs");
+            let prepare_start = source
+                .find("    fn prepare_config_reload")
+                .expect("config reload prepare function");
+            let release_start = source[prepare_start..]
+                .find("    fn release_config_reload_reservation")
+                .map(|offset| prepare_start + offset)
+                .expect("config reload reservation release");
+            let worker_start = source[release_start..]
+                .find("    fn spawn_config_reload_prepare")
+                .map(|offset| release_start + offset)
+                .expect("config reload prepare worker");
+            let daemon_start = source[worker_start..]
+                .find("    fn spawn_config_reload_daemon_reconcile")
+                .map(|offset| worker_start + offset)
+                .expect("config reload daemon worker");
+            let handler_start = source[daemon_start..]
+                .find("    fn handle_config_reload_done")
+                .map(|offset| daemon_start + offset)
+                .expect("config reload completion handler");
+            let reload_start = source[handler_start..]
+                .find("    fn reload_config")
+                .map(|offset| handler_start + offset)
+                .expect("config reload request handler");
+            let reload_end = source[reload_start..]
+                .find("    fn resolve_logs_dir")
+                .map(|offset| reload_start + offset)
+                .expect("function following config reload request");
+            let begin_start = source
+                .find("    fn begin_recording")
+                .expect("recording begin handler");
+            let begin_end = source[begin_start..]
+                .find("    fn finish_recording_begin")
+                .map(|offset| begin_start + offset)
+                .expect("recording begin continuation");
+
+            let prepare_source = &source[prepare_start..release_start];
+            let release_source = &source[release_start..worker_start];
+            let worker_source = &source[worker_start..daemon_start];
+            let daemon_source = &source[daemon_start..handler_start];
+            let handler_source = &source[handler_start..reload_start];
+            let reload_source = &source[reload_start..reload_end];
+            let begin_source = &source[begin_start..begin_end];
+
+            assert!(prepare_source.contains(".block_on(load_effective_config(config_path))"));
+            assert!(prepare_source.contains("configured_native_readiness(&config)"));
+            assert!(worker_source.contains("thread::spawn"));
+            assert!(worker_source.contains("catch_unwind"));
+            assert!(worker_source.contains("CONFIG_RELOAD_DONE_MESSAGE"));
+            assert!(worker_source.contains("if posted == 0"));
+            assert!(worker_source.contains("release_config_reload_reservation"));
+            assert!(release_source.contains("shared.pending_config_reload = None"));
+            assert!(daemon_source.contains("thread::spawn"));
+            assert!(daemon_source.contains("stop_managed_local_asr_daemon"));
+            assert!(daemon_source.contains("run_product_local_asr_daemon_prewarm"));
+            assert!(handler_source.contains("register_or_mark_hotkey_failure"));
+            assert!(handler_source.contains("spawn_config_reload_daemon_reconcile"));
+            assert!(!handler_source.contains(".block_on("));
+            assert!(!handler_source.contains("configured_native_readiness"));
+            assert!(!handler_source.contains("stop_managed_local_asr_daemon("));
+            assert!(reload_source.contains("spawn_config_reload_prepare"));
+            assert!(reload_source.contains("shared.shell_state.can_start_session()"));
+            assert!(reload_source.contains("shared.active_recording.is_some()"));
+            assert!(!reload_source.contains(".block_on("));
+            assert!(!reload_source.contains("configured_native_readiness"));
+            assert!(begin_source.contains("shared.pending_config_reload.is_some()"));
+        }
+
+        #[test]
+        fn desktop_cold_start_exposes_loading_shell_before_config_and_product_io() {
+            let source = include_str!("main.rs");
+            let run_start = source
+                .find("    pub fn run()")
+                .expect("desktop run function");
+            let run_end = source[run_start..]
+                .find("    fn register_window_class")
+                .map(|offset| run_start + offset)
+                .expect("function following desktop run");
+            let product_prepare_start = source
+                .find("    fn prepare_product_bootstrap")
+                .expect("product bootstrap preparation");
+            let product_prepare_end = source[product_prepare_start..]
+                .find("    fn commit_product_bootstrap_if_current")
+                .map(|offset| product_prepare_start + offset)
+                .expect("product bootstrap commit helper");
+            let product_download_start = source
+                .find("    fn start_product_model_download")
+                .expect("product model download function");
+            let product_start = source
+                .find("    fn start_product_bootstrap")
+                .expect("product bootstrap start function");
+            let product_start_end = source[product_start..]
+                .find("    fn handle_model_bootstrap_status")
+                .map(|offset| product_start + offset)
+                .expect("product bootstrap completion handler");
+            let config_completion_start = source
+                .find("    fn handle_config_reload_done")
+                .expect("config load completion handler");
+            let config_completion_end = source[config_completion_start..]
+                .find("    fn reload_config")
+                .map(|offset| config_completion_start + offset)
+                .expect("config load request handler");
+
+            let run_source = &source[run_start..run_end];
+            let product_prepare_source = &source[product_prepare_start..product_prepare_end];
+            let product_download_source = &source[product_download_start..product_start];
+            let product_start_source = &source[product_start..product_start_end];
+            let config_completion_source = &source[config_completion_start..config_completion_end];
+
+            let initialize_position = run_source
+                .find("initialize_window(hwnd, instance)")
+                .expect("window initialization");
+            let reload_position = run_source
+                .find("reload_config(hwnd)?")
+                .expect("background startup config request");
+            let message_loop_position = run_source
+                .find("GetMessageW")
+                .expect("Windows message loop");
+            assert!(initialize_position < reload_position);
+            assert!(reload_position < message_loop_position);
+            assert!(run_source.contains("ConfigAvailability::loading()"));
+            assert!(!run_source.contains("load_effective_config"));
+            assert!(!run_source.contains("configured_native_readiness"));
+            assert!(!run_source.contains("fs::read"));
+            assert!(product_prepare_source.contains("locate_verified_embedded_runtime"));
+            let fast_path_position = product_prepare_source
+                .find("locate_verified_embedded_runtime")
+                .expect("runtime cache fast path lookup");
+            let full_read_position = product_prepare_source
+                .find("fs::read(&executable_path)")
+                .expect("runtime payload full read fallback");
+            assert!(fast_path_position < full_read_position);
+            assert!(product_prepare_source.contains("extract_embedded_runtime_payload"));
+            assert!(product_prepare_source.contains("validate_installed_model"));
+            assert!(product_download_source.contains("tokio::sync::oneshot::channel"));
+            assert!(product_download_source.contains(".catch_unwind()"));
+            assert!(product_download_source.contains("pending_model_bootstrap_task.take()"));
+            assert!(product_download_source.contains("spawn_product_local_asr_daemon_prewarm"));
+            assert!(product_start_source.contains("thread::spawn"));
+            assert!(product_start_source.contains("catch_unwind"));
+            assert!(product_start_source.contains("spawn_product_local_asr_daemon_prewarm"));
+            assert!(product_start_source.contains("pending_product_bootstrap_prepare_generation"));
+            assert!(!product_start_source.contains("fs::read"));
+            assert!(config_completion_source.contains("start_product_bootstrap"));
+        }
+
+        #[test]
+        fn shell_menu_actions_do_not_hold_shared_state_across_blocking_os_calls() {
+            let source = include_str!("main.rs");
+            let open_logs_start = source
+                .find("    fn open_logs_folder")
+                .expect("open logs handler");
+            let open_config_start = source[open_logs_start..]
+                .find("    fn open_config_file")
+                .map(|offset| open_logs_start + offset)
+                .expect("open config handler");
+            let external_open_start = source[open_config_start..]
+                .find("    fn spawn_external_open")
+                .map(|offset| open_config_start + offset)
+                .expect("external shell worker");
+            let status_start = source[external_open_start..]
+                .find("    fn show_status_dialog")
+                .map(|offset| external_open_start + offset)
+                .expect("status dialog handler");
+            let status_end = source[status_start..]
+                .find("    fn config_reload_completion_allowed")
+                .map(|offset| status_start + offset)
+                .expect("function following status dialog");
+
+            let open_logs_source = &source[open_logs_start..open_config_start];
+            let open_config_source = &source[open_config_start..external_open_start];
+            let external_open_source = &source[external_open_start..status_start];
+            let status_source = &source[status_start..status_end];
+
+            assert!(open_logs_source.contains("let logs_dir = {"));
+            assert!(open_logs_source.contains("spawn_external_open"));
+            assert!(!open_logs_source.contains("Command::new"));
+            assert!(open_config_source.contains("shared.config_path.clone()"));
+            assert!(open_config_source.contains("spawn_external_open"));
+            assert!(!open_config_source.contains("Command::new"));
+            assert!(external_open_source.contains("thread::Builder::new()"));
+            assert!(external_open_source.contains("Command::new(program)"));
+            assert!(status_source.contains("let snapshot = {"));
+            assert!(status_source.contains("let report = build_status_report(&snapshot)"));
+            assert!(status_source.contains("MessageBoxW"));
+            assert!(!status_source.contains("build_status_report(&status_snapshot(&shared))"));
+        }
+
+        #[test]
+        fn local_asr_daemon_epoch_rejects_stale_and_shutdown_operations() {
+            assert!(local_asr_daemon_operation_allowed(false, 7, 7));
+            assert!(!local_asr_daemon_operation_allowed(false, 8, 7));
+            assert!(!local_asr_daemon_operation_allowed(true, 7, 7));
+        }
+
+        #[test]
+        fn local_asr_daemon_config_identity_ignores_unrelated_settings() {
+            let original = correction_job_test_config();
+            let mut unrelated_change = (*original).clone();
+            unrelated_change.audio.max_recording_seconds = 30;
+            assert!(local_asr_daemon_config_matches(
+                &original,
+                &unrelated_change
+            ));
+
+            let mut route_change = (*original).clone();
+            route_change.speculative.enabled = true;
+            route_change.speculative.local_asr = "streaming_service".to_string();
+            assert!(!local_asr_daemon_config_matches(&original, &route_change));
+        }
+
+        #[test]
+        fn daemon_reconcile_keeps_process_and_network_operations_outside_direct_state_locks() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn reconcile_managed_local_asr_daemon")
+                .expect("daemon reconcile function");
+            let end = source[start..]
+                .find("    fn run_product_local_asr_daemon_prewarm")
+                .map(|offset| start + offset)
+                .expect("function following daemon reconcile");
+            let reconcile_source = &source[start..end];
+
+            assert!(!reconcile_source.contains(".lock()"));
+            assert!(reconcile_source.contains("managed_local_asr_daemon_is_running"));
+            assert!(reconcile_source.contains("local_asr_endpoint_accepts_tcp"));
+            assert!(reconcile_source.contains("start_managed_local_asr_daemon"));
+            assert!(reconcile_source.contains("stop_managed_local_asr_daemon"));
+        }
+
+        #[test]
+        fn daemon_startup_status_errors_attempt_child_cleanup_before_returning() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn start_managed_local_asr_daemon")
+                .expect("daemon start function");
+            let end = source[start..]
+                .find("    fn packaged_local_asr_daemon_request")
+                .map(|offset| start + offset)
+                .expect("function following daemon start");
+            let start_source = &source[start..end];
+            let status_error = start_source
+                .find("check packaged local ASR daemon status")
+                .expect("daemon status error branch");
+            let cleanup_prefix = &start_source[..status_error];
+            let cleanup_prefix =
+                &cleanup_prefix[cleanup_prefix.len().saturating_sub(800)..cleanup_prefix.len()];
+
+            assert!(cleanup_prefix.contains("child.kill()"));
+            assert!(cleanup_prefix.contains("child.wait()"));
+        }
+
+        #[test]
+        fn latest_streaming_asr_text_change_check_borrows_and_compares_the_last_incoming_event() {
+            let current = StreamingAsrEvent::partial("seg-1", "  unchanged text  ");
+
+            assert!(!latest_streaming_asr_text_changed(Some(&current), &[]));
+            assert!(!latest_streaming_asr_text_changed(
+                Some(&current),
+                &[StreamingAsrEvent::partial("seg-1", "unchanged text")],
+            ));
+            assert!(latest_streaming_asr_text_changed(
+                Some(&current),
+                &[StreamingAsrEvent::partial("seg-1", "changed text")],
+            ));
+            assert!(!latest_streaming_asr_text_changed(
+                Some(&current),
+                &[
+                    StreamingAsrEvent::partial("seg-1", "intermediate text"),
+                    StreamingAsrEvent::partial("seg-1", " unchanged text "),
+                ],
+            ));
+            assert!(latest_streaming_asr_text_changed(
+                None,
+                &[StreamingAsrEvent::partial("seg-1", "first text")],
+            ));
+        }
+
+        #[test]
+        fn streaming_idle_segmentation_runs_only_when_a_readiness_threshold_is_crossed() {
+            let config = desktop_live_streaming_segmenter_config();
+
+            assert!(!streaming_idle_segmentation_due(0, 299, &config));
+            assert!(streaming_idle_segmentation_due(299, 300, &config));
+            assert!(!streaming_idle_segmentation_due(300, 619, &config));
+            assert!(streaming_idle_segmentation_due(619, 620, &config));
+            assert!(!streaming_idle_segmentation_due(620, 2_000, &config));
+            assert!(streaming_idle_segmentation_due(0, 2_000, &config));
+        }
+
+        #[test]
+        fn recording_hud_event_budget_preserves_deferred_events_in_order() {
+            let mut pending = VecDeque::from([
+                Ok(vec![
+                    StreamingAsrEvent::partial("seg-1", "first"),
+                    StreamingAsrEvent::partial("seg-2", "second"),
+                    StreamingAsrEvent::partial("seg-3", "third"),
+                ]),
+                Ok(vec![StreamingAsrEvent::partial("seg-4", "fourth")]),
+            ]);
+
+            let (first_batch, first_error) =
+                take_streaming_asr_events_for_hud_refresh(&mut pending, 2);
+            assert_eq!(
+                first_batch
+                    .iter()
+                    .map(StreamingAsrEvent::text)
+                    .collect::<Vec<_>>(),
+                vec!["first", "second"]
+            );
+            assert_eq!(first_error, None);
+
+            let (second_batch, second_error) =
+                take_streaming_asr_events_for_hud_refresh(&mut pending, 8);
+            assert_eq!(
+                second_batch
+                    .iter()
+                    .map(StreamingAsrEvent::text)
+                    .collect::<Vec<_>>(),
+                vec!["third", "fourth"]
+            );
+            assert_eq!(second_error, None);
+            assert!(pending.is_empty());
+
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn take_streaming_asr_events_for_hud_refresh")
+                .expect("streaming ASR HUD event budget helper");
+            let end = source[start..]
+                .find("    fn process_recording_hud_refresh")
+                .map(|offset| start + offset)
+                .expect("function following streaming ASR HUD event budget helper");
+            let helper_source = &source[start..end];
+            assert!(helper_source.contains("events.extend(available.drain(..remaining_capacity))"));
+            assert!(helper_source.contains("pending_results.push_front(Ok(available))"));
+            assert!(!helper_source.contains("split_off("));
+        }
+
+        #[test]
+        fn recording_hud_event_budget_stops_at_error_and_keeps_later_results() {
+            let mut pending = VecDeque::from([
+                Ok(vec![StreamingAsrEvent::partial("seg-1", "before")]),
+                Err("pump failed".to_string()),
+                Ok(vec![StreamingAsrEvent::partial("seg-2", "after")]),
+            ]);
+
+            let (events, error) =
+                take_streaming_asr_events_for_hud_refresh(&mut pending, usize::MAX);
+            assert_eq!(
+                events
+                    .iter()
+                    .map(StreamingAsrEvent::text)
+                    .collect::<Vec<_>>(),
+                vec!["before"]
+            );
+            assert_eq!(error.as_deref(), Some("pump failed"));
+
+            let (remaining, remaining_error) =
+                take_streaming_asr_events_for_hud_refresh(&mut pending, usize::MAX);
+            assert_eq!(
+                remaining
+                    .iter()
+                    .map(StreamingAsrEvent::text)
+                    .collect::<Vec<_>>(),
+                vec!["after"]
+            );
+            assert_eq!(remaining_error, None);
+            assert!(pending.is_empty());
+        }
+
+        #[test]
+        fn recording_hud_zero_event_budget_does_not_consume_pending_results() {
+            let mut pending =
+                VecDeque::from([Ok(vec![StreamingAsrEvent::partial("seg-1", "pending")])]);
+
+            let (events, error) = take_streaming_asr_events_for_hud_refresh(&mut pending, 0);
+
+            assert!(events.is_empty());
+            assert_eq!(error, None);
+            assert_eq!(pending.len(), 1);
+        }
+
+        #[test]
+        fn recording_hud_processing_runs_between_generation_guarded_state_locks() {
+            let source = include_str!("main.rs");
+            let processing_start = source
+                .find("    fn process_recording_hud_refresh")
+                .expect("recording HUD processing function");
+            let refresh_start = source[processing_start..]
+                .find("    fn refresh_recording_hud_level")
+                .map(|offset| processing_start + offset)
+                .expect("recording HUD refresh function");
+            let refresh_end = source[refresh_start..]
+                .find("    fn refresh_thinking_hud_progress")
+                .map(|offset| refresh_start + offset)
+                .expect("function following recording HUD refresh");
+            let processing_source = &source[processing_start..refresh_start];
+            let refresh_source = &source[refresh_start..refresh_end];
+            let process_call = refresh_source
+                .find("let processed = process_recording_hud_refresh(work);")
+                .expect("lock-free HUD processing call");
+            let first_lock = refresh_source
+                .find("lock_recovering(&state.shared")
+                .expect("HUD snapshot lock");
+            let commit_lock = refresh_source[process_call..]
+                .find("lock_recovering(&state.shared")
+                .map(|offset| process_call + offset)
+                .expect("HUD generation-guarded commit lock");
+
+            assert!(!processing_source.contains("state.shared.lock()"));
+            assert!(!processing_source.contains("lock_recovering(&state.shared"));
+            assert!(first_lock < process_call);
+            assert!(process_call < commit_lock);
+            assert!(refresh_source[commit_lock..].contains("active.generation != generation"));
+        }
+
+        #[test]
+        fn recording_hud_idle_snapshot_defers_dispatch_metadata_clones_until_commit() {
+            let source = include_str!("main.rs");
+            let refresh_start = source
+                .find("    fn refresh_recording_hud_level")
+                .expect("recording HUD refresh function");
+            let refresh_end = source[refresh_start..]
+                .find("    fn refresh_thinking_hud_progress")
+                .map(|offset| refresh_start + offset)
+                .expect("function following recording HUD refresh");
+            let refresh_source = &source[refresh_start..refresh_end];
+            let process_call = refresh_source
+                .find("let processed = process_recording_hud_refresh(work);")
+                .expect("lock-free HUD processing call");
+            let snapshot_source = &refresh_source[..process_call];
+            let commit_source = &refresh_source[process_call..];
+            let dispatch_seed_guard = commit_source
+                .find("let config = live_dispatch_seed")
+                .expect("conditional dispatch metadata snapshot");
+            let anchor_clone = commit_source
+                .find("active.live_streaming_inserted_anchors.clone()")
+                .expect("changed-transcript anchor snapshot");
+            let commit_complete = commit_source
+                .find("if !committed")
+                .expect("generation-guarded commit completion");
+            let pipeline_config = commit_source
+                .find("desktop_speculative_pipeline_config(&metadata.config)")
+                .expect("lock-free pipeline config construction");
+
+            assert!(!snapshot_source.contains("shared.config.clone()"));
+            assert!(!snapshot_source.contains("active.origin_insert_target.clone()"));
+            assert!(!snapshot_source.contains("active.live_streaming_inserted_anchors.clone()"));
+            assert!(!snapshot_source.contains("active.live_streaming_correction_sender.clone()"));
+            assert!(!snapshot_source.contains("active.streaming_unavailable_hint.clone()"));
+            assert!(snapshot_source.contains("active.streaming_unavailable_hint.take()"));
+            assert!(dispatch_seed_guard < anchor_clone);
+            assert!(commit_complete < pipeline_config);
+            assert!(commit_source.contains(".and_then(|_| shared.config.clone())"));
+            assert!(commit_source.contains(".zip(live_dispatch_metadata)"));
+            assert!(commit_source.contains("live_dispatch_metadata.is_none()"));
+            assert!(commit_source.contains("dispatch metadata is unavailable during recording"));
+            assert!(commit_source
+                .contains("active.streaming_unavailable_hint = streaming_unavailable_hint"));
+        }
+
+        #[test]
+        fn recording_hud_hot_path_reuses_waveform_storage_and_consumes_pumped_events() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn process_recording_hud_refresh")
+                .expect("recording HUD processing function");
+            let end = source[start..]
+                .find("    fn refresh_recording_hud_level")
+                .map(|offset| start + offset)
+                .expect("function following recording HUD processing");
+            let processing_source = &source[start..end];
+
+            assert!(processing_source.contains("current_waveform_into(&mut work.raw_waveform)"));
+            assert!(processing_source.contains("for event in pumped_asr_events"));
+            assert!(processing_source.contains("Vec::with_capacity(pumped_asr_events.len())"));
+            assert!(
+                processing_source.contains("last_streaming_asr_event_at = Some(Instant::now())")
+            );
+            assert!(!processing_source.contains("let now = Instant::now()"));
+            assert!(!processing_source.contains("pumped_asr_events.iter().cloned()"));
+            assert!(!processing_source.contains("current_waveform(9)"));
+        }
+
+        #[test]
+        fn overlay_glyph_utf16_encoding_handles_bmp_and_supplementary_characters() {
+            let (ascii, ascii_len) = encode_overlay_glyph_utf16('A');
+            assert_eq!(&ascii[..ascii_len], &[0x0041]);
+
+            let (cjk, cjk_len) = encode_overlay_glyph_utf16('界');
+            assert_eq!(&cjk[..cjk_len], &[0x754c]);
+
+            let (supplementary, supplementary_len) = encode_overlay_glyph_utf16('😀');
+            assert_eq!(supplementary_len, 2);
+            assert_eq!(
+                String::from_utf16(&supplementary[..supplementary_len]).unwrap(),
+                "😀"
+            );
+        }
+
+        #[tokio::test]
+        async fn streaming_pump_requests_coalesce_while_one_is_queued() {
+            let (pump_sender, mut pump_receiver) = tokio::sync::mpsc::channel(1);
+            let (terminal_sender, _terminal_receiver) = tokio::sync::mpsc::channel(1);
+            let controller = LocalStreamingAsrPumpController {
+                pump_sender,
+                terminal_sender,
+            };
+
+            controller.request_pump();
+            controller.request_pump();
+
+            assert_eq!(pump_receiver.recv().await, Some(()));
+            assert!(matches!(
+                pump_receiver.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ));
+        }
+
+        #[test]
+        fn streaming_terminal_command_has_a_separate_priority_queue() {
+            let (pump_sender, _pump_receiver) = tokio::sync::mpsc::channel(1);
+            let (terminal_sender, mut terminal_receiver) = tokio::sync::mpsc::channel(1);
+            let controller = LocalStreamingAsrPumpController {
+                pump_sender,
+                terminal_sender,
+            };
+            controller.request_pump();
+            let (reply_sender, _reply_receiver) = tokio::sync::oneshot::channel();
+
+            controller
+                .terminal_sender
+                .try_send(LocalStreamingAsrPumpTerminalCommand::Cancel(reply_sender))
+                .expect("terminal command must not share pump backpressure");
+
+            assert!(matches!(
+                terminal_receiver.try_recv(),
+                Ok(LocalStreamingAsrPumpTerminalCommand::Cancel(_))
+            ));
+        }
 
         #[test]
         fn copy_popup_edit_style_exposes_native_vertical_scrolling() {
@@ -10318,7 +14716,10 @@ mod windows_app {
                 ("seg-1#3".to_string(), "第三句。".to_string()),
             ];
 
-            remove_hud_streaming_segments(&mut segments, &["seg-1#2".to_string()]);
+            assert!(remove_hud_streaming_segments(
+                &mut segments,
+                &["seg-1#2".to_string()]
+            ));
 
             assert_eq!(
                 segments,
@@ -10333,12 +14734,139 @@ mod windows_app {
         fn remove_hud_streaming_segments_ignores_empty_id_list() {
             let mut segments = vec![("seg-1".to_string(), "第一句。".to_string())];
 
-            remove_hud_streaming_segments(&mut segments, &[]);
+            assert!(!remove_hud_streaming_segments(&mut segments, &[]));
 
             assert_eq!(
                 segments,
                 vec![("seg-1".to_string(), "第一句。".to_string())]
             );
+        }
+
+        #[test]
+        fn hud_streaming_segment_mutations_report_only_actual_changes() {
+            let mut segments = Vec::new();
+
+            assert!(upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-1",
+                "first"
+            ));
+            assert!(!upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-1",
+                "first"
+            ));
+            assert!(upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-1",
+                "updated"
+            ));
+            assert_eq!(segments, vec![("seg-1".to_string(), "updated".to_string())]);
+
+            assert!(!remove_hud_streaming_segments(
+                &mut segments,
+                &["missing".to_string()]
+            ));
+            assert!(remove_hud_streaming_segments(
+                &mut segments,
+                &["seg-1".to_string()]
+            ));
+            assert!(segments.is_empty());
+        }
+
+        #[test]
+        fn hud_streaming_segment_upsert_updates_tail_and_falls_back_for_older_segments() {
+            let mut segments = vec![
+                ("seg-1".to_string(), "first".to_string()),
+                ("seg-2".to_string(), "second".to_string()),
+            ];
+
+            assert!(!upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-2",
+                "second"
+            ));
+            assert!(upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-2",
+                "second updated"
+            ));
+            assert!(upsert_hud_streaming_segment(
+                &mut segments,
+                "seg-1",
+                "first revised"
+            ));
+
+            assert_eq!(
+                segments,
+                vec![
+                    ("seg-1".to_string(), "first revised".to_string()),
+                    ("seg-2".to_string(), "second updated".to_string()),
+                ]
+            );
+        }
+
+        #[test]
+        fn hud_streaming_segment_upsert_checks_tail_before_linear_scan() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn upsert_hud_streaming_segment")
+                .expect("HUD streaming segment upsert helper");
+            let end = source[start..]
+                .find("    fn update_hud_streaming_segment_text")
+                .map(|offset| start + offset)
+                .expect("function following HUD streaming segment upsert helper");
+            let helper_source = &source[start..end];
+            let tail_check = helper_source
+                .find("segments.last_mut()")
+                .expect("tail fast path");
+            let fallback_scan = helper_source
+                .find(".iter_mut()")
+                .expect("older-segment fallback scan");
+
+            assert!(tail_check < fallback_scan);
+            assert!(helper_source.contains("segments[..search_end]"));
+        }
+
+        #[test]
+        fn batch_hud_streaming_segment_removal_preserves_unrelated_order() {
+            let mut segments = (0..128)
+                .map(|index| (format!("seg-{index}"), format!("text-{index}")))
+                .collect::<Vec<_>>();
+            let mut removed = (0..128)
+                .filter(|index| index % 3 == 0)
+                .map(|index| format!("seg-{index}"))
+                .collect::<Vec<_>>();
+            removed.push("seg-0".to_string());
+            removed.push("missing".to_string());
+
+            assert!(remove_hud_streaming_segments(&mut segments, &removed));
+            assert_eq!(segments.len(), 85);
+            assert!(segments.iter().all(|(segment_id, _)| segment_id
+                .strip_prefix("seg-")
+                .and_then(|index| index.parse::<usize>().ok())
+                .is_some_and(|index| index % 3 != 0)));
+            assert!(segments
+                .windows(2)
+                .all(|pair| pair[0].0[4..].parse::<usize>().unwrap()
+                    < pair[1].0[4..].parse::<usize>().unwrap()));
+        }
+
+        #[test]
+        fn batch_hud_streaming_segment_removal_uses_borrowed_hash_set() {
+            let source = include_str!("main.rs");
+            let start = source
+                .find("    fn remove_hud_streaming_segments")
+                .expect("HUD streaming segment removal helper");
+            let end = source[start..]
+                .find("    fn display_text_units")
+                .map(|offset| start + offset)
+                .expect("function following HUD streaming segment removal helper");
+            let helper_source = &source[start..end];
+
+            assert!(helper_source.contains("if let [removed] = segment_ids"));
+            assert!(helper_source.contains("collect::<HashSet<_>>()"));
+            assert!(!helper_source.contains("segment_ids.iter().any"));
         }
 
         #[test]
@@ -10561,6 +15089,200 @@ mod windows_app {
         }
 
         #[test]
+        fn managed_local_asr_daemon_reuse_requires_the_same_hotword_revision() {
+            let base_plan = DesktopLocalAsrDaemonLaunchPlan {
+                executable_path: PathBuf::from("C:/Talk/talk-local-asr-sherpa.exe"),
+                bind: "127.0.0.1:53171".to_string(),
+                args: vec![
+                    "--hotwords-file".to_string(),
+                    "C:/Talk/hotwords.txt".to_string(),
+                ],
+                hotwords_content_hash: Some(11),
+            };
+            let mut updated_plan = base_plan.clone();
+            updated_plan.hotwords_content_hash = Some(12);
+
+            assert!(managed_local_asr_daemon_launch_is_current(
+                "ws://127.0.0.1:53171/asr",
+                &base_plan,
+                "ws://127.0.0.1:53171/asr",
+                &base_plan,
+            ));
+            assert!(!managed_local_asr_daemon_launch_is_current(
+                "ws://127.0.0.1:53171/asr",
+                &base_plan,
+                "ws://127.0.0.1:53171/asr",
+                &updated_plan,
+            ));
+        }
+
+        #[test]
+        fn product_local_asr_daemon_prewarm_request_exists_for_ready_streaming_product_runtime() {
+            let temp_root = std::env::temp_dir().join(format!(
+                "talk-product-local-asr-prewarm-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time after epoch")
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&temp_root).expect("create temp root");
+            let worker_path = temp_root.join("talk-local-asr-sherpa.exe");
+            fs::write(&worker_path, b"fake exe").expect("write worker marker");
+            let model_root = temp_root.join("models").join("sherpa-onnx");
+            let model_dir = model_root.join("zipformer-zh-en-punct-int8-480ms");
+            fs::create_dir_all(&model_dir).expect("create model dir");
+            fs::write(model_dir.join("tokens.txt"), b"tokens").expect("write tokens");
+            fs::write(model_dir.join("encoder.int8.onnx"), b"encoder").expect("write encoder");
+            fs::write(model_dir.join("decoder.onnx"), b"decoder").expect("write decoder");
+            fs::write(model_dir.join("joiner.int8.onnx"), b"joiner").expect("write joiner");
+
+            let config = TalkConfig::from_toml_str(
+                r#"
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = "C:/tmp"
+
+[provider]
+kind = "mock"
+mock_transcript = "unused"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+
+[logging]
+dir = "C:/logs"
+
+[speculative]
+enabled = true
+local_asr = "streaming_service"
+cloud_correction = "disabled"
+
+[speculative.streaming_service]
+endpoint = "ws://127.0.0.1:53171/asr"
+sample_rate_hz = 16000
+channels = 1
+connect_timeout_ms = 1000
+idle_timeout_ms = 3000
+final_timeout_ms = 7000
+"#,
+            )
+            .expect("valid config");
+
+            let request = product_local_asr_daemon_prewarm_request(
+                &config,
+                &LocalAsrBootstrapStatus::Ready,
+                Some(worker_path.as_path()),
+                Some(model_root.as_path()),
+            )
+            .expect("prewarm request should exist");
+
+            assert_eq!(request.endpoint, "ws://127.0.0.1:53171/asr");
+            assert_eq!(request.startup_timeout_ms, 15_000);
+            assert_eq!(request.plan.bind, "127.0.0.1:53171");
+            assert_eq!(request.plan.executable_path, worker_path);
+        }
+
+        #[test]
+        fn product_local_asr_daemon_prewarm_request_is_none_without_ready_streaming_runtime() {
+            let config = TalkConfig::from_toml_str(
+                r#"
+[trigger]
+mode = "toggle"
+toggle_shortcut = "RightAlt"
+
+[audio]
+backend = "silent"
+max_recording_seconds = 15
+sample_rate_hz = 16000
+channels = 1
+temp_dir = "C:/tmp"
+
+[provider]
+kind = "mock"
+mock_transcript = "unused"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+
+[logging]
+dir = "C:/logs"
+
+[speculative]
+enabled = true
+local_asr = "disabled"
+cloud_correction = "disabled"
+"#,
+            )
+            .expect("valid config");
+
+            assert!(product_local_asr_daemon_prewarm_request(
+                &config,
+                &LocalAsrBootstrapStatus::Downloading,
+                None,
+                None,
+            )
+            .is_none());
+        }
+
+        #[test]
+        fn recording_streaming_unavailable_hint_explains_why_live_text_is_missing() {
+            assert_eq!(
+                recording_streaming_unavailable_hint(
+                    true,
+                    false,
+                    &LocalAsrBootstrapStatus::Downloading,
+                ),
+                Some("downloading local ASR model...")
+            );
+            assert_eq!(
+                recording_streaming_unavailable_hint(
+                    true,
+                    false,
+                    &LocalAsrBootstrapStatus::FallbackCloud("download failed".to_string()),
+                ),
+                Some("live transcript unavailable")
+            );
+            assert_eq!(
+                recording_streaming_unavailable_hint(
+                    true,
+                    false,
+                    &LocalAsrBootstrapStatus::NotStarted,
+                ),
+                Some("preparing local ASR...")
+            );
+            assert_eq!(
+                recording_streaming_unavailable_hint(
+                    true,
+                    true,
+                    &LocalAsrBootstrapStatus::Downloading,
+                ),
+                None
+            );
+        }
+
+        #[test]
+        fn recording_streaming_preflight_message_marks_packaged_local_asr_startup() {
+            assert_eq!(
+                recording_streaming_preflight_message(true),
+                Some((
+                    "Talk: preparing local ASR",
+                    "starting local live transcript runtime..."
+                ))
+            );
+            assert_eq!(recording_streaming_preflight_message(false), None);
+        }
+
+        #[test]
         fn paste_shortcut_modifier_release_wait_finishes_immediately_when_no_modifier_is_pressed() {
             let mut samples = vec![PasteShortcutModifierKeyState::default()].into_iter();
             let outcome = wait_for_paste_shortcut_modifier_release_with_sampler(
@@ -10655,6 +15377,63 @@ mod windows_app {
                     shift: false,
                 }
             );
+        }
+
+        #[test]
+        fn paste_shortcut_modifier_preparation_keeps_fast_clear_path() {
+            let mut samples = vec![PasteShortcutModifierKeyState::default()].into_iter();
+            let preparation = prepare_paste_shortcut_modifier_state_with_sampler(
+                Duration::from_millis(40),
+                Duration::from_millis(5),
+                || samples.next().unwrap_or_default(),
+            );
+
+            assert!(preparation.wait_outcome.cleared);
+            assert!(!preparation.force_release);
+            assert_eq!(preparation.wait_outcome.poll_count, 1);
+        }
+
+        #[test]
+        fn paste_shortcut_modifier_preparation_forces_release_after_short_grace_window() {
+            let mut samples = vec![
+                PasteShortcutModifierKeyState {
+                    control: true,
+                    alt: true,
+                    shift: false,
+                },
+                PasteShortcutModifierKeyState {
+                    control: true,
+                    alt: true,
+                    shift: false,
+                },
+            ]
+            .into_iter();
+            let preparation = prepare_paste_shortcut_modifier_state_with_sampler(
+                Duration::from_millis(0),
+                Duration::from_millis(5),
+                || samples.next().unwrap_or_default(),
+            );
+
+            assert!(!preparation.wait_outcome.cleared);
+            assert!(preparation.force_release);
+            assert_eq!(
+                preparation.wait_outcome.final_state,
+                PasteShortcutModifierKeyState {
+                    control: true,
+                    alt: true,
+                    shift: false,
+                }
+            );
+        }
+
+        #[test]
+        fn direct_control_paste_skips_paste_shortcut_modifier_preparation() {
+            assert!(!should_prepare_paste_shortcut_modifiers(true));
+        }
+
+        #[test]
+        fn keyboard_shortcut_paste_still_prepares_modifier_release_path() {
+            assert!(should_prepare_paste_shortcut_modifiers(false));
         }
 
         #[tokio::test]
@@ -10777,8 +15556,8 @@ mod windows_app {
                 .expect("foreground apply waiter should finish");
         }
 
-        fn correction_job_test_config() -> TalkConfig {
-            TalkConfig {
+        fn correction_job_test_config() -> Arc<TalkConfig> {
+            Arc::new(TalkConfig {
                 trigger: talk_core::TriggerConfig {
                     mode: TriggerMode::Toggle,
                     toggle_shortcut: "RightAlt".to_string(),
@@ -10815,7 +15594,7 @@ mod windows_app {
                 },
                 speculative: Default::default(),
                 voice_mode: VoiceMode::Smart,
-            }
+            })
         }
 
         #[test]
@@ -10964,15 +15743,16 @@ mod windows_app {
             let task = tokio::spawn(std::future::pending::<()>());
             let mut pending = Some((7, task));
 
-            abort_pending_task(&mut pending).await;
+            abort_pending_task(&mut pending);
 
             assert!(pending.is_none());
         }
 
         #[test]
-        fn model_bootstrap_side_effects_are_blocked_after_shutdown() {
-            assert!(model_bootstrap_side_effects_allowed(false));
-            assert!(!model_bootstrap_side_effects_allowed(true));
+        fn model_bootstrap_side_effects_reject_stale_and_shutdown_results() {
+            assert!(model_bootstrap_side_effects_allowed(false, 7, 7));
+            assert!(!model_bootstrap_side_effects_allowed(false, 8, 7));
+            assert!(!model_bootstrap_side_effects_allowed(true, 7, 7));
         }
 
         #[test]
@@ -10988,6 +15768,135 @@ mod windows_app {
             assert!(!stop_worker_side_effects_allowed(true, Some(7), 8, 7));
             assert!(!stop_worker_side_effects_allowed(false, None, 8, 7));
             assert!(!stop_worker_side_effects_allowed(false, Some(8), 9, 7));
+        }
+
+        #[test]
+        fn copy_popup_tab_navigation_cycles_editor_copy_and_close_in_both_directions() {
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::None, false),
+                CopyPopupHoveredControl::Copy
+            );
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::Copy, false),
+                CopyPopupHoveredControl::Close
+            );
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::Close, false),
+                CopyPopupHoveredControl::None
+            );
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::None, true),
+                CopyPopupHoveredControl::Close
+            );
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::Close, true),
+                CopyPopupHoveredControl::Copy
+            );
+            assert_eq!(
+                copy_popup_keyboard_tab_target(CopyPopupHoveredControl::Copy, true),
+                CopyPopupHoveredControl::None
+            );
+        }
+
+        struct ShortcutHelpTestWindow(HWND);
+
+        impl Drop for ShortcutHelpTestWindow {
+            fn drop(&mut self) {
+                if let Ok(mut overlay) = overlay_ui_state().lock() {
+                    overlay.shortcut_help = None;
+                }
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+
+        #[test]
+        fn shortcut_help_real_window_show_paint_and_hide_path_is_operational() {
+            static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let _serial = lock_recovering(
+                TEST_LOCK.get_or_init(|| Mutex::new(())),
+                "shortcut help test lock",
+            );
+            let instance = unsafe { GetModuleHandleW(ptr::null()) };
+            register_named_window_class(
+                instance,
+                SHORTCUT_HELP_WINDOW_CLASS_NAME,
+                shortcut_help_window_proc,
+            )
+            .expect("register shortcut help window class");
+            let window = ShortcutHelpTestWindow(
+                create_shortcut_help_window(instance, ptr::null_mut())
+                    .expect("create shortcut help window"),
+            );
+            let model = DesktopShortcutHelpModel {
+                title: "RightAlt".to_string(),
+                detail: String::new(),
+                entries: vec![
+                    DesktopShortcutHelpEntry {
+                        title: "输入".to_string(),
+                        shortcut: "松开".to_string(),
+                        detail: String::new(),
+                    },
+                    DesktopShortcutHelpEntry {
+                        title: "翻译".to_string(),
+                        shortcut: "/".to_string(),
+                        detail: String::new(),
+                    },
+                    DesktopShortcutHelpEntry {
+                        title: "提问".to_string(),
+                        shortcut: "Space".to_string(),
+                        detail: String::new(),
+                    },
+                ],
+            };
+
+            assert_eq!(unsafe { IsWindowVisible(window.0) }, 0);
+            show_shortcut_help_window(window.0, model.clone()).expect("show shortcut help window");
+            assert_ne!(unsafe { IsWindowVisible(window.0) }, 0);
+
+            let mut window_rect = RECT::default();
+            assert_ne!(unsafe { GetWindowRect(window.0, &mut window_rect) }, 0);
+            let expected_metrics = scale_shortcut_help_metrics_for_dpi(
+                desktop_shortcut_help_metrics_for_entry_count(model.entries.len()),
+                overlay_dpi_for_window(window.0),
+            );
+            assert_eq!(window_rect.right - window_rect.left, expected_metrics.width);
+            assert_eq!(
+                window_rect.bottom - window_rect.top,
+                expected_metrics.height
+            );
+            assert_eq!(
+                lock_recovering(overlay_ui_state(), "shortcut help overlay state").shortcut_help,
+                Some(model)
+            );
+
+            unsafe {
+                SendMessageW(window.0, WM_PAINT, 0, 0);
+            }
+            let mut client_rect = RECT::default();
+            assert_ne!(unsafe { GetClientRect(window.0, &mut client_rect) }, 0);
+            let hdc = unsafe { GetDC(window.0) };
+            assert!(!hdc.is_null());
+            let painted_pixel = unsafe {
+                GetPixel(
+                    hdc,
+                    (client_rect.right - client_rect.left) / 2,
+                    scale_desktop_overlay_length(10, overlay_dpi_for_window(window.0)),
+                )
+            };
+            unsafe {
+                ReleaseDC(window.0, hdc);
+            }
+            assert_ne!(painted_pixel, u32::MAX);
+
+            hide_shortcut_help_window(window.0).expect("hide shortcut help window");
+            assert_eq!(unsafe { IsWindowVisible(window.0) }, 0);
+            assert!(
+                lock_recovering(overlay_ui_state(), "shortcut help overlay state")
+                    .shortcut_help
+                    .is_none()
+            );
         }
     }
 }

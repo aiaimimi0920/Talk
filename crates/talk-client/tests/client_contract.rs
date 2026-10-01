@@ -680,6 +680,178 @@ async fn http_text_processor_rejects_text_response_with_surrounding_whitespace()
 }
 
 #[tokio::test]
+async fn separate_http_processors_reuse_the_shared_keep_alive_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind keep-alive provider");
+    let endpoint = format!(
+        "http://{}/provider",
+        listener.local_addr().expect("keep-alive provider addr")
+    );
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept keep-alive connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("keep-alive read timeout");
+        let response_body = r#"{"text":"processed"}"#;
+        let mut request_bodies = Vec::new();
+        for _ in 0..2 {
+            request_bodies.push(read_http_body(&mut stream));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: keep-alive\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .expect("write keep-alive provider response");
+            stream.flush().expect("flush keep-alive provider response");
+        }
+        request_bodies
+    });
+
+    let first = HttpTextProcessor::new(endpoint.clone());
+    let second = HttpTextProcessor::new(endpoint);
+    for (processor, transcript) in [(&first, "first request"), (&second, "second request")] {
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            processor.process(
+                transcript.to_string(),
+                VoiceMode::Dictate,
+                FrontContext::default(),
+            ),
+        )
+        .await
+        .expect("provider request timeout")
+        .expect("provider response");
+        assert_eq!(result, "processed");
+    }
+
+    let request_bodies = handle.join().expect("join keep-alive provider");
+    assert_eq!(request_bodies.len(), 2);
+    assert!(request_bodies[0].contains("first request"));
+    assert!(request_bodies[1].contains("second request"));
+}
+
+#[tokio::test]
+async fn http_transcriber_retries_once_after_transient_connection_refusal() {
+    let (endpoint, handle) =
+        spawn_delayed_text_provider_response("transcribed after retry", Duration::from_millis(100));
+
+    let transcriber = HttpTranscriber::new(endpoint);
+    let transcript = transcriber
+        .transcribe(PathBuf::from("sample.wav"), FrontContext::default())
+        .await
+        .expect("a transient connection refusal should be retried once");
+
+    let request_body = handle.join().expect("join delayed provider");
+    assert_eq!(transcript, "transcribed after retry");
+    assert!(request_body.contains("sample.wav"));
+}
+
+#[tokio::test]
+async fn http_text_processor_retries_once_after_transient_connection_refusal() {
+    let (endpoint, handle) =
+        spawn_delayed_text_provider_response("processed after retry", Duration::from_millis(100));
+
+    let processor = HttpTextProcessor::new(endpoint);
+    let processed = processor
+        .process(
+            "hello neuro".to_string(),
+            VoiceMode::Dictate,
+            FrontContext::default(),
+        )
+        .await
+        .expect("a transient connection refusal should be retried once");
+
+    let request_body = handle.join().expect("join delayed provider");
+    assert_eq!(processed, "processed after retry");
+    assert!(request_body.contains("hello neuro"));
+}
+
+#[tokio::test]
+async fn http_text_processor_does_not_retry_provider_http_error_status() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind failing provider");
+    let endpoint = format!(
+        "http://{}/provider",
+        listener.local_addr().expect("failing provider addr")
+    );
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept failing provider request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("failing provider read timeout");
+        let _ = read_http_body(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        )
+        .expect("write failing provider response");
+        drop(stream);
+
+        // Wait past the retry backoff and assert no second request arrives:
+        // HTTP status errors already reached the provider and must not be
+        // replayed.
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking failing provider listener");
+        thread::sleep(Duration::from_millis(600));
+        match listener.accept() {
+            Ok(_) => panic!("an HTTP status error must not be retried"),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock),
+        }
+    });
+
+    let processor = HttpTextProcessor::new(endpoint);
+    let error = processor
+        .process(
+            "hello neuro".to_string(),
+            VoiceMode::Dictate,
+            FrontContext::default(),
+        )
+        .await
+        .expect_err("an HTTP 500 response should fail without a retry");
+
+    handle.join().expect("join failing provider");
+    assert!(
+        error
+            .to_string()
+            .contains("text processor returned HTTP 500"),
+        "error={error}"
+    );
+}
+
+/// Reserves a loopback port, releases it so the first request is refused, and
+/// only starts serving after `bind_delay` — inside the client's ~300 ms retry
+/// backoff window. A client without the connect retry fails immediately.
+fn spawn_delayed_text_provider_response(
+    text: &str,
+    bind_delay: Duration,
+) -> (String, thread::JoinHandle<String>) {
+    let reserved = TcpListener::bind("127.0.0.1:0").expect("reserve retry provider port");
+    let address = reserved.local_addr().expect("retry provider addr");
+    drop(reserved);
+    let endpoint = format!("http://{address}/provider");
+
+    let response_body = json!({ "text": text }).to_string();
+    let handle = thread::spawn(move || {
+        thread::sleep(bind_delay);
+        let listener = TcpListener::bind(address).expect("rebind retry provider port");
+        let (mut stream, _) = listener.accept().expect("accept retried provider request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("retry provider stream read timeout");
+        let request_body = read_http_body(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        )
+        .expect("write retry provider response");
+        request_body
+    });
+    (endpoint, handle)
+}
+
+#[tokio::test]
 async fn openai_compatible_transcriber_uploads_audio_multipart_with_model_and_bearer_auth() {
     let temp_dir = std::env::temp_dir().join(format!(
         "talk-openai-compatible-transcriber-{}",
@@ -745,8 +917,10 @@ async fn openai_compatible_transcriber_can_use_chat_completions_audio_input_tran
     let request_json: serde_json::Value =
         serde_json::from_str(&request.body).expect("audio input body json");
     let messages = request_json["messages"].as_array().expect("messages array");
-    let content = messages[0]["content"].as_array().expect("content array");
-    let audio_part = &content[0]["input_audio"]["data"];
+    let user_content = messages[0]["content"]
+        .as_array()
+        .expect("user content array");
+    let audio_part = &user_content[0]["input_audio"]["data"];
 
     assert_eq!(transcript, "hello from audio");
     assert!(request
@@ -757,7 +931,7 @@ async fn openai_compatible_transcriber_can_use_chat_completions_audio_input_tran
         .contains("authorization: Bearer talk-test-key"));
     assert_eq!(request_json["model"], "qwen3-asr-flash");
     assert_eq!(messages[0]["role"], "user");
-    assert_eq!(content[0]["type"], "input_audio");
+    assert_eq!(user_content[0]["type"], "input_audio");
     assert!(
         audio_part
             .as_str()
@@ -787,7 +961,7 @@ async fn openai_compatible_chat_audio_input_transport_trims_trailing_silence_fro
             samples
         },
     };
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write source wav with trailing silence");
     let original_info = read_wav_info(&artifact).expect("read original wav info");
 
@@ -808,7 +982,13 @@ async fn openai_compatible_chat_audio_input_transport_trims_trailing_silence_fro
     let request = handle.join().expect("provider thread joins");
     let request_json: serde_json::Value =
         serde_json::from_str(&request.body).expect("audio input body json");
-    let audio_data = request_json["messages"][0]["content"][0]["input_audio"]["data"]
+    let messages = request_json["messages"].as_array().expect("messages array");
+    assert_eq!(
+        messages.len(),
+        1,
+        "chat-audio-input transcription should send only a single user audio message"
+    );
+    let audio_data = messages[0]["content"][0]["input_audio"]["data"]
         .as_str()
         .expect("audio data string");
     let uploaded_path = temp_dir.join("uploaded.wav");
@@ -849,7 +1029,7 @@ async fn openai_compatible_chat_audio_input_transport_rejects_extremely_weak_tri
             samples
         },
     };
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write weak sparse wav");
 
     let transcriber = OpenAiCompatibleTranscriber::new_with_transport(
@@ -887,14 +1067,14 @@ async fn openai_compatible_chat_audio_input_transport_allows_quiet_continuous_au
         samples: {
             let mut samples = vec![0.0_f32; 16_000 * 6];
             for (index, sample) in samples.iter_mut().enumerate() {
-                if index >= 16_000 / 2 && index < 16_000 * 5 {
+                if (16_000 / 2..16_000 * 5).contains(&index) {
                     *sample = if index % 2 == 0 { 0.04 } else { -0.04 };
                 }
             }
             samples
         },
     };
-    write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+    write_captured_wav(&artifact, source, WavSettings::mono_16khz())
         .expect("write quiet continuous wav");
 
     let (endpoint, handle) =
@@ -1027,12 +1207,48 @@ async fn dictation_prompt_explicitly_preserves_language_and_token_sensitive_cont
         serde_json::from_str(&request.body).expect("chat completions body json");
     let messages = request_json["messages"].as_array().expect("messages array");
     let system_prompt = messages[0]["content"].as_str().expect("system prompt");
+    let user_prompt = messages[1]["content"].as_str().expect("user prompt");
 
     assert_eq!(processed, "请打开 Talk 的 local first ASR テスト 页面。");
     assert!(system_prompt.contains("Preserve the original language"));
     assert!(system_prompt.contains("mixed-language tokens"));
     assert!(system_prompt.contains("product names"));
+    assert!(system_prompt.contains("phonetic or spacing variant"));
+    assert!(system_prompt.contains("Do not expand plain Talk into Neuro Talk"));
+    assert!(system_prompt.contains("obviously clipped at the edge of the utterance"));
     assert!(system_prompt.contains("Do not translate"));
+    assert!(user_prompt.contains("Canonical term hints"));
+    assert!(user_prompt.contains("Common recognition variants"));
+    assert!(user_prompt.contains("Frequent full-phrase examples"));
+    assert!(user_prompt.contains("Keep plain Talk as Talk"));
+    assert!(user_prompt.contains("Talk"));
+    assert!(user_prompt.contains("Neuro Talk"));
+    assert!(user_prompt.contains("local first ASR"));
+    assert!(user_prompt.contains("qwen3 asr flash"));
+    assert!(user_prompt.contains("rock foster a s r"));
+    assert!(user_prompt.contains("rock for ster a s r"));
+    assert!(user_prompt.contains("你 o talk"));
+    assert!(user_prompt.contains("tok"));
+    assert!(user_prompt.contains("套口"));
+    assert!(user_prompt.contains("透过"));
+    assert!(user_prompt.contains("千问三 a s r flash"));
+    assert!(user_prompt.contains("text 测试页"));
+    assert!(user_prompt.contains("テスト 页面"));
+    assert!(user_prompt.contains("我你好"));
+    assert!(user_prompt.contains("你好呀"));
+    assert!(user_prompt.contains("掀开项目例会"));
+    assert!(user_prompt.contains("先开项目例会"));
+    assert!(user_prompt.contains("继续进入"));
+    assert!(user_prompt.contains("继续记录"));
+    assert!(user_prompt.contains("c 盘的 us"));
+    assert!(user_prompt.contains(r"C:\Users\Public\Talk\logs"));
+    assert!(user_prompt.contains("打开 Talk 的 local first ASR 测试"));
+    assert!(user_prompt.contains("请帮我打开 Talk 的 local first ASR テスト 页面。"));
+    assert!(user_prompt
+        .contains("请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。"));
+    assert!(user_prompt.contains("今天下午三点半我们先开项目例会，确认 Talk 的默认识别模型，然后把多语言测试结果同步给 Neuro 团队。"));
+    assert!(user_prompt
+        .contains("现在办公室里有一点空调和键盘声，请继续记录 Talk 的多语言识别测试结果。"));
 }
 
 fn spawn_text_provider_response(text: &str) -> (String, thread::JoinHandle<String>) {

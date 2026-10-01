@@ -22,10 +22,10 @@ function New-TestTalkWorkflowSherpaModelDir {
 }
 
 Describe 'Invoke-TalkAsrDefaultModelWorkflow' {
-    It 'uses the multilingual model first in every benchmark and required-local default collection' {
+    It 'uses the evidence-selected zh-en punctuation model first in every default collection' {
         $expected = @(
-            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'zipformer-zh-en-punct-int8-480ms',
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'paraformer-bilingual-zh-en'
         )
         $tokens = $null
@@ -178,7 +178,9 @@ Describe 'Invoke-TalkAsrDefaultModelWorkflow' {
         try {
             $comparisonPath = Join-Path $reportsRoot 'asr-model-comparison.json'
             $evidenceStatusPath = Join-Path $reportsRoot 'asr-model-evidence-status.json'
+            $selectionPath = Join-Path $reportsRoot 'selected-default-asr-model.json'
             Set-Content -LiteralPath $comparisonPath -Value '{"selected_engine":"synthetic","candidates":[]}' -Encoding UTF8
+            Set-Content -LiteralPath $selectionPath -Value '{"selectedModelId":"stale-model"}' -Encoding UTF8
 
             Mock Invoke-TalkAsrCorpusBenchmark {
                 [pscustomobject]@{
@@ -221,6 +223,7 @@ Describe 'Invoke-TalkAsrDefaultModelWorkflow' {
             $status.ready | Should Be $false
             $status.blockingReasons[0] | Should Be 'missing real microphone evidence'
             $status.missingLocalModelIds[0] | Should Be 'zipformer-zh-en-punct-int8-480ms'
+            Test-Path -LiteralPath $selectionPath | Should Be $false
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -279,6 +282,86 @@ Describe 'Invoke-TalkAsrDefaultModelWorkflow' {
         }
         finally {
             Remove-Variable -Name workflowCalls -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'uses the standard DashScope credential file to enable the default cloud baseline when no process api key is set' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-default-workflow-legacy-key-' + [guid]::NewGuid().ToString())
+        $credentialDir = Join-Path $tempRoot '.neuro\qwen-platform\qwen-dashscope-openai\api-key'
+        $credentialPath = Join-Path $credentialDir 'manual-live.json'
+        $originalUserProfile = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process')
+        $originalHome = [Environment]::GetEnvironmentVariable('HOME', 'Process')
+        $originalTalkProviderApiKey = [Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')
+        $script:capturedBenchmarkCloud = $null
+        try {
+            New-Item -ItemType Directory -Path $credentialDir -Force | Out-Null
+            @'
+{
+  "apiKey": "legacy-test-key"
+}
+'@ | Set-Content -LiteralPath $credentialPath -Encoding UTF8
+            [Environment]::SetEnvironmentVariable('USERPROFILE', $tempRoot, 'Process')
+            [Environment]::SetEnvironmentVariable('HOME', $null, 'Process')
+            [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $null, 'Process')
+
+            Mock Invoke-TalkAsrCorpusBenchmark {
+                param(
+                    [string]$CloudOpenAiCompatibleEndpoint,
+                    [string]$CloudOpenAiCompatibleModel,
+                    [string]$CloudOpenAiCompatibleApiKeyEnv
+                )
+                $script:capturedBenchmarkCloud = [pscustomobject]@{
+                    Endpoint = $CloudOpenAiCompatibleEndpoint
+                    Model = $CloudOpenAiCompatibleModel
+                    ApiKeyEnv = $CloudOpenAiCompatibleApiKeyEnv
+                    ApiKeyValue = [Environment]::GetEnvironmentVariable($CloudOpenAiCompatibleApiKeyEnv, 'Process')
+                }
+                [pscustomobject]@{
+                    ComparisonPath = 'C:\talk-reports\asr-model-comparison.json'
+                    Plan = [pscustomobject]@{ OutputRoot = 'C:\talk-reports' }
+                    ProcessRecords = @()
+                    ComparisonRecord = [pscustomobject]@{ ExitCode = 0 }
+                    ReportPaths = @('C:\talk-reports\zipformer-short-search-001.json')
+                }
+            }
+            Mock Select-TalkDefaultAsrModel {
+                param([string]$OutputJson, [switch]$StatusOnly)
+                if ($StatusOnly) {
+                    return [pscustomobject]@{
+                        kind = 'talk-default-asr-model-evidence-status'
+                        ready = $true
+                        blockingReasons = @()
+                    }
+                }
+                [pscustomobject]@{
+                    outputJson = $OutputJson
+                    selectedModelId = 'zipformer-zh-en-punct-int8-480ms'
+                    evidenceReady = $true
+                }
+            }
+            Mock Set-TalkDefaultAsrModel {
+                throw 'Set-TalkDefaultAsrModel should not be called when SkipApply is set'
+            }
+
+            $result = Invoke-TalkAsrDefaultModelWorkflow `
+                -CorpusManifest 'C:\talk-corpus\corpus.json' `
+                -OutputRoot 'C:\talk-reports' `
+                -SkipApply `
+                -PassThru
+
+            $script:capturedBenchmarkCloud.Endpoint | Should Be 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'
+            $script:capturedBenchmarkCloud.Model | Should Be 'qwen3-asr-flash'
+            $script:capturedBenchmarkCloud.ApiKeyEnv | Should Be 'TALK_PROVIDER_API_KEY'
+            $script:capturedBenchmarkCloud.ApiKeyValue | Should Be 'legacy-test-key'
+            $result.Selection.selectedModelId | Should Be 'zipformer-zh-en-punct-int8-480ms'
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('TALK_PROVIDER_API_KEY', 'Process')) | Should Be $true
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('USERPROFILE', $originalUserProfile, 'Process')
+            [Environment]::SetEnvironmentVariable('HOME', $originalHome, 'Process')
+            [Environment]::SetEnvironmentVariable('TALK_PROVIDER_API_KEY', $originalTalkProviderApiKey, 'Process')
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Variable -Name capturedBenchmarkCloud -Scope Script -ErrorAction SilentlyContinue
         }
     }
 

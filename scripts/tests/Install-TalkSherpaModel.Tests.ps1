@@ -4,26 +4,26 @@ $scriptPath = Join-Path (Split-Path $here -Parent) 'Install-TalkSherpaModel.ps1'
 . $scriptPath
 
 Describe 'Install-TalkSherpaModel helpers' {
-    It 'catalogs the product multilingual Zipformer as recommended while retaining the legacy model' {
-        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
-        $archiveName = "$modelId.tar.bz2"
+    It 'catalogs the evidence-selected zh-en punctuation Zipformer as recommended' {
+        $modelId = 'zipformer-zh-en-punct-int8-480ms'
+        $archiveName = 'sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2'
         $catalog = Get-TalkSherpaModelCatalog
         $model = $catalog | Where-Object { $_.Id -eq $modelId } | Select-Object -First 1
-        $legacyModel = $catalog | Where-Object { $_.Id -eq 'zipformer-zh-en-punct-int8-480ms' } | Select-Object -First 1
+        $multilingualModel = $catalog | Where-Object { $_.Id -eq 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' } | Select-Object -First 1
 
         $model | Should Not Be $null
         $model.Recommended | Should Be $true
         $model.Family | Should Be 'transducer'
-        $model.ModelName | Should Be $modelId
+        $model.ModelName | Should Be 'x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8'
         $model.ArchiveName | Should Be $archiveName
         $model.ArchiveUrl | Should Be "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archiveName"
-        $model.Sha256 | Should Be '28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4'
-        $legacyModel | Should Not Be $null
-        $legacyModel.Recommended | Should Be $false
+        $model.Sha256 | Should Be 'fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74'
+        $multilingualModel | Should Not Be $null
+        $multilingualModel.Recommended | Should Be $false
         @($catalog | Where-Object { $_.Recommended }).Count | Should Be 1
     }
 
-    It 'defaults every installer entry point to the product multilingual model' {
+    It 'defaults every installer entry point to the evidence-selected zh-en punctuation model' {
         $tokens = $null
         $parseErrors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -41,7 +41,111 @@ Describe 'Install-TalkSherpaModel helpers' {
         $defaults.Count | Should Be 2
         foreach ($default in $defaults) {
             [string]$default.DefaultValue.SafeGetValue() |
-                Should Be 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+                Should Be 'zipformer-zh-en-punct-int8-480ms'
+        }
+    }
+
+    It 'catalogs the offline bilingual Zipformer without a streaming config snippet' {
+        $modelId = 'offline-zipformer-zh-en-int8-2023-11-22'
+        $model = Get-TalkSherpaModelCatalog |
+            Where-Object { $_.Id -eq $modelId } |
+            Select-Object -First 1
+
+        $model | Should Not Be $null
+        $model.RuntimeMode | Should Be 'offline'
+        $model.Family | Should Be 'transducer'
+        $model.ModelName | Should Be 'sherpa-onnx-zipformer-zh-en-2023-11-22'
+        $model.SizeBytes | Should Be 312398028
+
+        $tempRoot = Join-Path $env:TEMP ('talk-sherpa-offline-model-test-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            Set-Content -LiteralPath (Join-Path $tempRoot 'tokens.txt') -Value '<blk>' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'encoder.int8.onnx') -Value 'encoder' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'decoder.onnx') -Value 'decoder' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'joiner.int8.onnx') -Value 'joiner' -Encoding ASCII
+
+            $validation = Test-TalkSherpaModelInstall -ModelId $modelId -ModelDir $tempRoot
+
+            $validation.RuntimeMode | Should Be 'offline'
+            $validation.ConfigSnippet | Should Be ''
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'catalogs and validates the official offline SenseVoice int8 model' {
+        $modelId = 'offline-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09'
+        $model = Get-TalkSherpaModelCatalog |
+            Where-Object { $_.Id -eq $modelId } |
+            Select-Object -First 1
+
+        $model | Should Not Be $null
+        $model.RuntimeMode | Should Be 'offline'
+        $model.Family | Should Be 'sense-voice'
+        $model.SizeBytes | Should Be 165783878
+        $model.Sha256 | Should Be '7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63'
+
+        $tempRoot = Join-Path $env:TEMP ('talk-sherpa-sense-voice-test-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            Set-Content -LiteralPath (Join-Path $tempRoot 'tokens.txt') -Value '<blk>' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'model.int8.onnx') -Value 'model' -Encoding ASCII
+
+            $validation = Test-TalkSherpaModelInstall -ModelId $modelId -ModelDir $tempRoot
+
+            $validation.ModelFamily | Should Be 'sense-voice'
+            $validation.ModelPath | Should Be (Join-Path $tempRoot 'model.int8.onnx')
+            $validation.EncoderPath | Should Be ''
+            $validation.DecoderPath | Should Be ''
+            $validation.JoinerPath | Should Be ''
+            $validation.ConfigSnippet | Should Be ''
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'catalogs and validates the offline multilingual Whisper base int8 model' {
+        $modelId = 'offline-whisper-base-int8'
+        $catalog = Get-TalkSherpaModelCatalog
+        $model = $catalog |
+            Where-Object { $_.Id -eq $modelId } |
+            Select-Object -First 1
+        $smallModel = $catalog |
+            Where-Object { $_.Id -eq 'offline-whisper-small-int8' } |
+            Select-Object -First 1
+
+        $model | Should Not Be $null
+        $model.RuntimeMode | Should Be 'offline'
+        $model.Family | Should Be 'whisper'
+        $model.SizeBytes | Should Be 207557382
+        $model.ArchiveName | Should Be 'sherpa-onnx-whisper-base.tar.bz2'
+        $smallModel | Should Not Be $null
+        $smallModel.Family | Should Be 'whisper'
+        $smallModel.SizeBytes | Should Be 639387718
+        $smallModel.ArchiveName | Should Be 'sherpa-onnx-whisper-small.tar.bz2'
+
+        $tempRoot = Join-Path $env:TEMP ('talk-sherpa-whisper-test-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            Set-Content -LiteralPath (Join-Path $tempRoot 'base-tokens.txt') -Value '<blk>' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'base-encoder.int8.onnx') -Value 'encoder' -Encoding ASCII
+            Set-Content -LiteralPath (Join-Path $tempRoot 'base-decoder.int8.onnx') -Value 'decoder' -Encoding ASCII
+
+            $validation = Test-TalkSherpaModelInstall -ModelId $modelId -ModelDir $tempRoot
+
+            $validation.ModelFamily | Should Be 'whisper'
+            $validation.TokensPath | Should Be (Join-Path $tempRoot 'base-tokens.txt')
+            $validation.EncoderPath | Should Be (Join-Path $tempRoot 'base-encoder.int8.onnx')
+            $validation.DecoderPath | Should Be (Join-Path $tempRoot 'base-decoder.int8.onnx')
+            $validation.JoinerPath | Should Be ''
+            $validation.ModelPath | Should Be ''
+            $validation.ConfigSnippet | Should Be ''
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 

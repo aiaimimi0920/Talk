@@ -32,7 +32,7 @@ fn main() {
     match mode {
         "talk" => {
             let artifact = AudioArtifact::new(PathBuf::from(output), "audio/wav");
-            write_captured_wav(&artifact, &source, WavSettings::mono_16khz())
+            write_captured_wav(&artifact, source, WavSettings::mono_16khz())
                 .expect("write talk-resampled wav");
         }
         "nearest" => write_nearest_neighbor_16k_mono(&source, output),

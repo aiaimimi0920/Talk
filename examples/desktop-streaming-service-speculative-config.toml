@@ -5,8 +5,8 @@ mode = "toggle"
 toggle_shortcut = "RightAlt"
 
 [desktop.shortcuts]
-translate_shortcut = "RightAlt+/"
-ask_shortcut = "RightAlt+Space"
+translate_shortcut = "RightCtrl+/"
+ask_shortcut = "RightCtrl+Space"
 
 [audio]
 backend = "native_windows"
@@ -37,7 +37,7 @@ enabled = true
 local_asr = "streaming_service"
 cloud_correction = "provider_text_processor"
 max_patch_age_ms = 2000
-max_auto_patch_edit_ratio = 0.25
+max_auto_patch_edit_ratio = 0.35
 
 [speculative.streaming_service]
 endpoint = "ws://127.0.0.1:53171/asr"
@@ -75,10 +75,25 @@ final_timeout_ms = 7000
 # # modified_beam_search automatically (sherpa biasing only applies under beam
 # # search). Advanced users can instead point `hotwords_file` at a pre-tokenized
 # # file directly.
+# # Automatic model discovery does not inject a corpus-specific vocabulary.
+# # Enable this only with terms that match the user's real dictation domain.
 # hotwords_words = ".runtime/models/sherpa-onnx/talk-hotwords.txt"
-# # Raw-text hotwords only match on SentencePiece/BPE models when sherpa is told
-# # how to tokenize them. When a packaged model already includes `bpe.vocab`,
-# # Talk auto-fills the matching modeling_unit/bpe_vocab pair; set them
-# # explicitly only if you want to override or supply a derived vocab yourself.
-# modeling_unit = "cjkchar+bpe"
+# modeling_unit = "bpe"
 # bpe_vocab = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/bpe.vocab"
+# Talk evidence-selected default local ASR model.
+# selected_model_id = "zipformer-zh-en-punct-int8-480ms"
+# selection_json = ".runtime/asr-bench/selected-default-asr-model.json"
+[speculative.streaming_service.local_daemon]
+mode = "sherpa-online"
+model_family = "transducer"
+model = "zipformer-zh-en-punct-int8-480ms"
+tokens = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/tokens.txt"
+encoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/encoder.int8.onnx"
+decoder = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/decoder.onnx"
+joiner = ".runtime/models/sherpa-onnx/zipformer-zh-en-punct-int8-480ms/joiner.int8.onnx"
+provider = "cpu"
+num_threads = 2
+sample_rate_hz = 16000
+decoding_method = "greedy_search"
+enable_endpoint = true
+endpoint_reset = true

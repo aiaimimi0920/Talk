@@ -41,7 +41,9 @@ pub enum SpeculativeRuntimeEvent {
 pub struct SpeculativeRuntimeState {
     segments: HashMap<String, SpeculativeSegment>,
     committed_segment_ids: Vec<String>,
+    committed_segment_id_set: HashSet<String>,
     correction_requested_segment_ids: HashSet<String>,
+    // Values are trimmed on write so non-revision comparisons can borrow them directly.
     cumulative_source_committed_text: HashMap<String, String>,
     cumulative_source_commit_counts: HashMap<String, usize>,
     // Per ASR source id: the cumulative committed prefix length (bytes, in the
@@ -82,22 +84,28 @@ impl SpeculativeRuntimeState {
         trailing_silence_ms: u64,
         config: &SegmenterConfig,
     ) -> Result<Vec<SpeculativeRuntimeEvent>, TalkError> {
-        let source_segment_id = event.segment_id().to_string();
-        let source_text = event.text().trim().to_string();
+        let source_segment_id = event.segment_id();
+        let source_text = event.text().trim();
         let Some((tail_start_byte, invalidated_ids)) =
-            self.reconcile_source_for_segmentation(&source_segment_id, &source_text)
+            self.reconcile_source_for_segmentation(source_segment_id, source_text)
         else {
             return Ok(Vec::new());
         };
-        let text = source_text[tail_start_byte..].to_string();
+        let text = &source_text[tail_start_byte..];
         let candidates =
-            runtime_segment_candidates(&text, trailing_silence_ms, event.is_final(), config);
-        let mut events = Vec::new();
-        let mut reemitted_ids: HashSet<String> = HashSet::new();
+            runtime_segment_candidates(text, trailing_silence_ms, event.is_final(), config);
+        let event_capacity = candidates
+            .len()
+            .saturating_mul(2)
+            .saturating_add(usize::from(!invalidated_ids.is_empty()));
+        let mut events = Vec::with_capacity(event_capacity);
+        let mut reemitted_ids = (!invalidated_ids.is_empty()).then(HashSet::new);
 
         for candidate in candidates {
-            let segment_id = self.next_runtime_segment_id(&source_segment_id);
-            reemitted_ids.insert(segment_id.clone());
+            let segment_id = self.next_runtime_segment_id(source_segment_id);
+            if let Some(reemitted_ids) = reemitted_ids.as_mut() {
+                reemitted_ids.insert(segment_id.clone());
+            }
             if !candidate.commit {
                 self.segments.insert(
                     segment_id.clone(),
@@ -113,11 +121,11 @@ impl SpeculativeRuntimeState {
             let committed_source_end = tail_start_byte.saturating_add(candidate.end_byte);
             let committed_source_text = source_text
                 .get(..committed_source_end)
-                .unwrap_or(source_text.as_str())
+                .unwrap_or(source_text)
                 .trim_end();
             let already_committed = self.is_segment_committed(&segment_id);
             self.commit_local_segment_from_asr_source(
-                &source_segment_id,
+                source_segment_id,
                 committed_source_text,
                 &segment_id,
                 &candidate.text,
@@ -146,10 +154,13 @@ impl SpeculativeRuntimeState {
         // Report rolled-back sub-segments that were not re-committed so consumers
         // can drop their now-stale per-segment view (leading/kept segments stay
         // in place, so HUD ordering is preserved).
-        let orphan_ids: Vec<String> = invalidated_ids
-            .into_iter()
-            .filter(|segment_id| !reemitted_ids.contains(segment_id))
-            .collect();
+        let orphan_ids = match reemitted_ids {
+            Some(reemitted_ids) => invalidated_ids
+                .into_iter()
+                .filter(|segment_id| !reemitted_ids.contains(segment_id))
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
         if !orphan_ids.is_empty() {
             events.push(SpeculativeRuntimeEvent::LocalSegmentsInvalidated {
                 segment_ids: orphan_ids,
@@ -178,25 +189,28 @@ impl SpeculativeRuntimeState {
             return None;
         }
 
-        let Some(committed_text) = self.cumulative_source_committed_text.get(source_segment_id)
-        else {
-            return Some((0, Vec::new()));
-        };
-        let committed_text = committed_text.trim().to_string();
-        if source_text == committed_text {
-            return None;
-        }
-        // A shorter hypothesis that is a prefix of the committed text is stale
-        // (the committed text already contains it) — keep the committed text.
-        if committed_text.starts_with(source_text) {
-            return None;
-        }
-        if let Some(tail) = source_text.strip_prefix(committed_text.as_str()) {
-            if tail.trim().is_empty() {
+        let committed_text = {
+            let Some(committed_text) = self.cumulative_source_committed_text.get(source_segment_id)
+            else {
+                return Some((0, Vec::new()));
+            };
+            let committed_text = committed_text.as_str();
+            if source_text == committed_text {
                 return None;
             }
-            return Some((source_text.len() - tail.len(), Vec::new()));
-        }
+            // A shorter hypothesis that is a prefix of the committed text is stale
+            // (the committed text already contains it) — keep the committed text.
+            if committed_text.starts_with(source_text) {
+                return None;
+            }
+            if let Some(tail) = source_text.strip_prefix(committed_text) {
+                if tail.trim().is_empty() {
+                    return None;
+                }
+                return Some((source_text.len() - tail.len(), Vec::new()));
+            }
+            committed_text.to_owned()
+        };
 
         // Revision: the ASR revised earlier words. Roll back every sub-segment
         // beyond the retained common prefix, then re-segment from there.
@@ -224,28 +238,43 @@ impl SpeculativeRuntimeState {
         source_text: &str,
     ) -> (usize, Vec<String>) {
         let common_prefix_len = longest_common_prefix_len(committed_text, source_text);
-        let boundaries = self
+        let (retained_count, retained_end, boundary_count) = self
             .cumulative_source_segment_boundaries
             .get(source_segment_id)
-            .cloned()
-            .unwrap_or_default();
-        let retained_count = boundaries
-            .iter()
-            .take_while(|&&end| end <= common_prefix_len)
-            .count();
-        let retained_end = retained_count
-            .checked_sub(1)
-            .map_or(0, |last| boundaries[last]);
+            .map_or((0, 0, 0), |boundaries| {
+                let retained_count = boundaries
+                    .iter()
+                    .take_while(|&&end| end <= common_prefix_len)
+                    .count();
+                let retained_end = retained_count
+                    .checked_sub(1)
+                    .map_or(0, |last| boundaries[last]);
+                (retained_count, retained_end, boundaries.len())
+            });
 
-        let mut invalidated_ids = Vec::new();
-        for index in retained_count..boundaries.len() {
-            let sub_segment_id = source_segment_sub_id(source_segment_id, index);
+        let invalidated_ids = (retained_count..boundary_count)
+            .map(|index| source_segment_sub_id(source_segment_id, index))
+            .collect::<Vec<_>>();
+        if let [invalidated_id] = invalidated_ids.as_slice() {
+            if let Some(index) = self
+                .committed_segment_ids
+                .iter()
+                .rposition(|committed_id| committed_id == invalidated_id)
+            {
+                self.committed_segment_ids.remove(index);
+            }
+        } else if !invalidated_ids.is_empty() {
+            let invalidated_id_set = invalidated_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
             self.committed_segment_ids
-                .retain(|committed_id| committed_id != &sub_segment_id);
-            self.segments.remove(&sub_segment_id);
-            self.correction_requested_segment_ids
-                .remove(&sub_segment_id);
-            invalidated_ids.push(sub_segment_id);
+                .retain(|committed_id| !invalidated_id_set.contains(committed_id.as_str()));
+        }
+        for sub_segment_id in &invalidated_ids {
+            self.committed_segment_id_set.remove(sub_segment_id);
+            self.segments.remove(sub_segment_id);
+            self.correction_requested_segment_ids.remove(sub_segment_id);
         }
 
         self.cumulative_source_segment_boundaries
@@ -315,20 +344,15 @@ impl SpeculativeRuntimeState {
             segment.mark_local_final(text.to_string())?;
             self.segments.insert(segment_id.to_string(), segment);
         }
-        if !self
-            .committed_segment_ids
-            .iter()
-            .any(|committed_id| committed_id == segment_id)
-        {
-            self.committed_segment_ids.push(segment_id.to_string());
+        let segment_id = segment_id.to_string();
+        if self.committed_segment_id_set.insert(segment_id.clone()) {
+            self.committed_segment_ids.push(segment_id);
         }
         Ok(())
     }
 
     fn is_segment_committed(&self, segment_id: &str) -> bool {
-        self.committed_segment_ids
-            .iter()
-            .any(|committed_id| committed_id == segment_id)
+        self.committed_segment_id_set.contains(segment_id)
     }
 
     fn request_correction_once(
@@ -355,15 +379,34 @@ impl SpeculativeRuntimeState {
         if max_chars == 0 {
             return String::new();
         }
-        let joined_context = self
+        let mut reversed_context = Vec::with_capacity(max_chars.min(256));
+        let mut has_later_segment = false;
+        for segment_text in self
             .committed_segment_ids
             .iter()
+            .rev()
             .filter(|segment_id| segment_id.as_str() != current_segment_id)
             .filter_map(|segment_id| self.segments.get(segment_id))
             .map(|segment| segment.draft_text())
-            .collect::<Vec<_>>()
-            .join("\n");
-        take_tail_chars(&joined_context, max_chars)
+        {
+            if has_later_segment {
+                reversed_context.push('\n');
+                if reversed_context.len() == max_chars {
+                    break;
+                }
+            }
+            for character in segment_text.chars().rev() {
+                reversed_context.push(character);
+                if reversed_context.len() == max_chars {
+                    break;
+                }
+            }
+            if reversed_context.len() == max_chars {
+                break;
+            }
+            has_later_segment = true;
+        }
+        reversed_context.into_iter().rev().collect()
     }
 }
 
@@ -383,34 +426,33 @@ fn runtime_segment_candidates(
 ) -> Vec<RuntimeSegmentCandidate> {
     let mut candidates = Vec::new();
     let mut start_byte = 0usize;
+    let mut non_whitespace_count = 0usize;
 
     for (character_byte, character) in text.char_indices() {
         let end_byte = character_byte + character.len_utf8();
+        non_whitespace_count += usize::from(!character.is_whitespace());
         let candidate_text = text[start_byte..end_byte].trim_end();
         if candidate_text.is_empty() {
             continue;
         }
         let reached_punctuation = is_segment_punctuation(character)
             && !is_intra_number_separator(text, character_byte, end_byte, character);
-        let reached_max_chunk = candidate_text
-            .chars()
-            .filter(|item| !item.is_whitespace())
-            .count()
-            >= config.max_chunk_chars;
+        let reached_max_chunk = non_whitespace_count >= config.max_chunk_chars;
         if !reached_punctuation && !reached_max_chunk {
             continue;
         }
 
         let has_following_text = !text[end_byte..].trim().is_empty();
-        let candidate_trailing_silence_ms = if reached_punctuation && has_following_text {
-            trailing_silence_ms.max(config.punctuation_pause_ms)
-        } else {
-            trailing_silence_ms
-        };
+        let candidate_trailing_silence_ms =
+            if reached_punctuation && has_following_text && asr_marked_final {
+                trailing_silence_ms.max(config.punctuation_pause_ms)
+            } else {
+                trailing_silence_ms
+            };
         let readiness = evaluate_segment_readiness(
             config,
             &SegmenterInput {
-                text: candidate_text.to_string(),
+                text: candidate_text,
                 trailing_silence_ms: candidate_trailing_silence_ms,
                 asr_marked_final: asr_marked_final && !has_following_text,
             },
@@ -429,14 +471,7 @@ fn runtime_segment_candidates(
         };
         let committed_slice = text[start_byte..commit_end_byte].trim_end();
 
-        let candidate_text = if !asr_marked_final
-            && trailing_silence_ms >= config.soft_pause_ms
-            && !ends_with_any_punctuation(committed_slice)
-        {
-            append_pause_boundary_punctuation(committed_slice)
-        } else {
-            committed_slice.to_string()
-        };
+        let candidate_text = committed_slice.to_string();
 
         candidates.push(RuntimeSegmentCandidate {
             text: candidate_text,
@@ -445,6 +480,10 @@ fn runtime_segment_candidates(
             commit: true,
         });
         start_byte = commit_end_byte;
+        non_whitespace_count = text[commit_end_byte..end_byte]
+            .chars()
+            .filter(|item| !item.is_whitespace())
+            .count();
     }
 
     let remaining_text = text[start_byte..].trim_end();
@@ -452,22 +491,13 @@ fn runtime_segment_candidates(
         let readiness = evaluate_segment_readiness(
             config,
             &SegmenterInput {
-                text: remaining_text.to_string(),
+                text: remaining_text,
                 trailing_silence_ms,
                 asr_marked_final,
             },
         );
-        let remaining_text = if !asr_marked_final
-            && readiness == SegmentReadiness::Ready
-            && trailing_silence_ms >= config.soft_pause_ms
-            && !ends_with_any_punctuation(remaining_text)
-        {
-            append_pause_boundary_punctuation(remaining_text)
-        } else {
-            remaining_text.to_string()
-        };
         candidates.push(RuntimeSegmentCandidate {
-            text: remaining_text,
+            text: remaining_text.to_string(),
             end_byte: text.len(),
             readiness,
             commit: asr_marked_final || readiness == SegmentReadiness::Ready,
@@ -522,27 +552,6 @@ fn is_intra_number_separator(
             .is_some_and(|next| next.is_ascii_digit())
 }
 
-fn ends_with_any_punctuation(text: &str) -> bool {
-    text.trim_end()
-        .chars()
-        .last()
-        .is_some_and(is_segment_punctuation)
-}
-
-fn append_pause_boundary_punctuation(text: &str) -> String {
-    let trimmed = text.trim_end();
-    // Match the pause comma to the script of the character it attaches to: a
-    // clause ending in CJK text gets a full-width comma, one ending in Latin
-    // text gets an ASCII comma. Keying off the boundary character (rather than
-    // "any CJK char in the clause") keeps mixed-script clauses correct.
-    let punctuation = if trimmed.chars().next_back().is_some_and(is_cjk_character) {
-        '，'
-    } else {
-        ','
-    };
-    format!("{trimmed}{punctuation}")
-}
-
 fn is_cjk_character(character: char) -> bool {
     let code_point = character as u32;
     (0x3040..=0x30ff).contains(&code_point)
@@ -576,14 +585,6 @@ fn word_boundary_break_byte(text: &str, start_byte: usize, end_byte: usize) -> u
         Some(whitespace_offset) if whitespace_offset > 0 => start_byte + whitespace_offset,
         _ => end_byte,
     }
-}
-
-fn take_tail_chars(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-    text.chars().skip(char_count - max_chars).collect()
 }
 
 pub fn run_mock_speculative_session(

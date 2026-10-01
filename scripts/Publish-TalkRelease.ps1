@@ -141,10 +141,90 @@ function Resolve-TalkReleaseVersionId {
     param([string]$VersionId)
 
     if (-not [string]::IsNullOrWhiteSpace($VersionId)) {
+        if ($VersionId.Length -gt 128 -or $VersionId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw "Talk release VersionId must be a single safe path component (letters, digits, '.', '_' or '-', maximum 128 characters): $VersionId"
+        }
         return $VersionId
     }
 
     'desktop-shell-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+}
+
+function Resolve-TalkReleaseChildPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ParentPath,
+        [Parameter(Mandatory = $true)][string]$ChildName
+    )
+
+    $resolvedParent = [System.IO.Path]::GetFullPath($ParentPath)
+    $resolvedChild = [System.IO.Path]::GetFullPath((Join-Path $resolvedParent $ChildName))
+    $trimChars = [char[]]@(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $parentPrefix = $resolvedParent.TrimEnd($trimChars) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedChild.StartsWith($parentPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Talk release path must remain inside its parent directory: $resolvedChild"
+    }
+
+    $resolvedChild
+}
+
+function Get-TalkSourceSnapshot {
+    param([Parameter(Mandatory = $true)][string]$TalkRepoRoot)
+
+    $resolvedTalkRepoRoot = [System.IO.Path]::GetFullPath($TalkRepoRoot)
+    $gitHeadOutput = @(& git -C $resolvedTalkRepoRoot rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $gitHeadOutput.Count -ne 1) {
+        throw "Unable to resolve Talk source Git HEAD: $resolvedTalkRepoRoot"
+    }
+    $gitHead = ([string]$gitHeadOutput[0]).Trim()
+    if ($gitHead -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Talk source Git HEAD is not a full commit hash: $gitHead"
+    }
+
+    $statusLines = @(& git -C $resolvedTalkRepoRoot status --porcelain --untracked-files=all -- . 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect Talk source Git status: $resolvedTalkRepoRoot"
+    }
+    [string[]]$sourcePaths = @(
+        & git -C $resolvedTalkRepoRoot ls-files --cached --others --exclude-standard -- . 2>$null
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to enumerate Talk source files: $resolvedTalkRepoRoot"
+    }
+    [Array]::Sort($sourcePaths, [System.StringComparer]::Ordinal)
+
+    $snapshotLines = New-Object System.Collections.Generic.List[string]
+    foreach ($relativePath in $sourcePaths) {
+        $normalizedPath = $relativePath.Replace('\', '/')
+        $absolutePath = Join-Path $resolvedTalkRepoRoot $relativePath
+        if (Test-Path -LiteralPath $absolutePath -PathType Leaf) {
+            $fileInfo = Get-Item -LiteralPath $absolutePath
+            $fileHash = (Get-FileHash -LiteralPath $absolutePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $snapshotLines.Add("file`t$normalizedPath`t$($fileInfo.Length)`t$fileHash") | Out-Null
+        } else {
+            $snapshotLines.Add("missing`t$normalizedPath") | Out-Null
+        }
+    }
+
+    $snapshotBytes = [System.Text.UTF8Encoding]::new($false).GetBytes(
+        ($snapshotLines -join "`n") + "`n"
+    )
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $snapshotHash = ($sha256.ComputeHash($snapshotBytes) |
+                ForEach-Object { $_.ToString('x2') }) -join ''
+    } finally {
+        $sha256.Dispose()
+    }
+
+    [pscustomobject][ordered]@{
+        gitHead = $gitHead.ToLowerInvariant()
+        dirty = $statusLines.Count -gt 0
+        fileCount = $sourcePaths.Count
+        sha256 = $snapshotHash
+    }
 }
 
 function Write-Utf8NoBomText {
@@ -247,8 +327,8 @@ document_shortcut = "RightCtrl+2"
 command_shortcut = "RightCtrl+3"
 generate_shortcut = "RightCtrl+4"
 smart_shortcut = "RightCtrl+5"
-translate_shortcut = "RightAlt+/"
-ask_shortcut = "RightAlt+Space"
+translate_shortcut = "RightCtrl+/"
+ask_shortcut = "RightCtrl+Space"
 
 # Optional: override the paste shortcut for specific hosts or control signatures.
 # Matchers are case-insensitive. The first matching rule wins.
@@ -286,7 +366,7 @@ enabled = true
 local_asr = "streaming_service"
 cloud_correction = "provider_text_processor"
 max_patch_age_ms = 2000
-max_auto_patch_edit_ratio = 0.25
+max_auto_patch_edit_ratio = 0.35
 
 [speculative.streaming_service]
 endpoint = "ws://127.0.0.1:53171/asr"
@@ -296,7 +376,7 @@ connect_timeout_ms = 15000
 idle_timeout_ms = 3000
 final_timeout_ms = 7000
 
-# Talk downloads and verifies the evidence-selected Zipformer model on first
+# Talk downloads and verifies the evidence-selected zh-en punctuation Zipformer on first
 # startup under %LOCALAPPDATA%\Talk\models\sherpa-onnx when it is missing.
 # The local worker payload is embedded in Talk.exe and extracted automatically.
 # Optional: uncomment this block to override the model auto-discovery paths.
@@ -304,15 +384,17 @@ final_timeout_ms = 7000
 # [speculative.streaming_service.local_daemon]
 # mode = "sherpa-online"
 # model_family = "transducer"
-# model = "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"
-# tokens = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\tokens.txt"
-# encoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
-# decoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\decoder-epoch-75-avg-11-chunk-16-left-128.onnx"
-# joiner = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10\joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx"
+# model = "zipformer-zh-en-punct-int8-480ms"
+# tokens = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms\tokens.txt"
+# encoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms\encoder.int8.onnx"
+# decoder = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms\decoder.onnx"
+# joiner = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms\joiner.int8.onnx"
 # provider = "cpu"
 # num_threads = 2
 # sample_rate_hz = 16000
 # decoding_method = "greedy_search"
+# enable_endpoint = true
+# endpoint_reset = true
 
 [output]
 mode = "clipboard_paste"
@@ -680,7 +762,7 @@ function New-TalkReleaseReadmeText {
         '$env:TALK_PROVIDER_API_KEY = ''your-provider-key'''
         '```'
         ''
-        'If this bundle was published with a packaged key, `talk-desktop.toml` may already contain `api_key` and this environment variable is optional.'
+        'If this bundle was published with a packaged key, `talk-desktop.toml` may already contain `api_key` and this environment variable is optional. DashScope-compatible releases also reuse the standard per-user DashScope credential file when it exists.'
         ''
         '## Launch the desktop app'
         ''
@@ -691,6 +773,18 @@ function New-TalkReleaseReadmeText {
         '```'
         ''
         'Use `-ListInputDevices` if you need to inspect available microphone names before launching.'
+        ''
+        '## Refresh real-microphone evidence incrementally'
+        ''
+        'The packaged release also includes `asr-real-mic-prompts.json`, `Invoke-TalkAsrCorpusRecorder.ps1`, and `Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1` for default-model evidence refreshes.'
+        ''
+        'When the prompt set grows, refresh only the missing real-microphone samples instead of re-recording the whole corpus:'
+        ''
+        '```powershell'
+        '.\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 -PromptManifest .\asr-real-mic-prompts.json -CorpusRoot .\.runtime\asr-bench\real-mic-corpus -RecordOnly -ResumeExistingCorpus'
+        '```'
+        ''
+        'This command reuses already aligned WAV files from `.\.runtime\asr-bench\real-mic-corpus\corpus.json`, records only missing sample IDs, and rewrites the corpus manifest in prompt order.'
         ''
         '## Validate the hotkey transcription and insertion path'
         ''
@@ -1129,38 +1223,116 @@ function Assert-TalkReleaseSmokeResultsPassed {
     throw ("{0} failed:`n{1}" -f $Context, ($lines -join "`n"))
 }
 
+function New-TalkReleaseBuildEnvironment {
+    param([Parameter(Mandatory = $true)][string]$TalkRepoRoot)
+
+    $prefixes = New-Object System.Collections.Generic.List[object]
+    $prefixes.Add([pscustomobject]@{
+        Source = [System.IO.Path]::GetFullPath($TalkRepoRoot)
+        Target = 'talk-source'
+    }) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $prefixes.Add([pscustomobject]@{
+            Source = [System.IO.Path]::GetFullPath($env:USERPROFILE)
+            Target = 'user-home'
+        }) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+        $prefixes.Add([pscustomobject]@{
+            Source = [System.IO.Path]::GetFullPath($env:CARGO_HOME)
+            Target = 'cargo-home'
+        }) | Out-Null
+    }
+
+    $seenSources = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $rustFlags = New-Object System.Collections.Generic.List[string]
+    foreach ($prefix in $prefixes) {
+        foreach ($source in @($prefix.Source, $prefix.Source.Replace('\', '/'))) {
+            if ($seenSources.Add($source)) {
+                $rustFlags.Add("--remap-path-prefix=$source=$($prefix.Target)") | Out-Null
+            }
+        }
+    }
+
+    @{
+        CARGO_ENCODED_RUSTFLAGS = $rustFlags -join [char]0x1f
+    }
+}
+
+function Assert-TalkReleaseBinaryBuildPathsRedacted {
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string[]]$ForbiddenPathRoots
+    )
+
+    $resolvedBinaryPath = [System.IO.Path]::GetFullPath($BinaryPath)
+    if (-not (Test-Path -LiteralPath $resolvedBinaryPath -PathType Leaf)) {
+        throw "Talk release binary does not exist: $resolvedBinaryPath"
+    }
+    $binaryText = [System.Text.Encoding]::ASCII.GetString(
+        [System.IO.File]::ReadAllBytes($resolvedBinaryPath)
+    )
+    foreach ($root in $ForbiddenPathRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) {
+            continue
+        }
+        $resolvedRoot = [System.IO.Path]::GetFullPath($root)
+        foreach ($candidate in @($resolvedRoot, $resolvedRoot.Replace('\', '/'))) {
+            if ($binaryText.Contains($candidate)) {
+                throw "Talk release binary contains an unredacted build path [$candidate]: $resolvedBinaryPath"
+            }
+        }
+    }
+}
+
 function Invoke-PowerShellCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [hashtable]$EnvironmentOverrides = @{}
     )
 
-    Push-Location $WorkingDirectory
+    $previousValues = @{}
+    foreach ($name in $EnvironmentOverrides.Keys) {
+        $previousValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, [string]$EnvironmentOverrides[$name], 'Process')
+    }
+
     try {
-        $commandOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $Command
-        $renderedOutput = if ($null -eq $commandOutput) {
-            ''
-        } else {
-            (@($commandOutput) -join [Environment]::NewLine)
-        }
-        if ($null -ne $commandOutput) {
-            foreach ($line in @($commandOutput)) {
-                Write-Host $line
+        Push-Location $WorkingDirectory
+        try {
+            $commandOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $Command
+            $renderedOutput = if ($null -eq $commandOutput) {
+                ''
+            } else {
+                (@($commandOutput) -join [Environment]::NewLine)
+            }
+            if ($null -ne $commandOutput) {
+                foreach ($line in @($commandOutput)) {
+                    Write-Host $line
+                }
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "Command failed with exit code ${LASTEXITCODE}: $Command`n$renderedOutput"
+            }
+
+            [pscustomobject]@{
+                Display = $Command
+                WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
+                OutputText = $renderedOutput
+                ExitCode = $LASTEXITCODE
             }
         }
-        if ($LASTEXITCODE -ne 0) {
-            throw "Command failed with exit code ${LASTEXITCODE}: $Command`n$renderedOutput"
-        }
-
-        [pscustomobject]@{
-            Display = $Command
-            WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
-            OutputText = $renderedOutput
-            ExitCode = $LASTEXITCODE
+        finally {
+            Pop-Location
         }
     }
     finally {
-        Pop-Location
+        foreach ($name in $EnvironmentOverrides.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $previousValues[$name], 'Process')
+        }
     }
 }
 
@@ -1497,7 +1669,15 @@ function Publish-TalkProductRelease {
     $repositoryContext = Resolve-TalkReleaseRepositoryContext -TalkRepoRoot $talkRepoRoot
     $resolvedReleaseRoot = Resolve-TalkReleaseRoot -ReleaseRoot $ReleaseRoot
     $resolvedVersionId = Resolve-TalkReleaseVersionId -VersionId $VersionId
-    $destinationDir = Join-Path $resolvedReleaseRoot $resolvedVersionId
+    $destinationDir = Resolve-TalkReleaseChildPath `
+        -ParentPath $resolvedReleaseRoot `
+        -ChildName $resolvedVersionId
+    $sourceSnapshot = if ($EmitEvidence) {
+        Get-TalkSourceSnapshot -TalkRepoRoot $talkRepoRoot
+    } else {
+        $null
+    }
+    $releaseBuildEnvironment = New-TalkReleaseBuildEnvironment -TalkRepoRoot $talkRepoRoot
     $verificationSteps = Get-VerificationSteps `
         -Skipped $SkipVerification.IsPresent `
         -ManifestPath $repositoryContext.ManifestPath
@@ -1512,7 +1692,8 @@ function Publish-TalkProductRelease {
     if (-not $SkipBuild) {
         $commandRecords.Add((Invoke-PowerShellCommand `
             -Command "cargo build --manifest-path $($repositoryContext.ManifestPath) --release -p talk-desktop -p talk-local-asr-sherpa" `
-            -WorkingDirectory $repositoryContext.WorkingDirectory)) | Out-Null
+            -WorkingDirectory $repositoryContext.WorkingDirectory `
+            -EnvironmentOverrides $releaseBuildEnvironment)) | Out-Null
     }
 
     if (Test-Path -LiteralPath $destinationDir) {
@@ -1535,6 +1716,19 @@ function Publish-TalkProductRelease {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "Missing Talk product release artifact: $requiredPath"
         }
+    }
+    if (-not $SkipBuild) {
+        $forbiddenBuildPathRoots = @(
+            $talkRepoRoot,
+            $env:USERPROFILE,
+            $env:CARGO_HOME
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        Assert-TalkReleaseBinaryBuildPathsRedacted `
+            -BinaryPath $desktopExe `
+            -ForbiddenPathRoots $forbiddenBuildPathRoots
+        Assert-TalkReleaseBinaryBuildPathsRedacted `
+            -BinaryPath $workerExe `
+            -ForbiddenPathRoots $forbiddenBuildPathRoots
     }
 
     $payloadFiles = @(
@@ -1565,19 +1759,33 @@ function Publish-TalkProductRelease {
 
     $evidenceDir = $null
     if ($EmitEvidence) {
-        $evidenceDir = Join-Path (Join-Path $resolvedReleaseRoot '_ci') $resolvedVersionId
+        $postBuildSourceSnapshot = Get-TalkSourceSnapshot -TalkRepoRoot $talkRepoRoot
+        if ($postBuildSourceSnapshot.sha256 -cne $sourceSnapshot.sha256) {
+            throw 'Talk source changed while the product release was being built'
+        }
+        $evidenceRoot = Resolve-TalkReleaseChildPath `
+            -ParentPath $resolvedReleaseRoot `
+            -ChildName '_ci'
+        $evidenceDir = Resolve-TalkReleaseChildPath `
+            -ParentPath $evidenceRoot `
+            -ChildName $resolvedVersionId
         if (Test-Path -LiteralPath $evidenceDir) {
             Remove-Item -LiteralPath $evidenceDir -Recurse -Force
         }
         New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
         $evidence = [ordered]@{
-            schemaVersion = 1
+            schemaVersion = 2
             profile = 'product'
             versionId = $resolvedVersionId
             builtAt = (Get-Date -Format o)
-            productDirectory = $destinationDir
+            productDirectory = '.'
             productFiles = @('Talk.exe', 'talk.toml')
+            productFileSha256 = [ordered]@{
+                'Talk.exe' = (Get-FileHash -LiteralPath (Join-Path $destinationDir 'Talk.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+                'talk.toml' = (Get-FileHash -LiteralPath (Join-Path $destinationDir 'talk.toml') -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
             embeddedRuntimeSha256 = $embedded.ArchiveSha256
+            sourceSnapshot = $sourceSnapshot
             commands = @($commandRecords.ToArray() | ForEach-Object { $_.Display })
         }
         Write-Utf8NoBomText `
@@ -1632,7 +1840,9 @@ function Publish-TalkRelease {
     $manifestPath = $repositoryContext.ManifestPath
     $resolvedReleaseRoot = Resolve-TalkReleaseRoot -ReleaseRoot $ReleaseRoot
     $resolvedVersionId = Resolve-TalkReleaseVersionId -VersionId $VersionId
-    $destinationDir = Join-Path $resolvedReleaseRoot $resolvedVersionId
+    $destinationDir = Resolve-TalkReleaseChildPath `
+        -ParentPath $resolvedReleaseRoot `
+        -ChildName $resolvedVersionId
 
     $verificationSteps = Get-VerificationSteps `
         -Skipped $SkipVerification.IsPresent `

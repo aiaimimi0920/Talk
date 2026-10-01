@@ -484,6 +484,55 @@ dir = "{log_dir}"
     config_path
 }
 
+fn write_openai_compatible_text_processor_only_config(
+    root: &Path,
+    chat_endpoint: &str,
+    voice_mode: &str,
+) -> PathBuf {
+    let audio_dir = root.join("audio");
+    let log_dir = root.join("logs");
+    let config_path = root.join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+voice_mode = "{voice_mode}"
+
+[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+max_recording_seconds = 60
+sample_rate_hz = 16000
+channels = 1
+temp_dir = "{audio_dir}"
+
+[provider]
+kind = "openai_compatible"
+audio_transcriptions_endpoint = "http://127.0.0.1:9/not-used"
+chat_completions_endpoint = "{chat_endpoint}"
+transcription_model = "qwen3-asr-flash"
+chat_model = "qwen3.7-plus"
+api_key = "talk-test-key"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+
+[logging]
+dir = "{log_dir}"
+"#,
+            voice_mode = voice_mode,
+            audio_dir = toml_path(&audio_dir),
+            chat_endpoint = chat_endpoint,
+            log_dir = toml_path(&log_dir)
+        ),
+    )
+    .expect("write openai-compatible text processor-only config");
+    config_path
+}
+
 fn spawn_http_provider() -> (String, thread::JoinHandle<Vec<String>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
     listener
@@ -628,6 +677,131 @@ fn spawn_openai_audio_input_provider() -> (String, thread::JoinHandle<Vec<String
     (endpoint, handle)
 }
 
+fn spawn_openai_compatible_chat_only_provider(
+    response_body: &'static str,
+) -> (String, thread::JoinHandle<String>) {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").expect("bind openai-compatible chat-only provider");
+    listener
+        .set_nonblocking(false)
+        .expect("chat-only provider blocking");
+    let endpoint = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().expect("chat-only provider addr")
+    );
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept chat-only request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("chat-only stream read timeout");
+        let request = read_http_request(&mut stream);
+        write_http_response(&mut stream, 200, response_body);
+        request
+    });
+    (endpoint, handle)
+}
+
+fn spawn_http_text_processor_response(response_text: &str) -> (String, thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind http text processor");
+    listener
+        .set_nonblocking(false)
+        .expect("http text processor blocking");
+    let endpoint = format!(
+        "http://{}/provider",
+        listener.local_addr().expect("http text processor addr")
+    );
+    let response_text = response_text.to_string();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("accept http text processor request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("http text processor stream read timeout");
+        let request = read_http_request(&mut stream);
+        write_json_response(&mut stream, &json!({ "text": response_text }).to_string());
+        request
+    });
+    (endpoint, handle)
+}
+
+/// Serves the `http` provider contract (`{"text": ...}` responses) for one
+/// voice session, but holds the transcription leg open for `transcribe_delay`
+/// so the invoke stays in progress long enough for concurrency assertions.
+/// The returned receiver fires once the transcription request has been read,
+/// i.e. once the voice session is definitely running inside the provider call.
+fn spawn_slow_http_provider(
+    transcribe_delay: Duration,
+    transcript: &str,
+) -> (String, std::sync::mpsc::Receiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind slow http provider");
+    listener
+        .set_nonblocking(false)
+        .expect("slow http provider blocking");
+    let endpoint = format!(
+        "http://{}/provider",
+        listener.local_addr().expect("slow http provider addr")
+    );
+    let transcript = transcript.to_string();
+    let (started_sender, started_receiver) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        // One voice session hits the endpoint twice: transcription (has an
+        // audio_path payload) and then text processing.
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .expect("slow http provider stream read timeout");
+            let body = read_http_request(&mut stream);
+            if body.contains("audio_path") {
+                let _ = started_sender.send(());
+                thread::sleep(transcribe_delay);
+            }
+            write_json_response(&mut stream, &json!({ "text": transcript }).to_string());
+        }
+    });
+    (endpoint, started_receiver)
+}
+
+fn write_slow_http_provider_config(root: &Path, endpoint: &str) -> PathBuf {
+    let audio_dir = root.join("audio");
+    let log_dir = root.join("logs");
+    let config_path = root.join("config.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"[trigger]
+mode = "toggle"
+toggle_shortcut = "Ctrl+Alt+Space"
+
+[audio]
+max_recording_seconds = 60
+sample_rate_hz = 16000
+channels = 1
+temp_dir = "{}"
+
+[provider]
+kind = "http"
+endpoint = "{}"
+
+[output]
+mode = "dry_run"
+restore_clipboard = true
+
+[logging]
+dir = "{}"
+"#,
+            toml_path(&audio_dir),
+            endpoint,
+            toml_path(&log_dir)
+        ),
+    )
+    .expect("write slow http provider config");
+    config_path
+}
+
 fn read_http_body(stream: &mut TcpStream) -> String {
     read_http_request(stream)
 }
@@ -699,16 +873,54 @@ fn wait_for_manifest(manifest_path: &Path) -> serde_json::Value {
 fn wait_for_manifest_with_timeout(manifest_path: &Path, timeout: Duration) -> serde_json::Value {
     let deadline = Instant::now() + timeout;
     loop {
-        if manifest_path.exists() {
-            let raw = fs::read_to_string(manifest_path).expect("read manifest");
-            return serde_json::from_str(&raw).expect("valid manifest json");
+        let last_error = match fs::read_to_string(manifest_path) {
+            Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(manifest) if manifest_is_ready(&manifest) => return manifest,
+                Ok(_) => "manifest is missing required Talk transport fields".to_string(),
+                Err(error) => format!("manifest JSON is incomplete or invalid: {error}"),
+            },
+            Err(error) => format!("manifest read failed: {error}"),
+        };
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for valid manifest {}: {}",
+                manifest_path.display(),
+                last_error
+            );
         }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for manifest {}",
-            manifest_path.display()
-        );
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn manifest_is_ready(manifest: &serde_json::Value) -> bool {
+    manifest["schemaVersion"] == 1
+        && manifest["appId"] == "talk"
+        && manifest["transport"]["baseUrl"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty())
+        && manifest["transport"]["authToken"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+struct ChildStartupGuard(Option<Child>);
+
+impl ChildStartupGuard {
+    fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn into_child(mut self) -> Child {
+        self.0.take().expect("startup child exists")
+    }
+}
+
+impl Drop for ChildStartupGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -736,8 +948,32 @@ fn spawn_talk_server_with_config(root: &Path, config_path: &Path) -> (Child, ser
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .spawn()
         .expect("spawn talk server");
+    let child = ChildStartupGuard::new(child);
     let manifest = wait_for_manifest(&manifest_dir.join("talk.json"));
-    (child, manifest)
+    (child.into_child(), manifest)
+}
+
+#[test]
+fn manifest_wait_retries_invalid_json_until_a_ready_manifest_is_published() {
+    let root = unique_temp_dir("manifest-wait-valid-json");
+    let manifest_path = root.join("talk.json");
+    fs::write(&manifest_path, "{").expect("seed incomplete manifest");
+    let writer_path = manifest_path.clone();
+    let writer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(25));
+        fs::write(
+            writer_path,
+            r#"{"schemaVersion":1,"appId":"talk","transport":{"baseUrl":"http://127.0.0.1:4200","authToken":"token"}}"#,
+        )
+        .expect("publish valid manifest");
+    });
+
+    let manifest = wait_for_manifest_with_timeout(&manifest_path, Duration::from_secs(1));
+    writer.join().expect("manifest writer thread");
+
+    assert_eq!(manifest["appId"], "talk");
+    assert_eq!(manifest["transport"]["baseUrl"], "http://127.0.0.1:4200");
+    let _ = fs::remove_dir_all(root);
 }
 
 fn shared_local_capability_example_path(name: &str) -> PathBuf {
@@ -1006,6 +1242,153 @@ fn serve_command_writes_talk_manifest_and_serves_health_and_capabilities() {
 }
 
 #[test]
+fn serve_command_keeps_serving_after_client_disconnects_mid_request() {
+    let temp_dir = unique_temp_dir("serve-client-disconnect");
+    let (child, manifest) = spawn_talk_server(&temp_dir);
+    let (host, port, _token) = endpoint_from_manifest(&manifest);
+
+    // Abort a connection mid-request with an RST (linger 0) so the server's
+    // read fails with ConnectionReset, like a real client dying mid-request.
+    let stream = TcpStream::connect((host.as_str(), port)).expect("connect talk server");
+    let socket = socket2::Socket::from(stream);
+    socket
+        .send(b"GET /v1/health HTTP/1.1\r\n")
+        .expect("write partial talk request");
+    socket
+        .set_linger(Some(Duration::from_secs(0)))
+        .expect("set abortive close linger");
+    drop(socket);
+
+    let health = http_request(&host, port, "GET", "/v1/health", None, None);
+    assert!(
+        health.starts_with("HTTP/1.1 200 OK"),
+        "server must keep serving after a client disconnects mid-request, health={health}"
+    );
+
+    stop_child(child);
+}
+
+#[test]
+fn serve_command_answers_health_immediately_while_invoke_voice_session_is_running() {
+    let temp_dir = unique_temp_dir("serve-health-during-long-invoke");
+    let (provider_endpoint, session_started) =
+        spawn_slow_http_provider(Duration::from_secs(3), "slow transcript");
+    let config_path = write_slow_http_provider_config(&temp_dir, &provider_endpoint);
+    let (child, manifest) = spawn_talk_server_with_config(&temp_dir, &config_path);
+    let (host, port, token) = endpoint_from_manifest(&manifest);
+
+    let invoke_host = host.clone();
+    let invoke_token = token.clone();
+    let invoke = thread::spawn(move || {
+        http_request(
+            &invoke_host,
+            port,
+            "POST",
+            "/v1/invoke",
+            Some(
+                r#"{"requestId":"slow-session-health","caller":"hook","capability":"voice.capture.once","input":{}}"#,
+            ),
+            Some(&invoke_token),
+        )
+    });
+    session_started
+        .recv_timeout(Duration::from_secs(10))
+        .expect("invoke must reach the slow provider");
+
+    let health_started = Instant::now();
+    let health = http_request(&host, port, "GET", "/v1/health", None, None);
+    let health_elapsed = health_started.elapsed();
+
+    let invoke_response = invoke.join().expect("join invoke thread");
+    stop_child(child);
+
+    assert!(health.starts_with("HTTP/1.1 200 OK"), "health={health}");
+    assert!(
+        health_elapsed < Duration::from_secs(2),
+        "health must respond concurrently instead of queueing behind the \
+         3s invoke session, elapsed={health_elapsed:?}"
+    );
+    assert!(
+        invoke_response.starts_with("HTTP/1.1 200 OK"),
+        "invoke={invoke_response}"
+    );
+    let invoke_json: serde_json::Value =
+        serde_json::from_str(http_body(&invoke_response)).expect("invoke json");
+    assert_eq!(
+        invoke_json["status"], "succeeded",
+        "invoke={invoke_response}"
+    );
+    assert_eq!(invoke_json["output"]["transcript"], "slow transcript");
+}
+
+#[test]
+fn serve_command_rejects_second_invoke_while_voice_session_is_running() {
+    let temp_dir = unique_temp_dir("serve-busy-second-invoke");
+    let (provider_endpoint, session_started) =
+        spawn_slow_http_provider(Duration::from_secs(3), "slow transcript");
+    let config_path = write_slow_http_provider_config(&temp_dir, &provider_endpoint);
+    let (child, manifest) = spawn_talk_server_with_config(&temp_dir, &config_path);
+    let (host, port, token) = endpoint_from_manifest(&manifest);
+
+    let invoke_host = host.clone();
+    let invoke_token = token.clone();
+    let first_invoke = thread::spawn(move || {
+        http_request(
+            &invoke_host,
+            port,
+            "POST",
+            "/v1/invoke",
+            Some(
+                r#"{"requestId":"busy-first","caller":"hook","capability":"voice.capture.once","input":{}}"#,
+            ),
+            Some(&invoke_token),
+        )
+    });
+    session_started
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first invoke must reach the slow provider");
+
+    let second_response = http_request(
+        &host,
+        port,
+        "POST",
+        "/v1/invoke",
+        Some(
+            r#"{"requestId":"busy-second","caller":"hook","capability":"voice.capture.once","input":{}}"#,
+        ),
+        Some(&token),
+    );
+
+    let first_response = first_invoke.join().expect("join first invoke thread");
+    stop_child(child);
+
+    assert!(
+        second_response.starts_with("HTTP/1.1 409 Conflict"),
+        "second invoke must be rejected while a session is running, second={second_response}"
+    );
+    let second_json: serde_json::Value =
+        serde_json::from_str(http_body(&second_response)).expect("busy response json");
+    assert_eq!(second_json["requestId"], "busy-second");
+    assert_eq!(second_json["status"], "failed");
+    assert_eq!(second_json["error"]["code"], "voice_session_busy");
+    assert!(
+        second_json["error"]["message"]
+            .as_str()
+            .expect("busy message")
+            .contains("voice session already in progress"),
+        "second={second_response}"
+    );
+
+    assert!(
+        first_response.starts_with("HTTP/1.1 200 OK"),
+        "first invoke must still complete, first={first_response}"
+    );
+    let first_json: serde_json::Value =
+        serde_json::from_str(http_body(&first_response)).expect("first invoke json");
+    assert_eq!(first_json["status"], "succeeded", "first={first_response}");
+}
+
+#[test]
 fn root_contract_talk_manifest_fixture_matches_current_invokable_capabilities() {
     let fixture: serde_json::Value =
         serde_json::from_str(&shared_local_capability_example("talk-manifest.json"))
@@ -1022,14 +1405,11 @@ fn root_contract_talk_manifest_fixture_matches_current_invokable_capabilities() 
     assert_eq!(fixture["displayName"], "Talk");
     assert_eq!(fixture["transport"]["type"], "http");
     assert_eq!(fixture["transport"]["auth"], "bearer");
-    assert!(
-        fixture["transport"]["authToken"]
-            .as_str()
-            .expect("fixture auth token")
-            .trim()
-            .len()
-            > 0
-    );
+    assert!(!fixture["transport"]["authToken"]
+        .as_str()
+        .expect("fixture auth token")
+        .trim()
+        .is_empty());
     assert_eq!(
         capabilities,
         vec!["voice.capture.once".to_owned(), "voice.dictate".to_owned()]
@@ -2259,13 +2639,10 @@ fn serve_command_uses_stable_appdata_manifest_dir_by_default() {
     let manifest = wait_for_manifest_with_timeout(&manifest_path, Duration::from_secs(2));
 
     assert_eq!(manifest["appId"], "talk");
-    assert_eq!(
-        manifest["transport"]["baseUrl"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("http://127.0.0.1:"),
-        true
-    );
+    assert!(manifest["transport"]["baseUrl"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("http://127.0.0.1:"));
 
     stop_child(child);
 }
@@ -2334,13 +2711,10 @@ fn serve_command_accepts_ipv6_loopback_host_and_serves_health() {
 
     let manifest =
         wait_for_manifest_with_timeout(&manifest_dir.join("talk.json"), Duration::from_secs(2));
-    assert_eq!(
-        manifest["transport"]["baseUrl"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("http://["),
-        true
-    );
+    assert!(manifest["transport"]["baseUrl"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("http://["));
 
     let (host, port, _token) = endpoint_from_manifest(&manifest);
     let health = http_request(&host, port, "GET", "/v1/health", None, None);
@@ -2374,13 +2748,10 @@ fn serve_command_accepts_bracketed_ipv6_loopback_host_and_serves_health() {
 
     let manifest =
         wait_for_manifest_with_timeout(&manifest_dir.join("talk.json"), Duration::from_secs(2));
-    assert_eq!(
-        manifest["transport"]["baseUrl"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("http://["),
-        true
-    );
+    assert!(manifest["transport"]["baseUrl"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("http://["));
 
     let (host, port, _token) = endpoint_from_manifest(&manifest);
     let health = http_request(&host, port, "GET", "/v1/health", None, None);
@@ -3630,6 +4001,616 @@ fn probe_audio_command_reports_json_signal_metrics_for_silent_backend() {
         .as_str()
         .expect("artifactPath")
         .ends_with(".wav"));
+}
+
+#[test]
+fn validate_faithful_output_command_reports_json_for_domain_canonicalization() {
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "validate-faithful-output",
+            "--input-text",
+            "打开 talk 的 rock foster a s r 测试，然后继续记录结果。",
+            "--output-text",
+            "打开 Talk 的 local first ASR 测试，然后继续记录结果。",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk validate-faithful-output");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("validate-faithful-output command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "faithful_output_validation");
+    assert_eq!(
+        json["inputText"],
+        "打开 talk 的 rock foster a s r 测试，然后继续记录结果。"
+    );
+    assert_eq!(
+        json["outputText"],
+        "打开 Talk 的 local first ASR 测试，然后继续记录结果。"
+    );
+    assert_eq!(json["validation"]["accepted"], true);
+    assert!(json["validation"]["fallbackReason"].is_null());
+}
+
+#[test]
+fn validate_faithful_output_command_reports_text_summary_for_rejected_rewrite() {
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "validate-faithful-output",
+            "--input-text",
+            "请打开 Talk 的 qwen3 asr flash 日志。",
+            "--output-text",
+            "请打开 talk 的千问日志。",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk validate-faithful-output");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("faithful output"), "stdout={stdout}");
+    assert!(stdout.contains("accepted=false"), "stdout={stdout}");
+    assert!(
+        stdout.contains("reason=protected_token_mismatch"),
+        "stdout={stdout}"
+    );
+}
+
+#[test]
+fn process_transcript_command_reports_json_for_openai_compatible_provider() {
+    let temp_dir = unique_temp_dir("process-transcript-openai-compatible");
+    let (endpoint, handle) = spawn_openai_compatible_chat_only_provider(
+        r#"{"choices":[{"message":{"content":"请帮我打开 Talk 的 local first ASR テスト 页面。"}}]}"#,
+    );
+    let config_path =
+        write_openai_compatible_text_processor_only_config(&temp_dir, &endpoint, "transcribe");
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "请帮我打开 talk 的 rock for ster a s r text 测试页",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let request = handle.join().expect("provider thread joins");
+    assert!(
+        request.contains("\"model\":\"qwen3.7-plus\""),
+        "request={request}"
+    );
+    assert!(
+        request.contains("rock for ster a s r text"),
+        "request={request}"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(
+        json["transcript"],
+        "请帮我打开 talk 的 rock for ster a s r text 测试页"
+    );
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(
+        json["outputText"],
+        "请帮我打开 Talk 的 local first ASR テスト 页面。"
+    );
+    assert_eq!(
+        json["providerOutputText"],
+        "请帮我打开 Talk 的 local first ASR テスト 页面。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+    assert!(json["faithfulValidation"]["fallbackReason"].is_null());
+}
+
+#[test]
+fn process_transcript_command_reports_faithful_fallback_for_unfaithful_http_rewrite() {
+    let temp_dir = unique_temp_dir("process-transcript-faithful-fallback");
+    let (endpoint, handle) = spawn_http_text_processor_response("请打开 talk 的千问日志。");
+    let config_path = write_http_provider_config_with_voice_mode(&temp_dir, &endpoint, None);
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "请打开 Talk 的 qwen3 asr flash 日志。",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let request = handle.join().expect("provider thread joins");
+    let request_json: serde_json::Value =
+        serde_json::from_str(&request).expect("http text processor request json");
+    assert_eq!(request_json["mode"], "transcribe");
+    assert_eq!(
+        request_json["transcript"],
+        "请打开 Talk 的 qwen3 asr flash 日志。"
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["outputText"], "请打开 Talk 的 qwen3 asr flash 日志。");
+    assert_eq!(json["providerOutputText"], "请打开 talk 的千问日志。");
+    assert_eq!(json["faithfulValidation"]["accepted"], false);
+    assert_eq!(
+        json["faithfulValidation"]["fallbackReason"],
+        "protected_token_mismatch"
+    );
+}
+
+#[test]
+fn process_transcript_command_can_replay_cached_provider_output_without_provider_request() {
+    let temp_dir = unique_temp_dir("process-transcript-provider-output-replay");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "有现在办公室里有一点空调和键盘声请继续记录 talk 的多语言识别测试结",
+            "--provider-output-text",
+            "有现在办公室里有一点空调和键盘声请继续记录 Talk 的多语言识别测试结",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with provider output replay");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(
+        json["providerOutputText"],
+        "有现在办公室里有一点空调和键盘声请继续记录 Talk 的多语言识别测试结"
+    );
+    assert_eq!(
+        json["outputText"],
+        "现在办公室里有一点空调和键盘声，请继续记录 Talk 的多语言识别测试结果。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_cached_local_aliases_without_provider_request()
+{
+    let temp_dir = unique_temp_dir("process-transcript-local-alias-self-canonicalization");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "请把你 o talk 的千问三 a s r flash 结果保存到 c 盘的 us",
+            "--provider-output-text",
+            "请把你 o talk 的千问三 a s r flash 结果保存到 c 盘的 us",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with raw local alias replay");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(
+        json["providerOutputText"],
+        "请把你 o talk 的千问三 a s r flash 结果保存到 c 盘的 us"
+    );
+    assert_eq!(
+        json["outputText"],
+        "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_legacy_zipformer_aliases_without_provider_request(
+) {
+    let temp_dir = unique_temp_dir("process-transcript-legacy-zipformer-self-canonicalization");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "请把 neo talk 的千问三 ASR flush 结果保存到 SIPA 的 user",
+            "--provider-output-text",
+            "请把 neo talk 的千问三 ASR flush 结果保存到 SIPA 的 user",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with legacy zipformer-style replay");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(
+        json["providerOutputText"],
+        "请把 neo talk 的千问三 ASR flush 结果保存到 SIPA 的 user"
+    );
+    assert_eq!(
+        json["outputText"],
+        "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_complete_truncated_legacy_zipformer_longform_tail_without_provider_request(
+) {
+    let temp_dir = unique_temp_dir("process-transcript-legacy-zipformer-longform-tail");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+    let truncated_tail =
+        "今天下午三点半， 我们掀开项目例会， 确认 talk 的默认识别模型， 然后把多语言测试结果同步给";
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            truncated_tail,
+            "--provider-output-text",
+            truncated_tail,
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with truncated legacy zipformer tail");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], truncated_tail);
+    assert_eq!(
+        json["outputText"],
+        "今天下午三点半我们先开项目例会，确认 Talk 的默认识别模型，然后把多语言测试结果同步给 Neuro 团队。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_exact_multilingual_proper_noun_alias_without_provider_request(
+) {
+    let temp_dir = unique_temp_dir("process-transcript-multilingual-proper-noun-exact-recovery");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+    let exact_alias = "chính bản ioto可的千问三结果保存到CPA的优秀";
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            exact_alias,
+            "--provider-output-text",
+            exact_alias,
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with exact multilingual proper-noun alias");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], exact_alias);
+    assert_eq!(
+        json["outputText"],
+        "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_multilingual_local_first_phonetic_alias_without_provider_request(
+) {
+    let temp_dir = unique_temp_dir("process-transcript-multilingual-local-first-phonetic-alias");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+    let phonetic_alias = "打开套卡的劳克风斯特试";
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            phonetic_alias,
+            "--provider-output-text",
+            phonetic_alias,
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with multilingual local-first phonetic alias");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], phonetic_alias);
+    assert_eq!(json["outputText"], "打开 Talk 的 local first ASR 测试");
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_keyboard_sheng_noise_alias_without_provider_request(
+) {
+    let temp_dir = unique_temp_dir("process-transcript-keyboard-sheng-noise-alias");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+    let noisy_alias = "有现在办公室里有一点空调和键盘生请继续记录套口的多语言识别测试结果";
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            noisy_alias,
+            "--provider-output-text",
+            noisy_alias,
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with keyboard-sheng noise alias");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], noisy_alias);
+    assert_eq!(
+        json["outputText"],
+        "现在办公室里有一点空调和键盘声，请继续记录 Talk 的多语言识别测试结果。"
+    );
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_strip_short_leading_filler_without_provider_request() {
+    let temp_dir = unique_temp_dir("process-transcript-short-leading-filler");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "啊你好呀",
+            "--provider-output-text",
+            "啊你好呀",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with short leading filler alias");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], "啊你好呀");
+    assert_eq!(json["outputText"], "你好呀");
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
+}
+
+#[test]
+fn process_transcript_command_can_self_canonicalize_multilingual_zipformer_aliases_without_provider_request(
+) {
+    let temp_dir =
+        unique_temp_dir("process-transcript-multilingual-zipformer-self-canonicalization");
+    let config_path = write_openai_compatible_text_processor_only_config(
+        &temp_dir,
+        "http://127.0.0.1:9/not-used",
+        "transcribe",
+    );
+    let exe = env!("CARGO_BIN_EXE_talk");
+
+    let output = Command::new(exe)
+        .args([
+            "process-transcript",
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--transcript",
+            "打开套口的萨测试",
+            "--provider-output-text",
+            "打开套口的萨测试",
+            "--mode",
+            "transcribe",
+            "--json",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run talk process-transcript with multilingual zipformer-style replay");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("process-transcript replay command json");
+    assert_eq!(json["app"], "talk");
+    assert_eq!(json["kind"], "processed_transcript");
+    assert_eq!(json["requestedMode"], "transcribe");
+    assert_eq!(json["providerOutputText"], "打开套口的萨测试");
+    assert_eq!(json["outputText"], "打开 Talk 的 local first ASR 测试");
+    assert_eq!(json["faithfulValidation"]["accepted"], true);
 }
 
 #[test]

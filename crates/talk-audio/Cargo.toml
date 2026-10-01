@@ -12,3 +12,4 @@ uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 cpal.workspace = true
+crossbeam-queue.workspace = true

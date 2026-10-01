@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use talk_desktop::{
     build_embedded_runtime_payload, embedded_runtime_payload_is_appended,
-    extract_embedded_runtime_payload, parse_embedded_runtime_payload, EmbeddedRuntimePayloadSource,
+    extract_embedded_runtime_payload, locate_verified_embedded_runtime,
+    parse_embedded_runtime_payload, EmbeddedRuntimePayloadSource,
 };
 
 const BASE_EXE: &[u8] = b"MZ-talk-desktop-test";
@@ -136,4 +137,79 @@ fn extracts_to_a_content_addressed_runtime_directory_and_reuses_it() {
     );
 
     fs::remove_dir_all(root).expect("remove payload fixture");
+}
+
+#[test]
+fn locates_a_verified_runtime_cache_from_the_trailer_without_reading_the_whole_executable() {
+    let root = unique_temp_dir("talk-product-payload-fast-path");
+    let executable_bytes =
+        build_embedded_runtime_payload(BASE_EXE, &runtime_sources()).expect("build payload");
+    let executable_path = root.join("Talk.exe");
+    fs::create_dir_all(&root).expect("create fast path fixture root");
+    fs::write(&executable_path, &executable_bytes).expect("write payload executable");
+    let runtime_root = root.join("runtime");
+
+    assert_eq!(
+        locate_verified_embedded_runtime(&executable_path, &runtime_root),
+        None,
+        "cache miss before extraction must fall back to the full read path"
+    );
+
+    let extracted =
+        extract_embedded_runtime_payload(&executable_bytes, &runtime_root).expect("extract");
+
+    assert_eq!(
+        locate_verified_embedded_runtime(&executable_path, &runtime_root),
+        Some(extracted.clone())
+    );
+
+    fs::remove_dir_all(root).expect("remove fast path fixture");
+}
+
+#[test]
+fn fast_path_rejects_executables_without_a_payload_and_tampered_caches() {
+    let root = unique_temp_dir("talk-product-payload-fast-path-miss");
+    fs::create_dir_all(&root).expect("create fast path miss fixture root");
+    let runtime_root = root.join("runtime");
+
+    let plain_executable_path = root.join("plain.exe");
+    fs::write(&plain_executable_path, BASE_EXE).expect("write plain executable");
+    assert_eq!(
+        locate_verified_embedded_runtime(&plain_executable_path, &runtime_root),
+        None,
+        "an executable without an appended payload has no runtime cache"
+    );
+
+    let executable_bytes =
+        build_embedded_runtime_payload(BASE_EXE, &runtime_sources()).expect("build payload");
+    let executable_path = root.join("Talk.exe");
+    fs::write(&executable_path, &executable_bytes).expect("write payload executable");
+    let extracted =
+        extract_embedded_runtime_payload(&executable_bytes, &runtime_root).expect("extract");
+    fs::write(extracted.join("talk-local-asr-sherpa.exe"), b"tampered").expect("tamper worker");
+
+    assert_eq!(
+        locate_verified_embedded_runtime(&executable_path, &runtime_root),
+        None,
+        "a tampered cache member must force the repair path"
+    );
+
+    fs::remove_dir_all(root).expect("remove fast path miss fixture");
+}
+
+#[test]
+fn replaces_a_cached_runtime_member_when_its_hash_no_longer_matches() {
+    let root = unique_temp_dir("talk-product-payload-repair");
+    let executable =
+        build_embedded_runtime_payload(BASE_EXE, &runtime_sources()).expect("build payload");
+    let destination =
+        extract_embedded_runtime_payload(&executable, &root).expect("first extraction");
+    let worker = destination.join("talk-local-asr-sherpa.exe");
+    fs::write(&worker, b"tampered worker").expect("tamper cached worker");
+
+    let repaired = extract_embedded_runtime_payload(&executable, &root).expect("repair extraction");
+
+    assert_eq!(repaired, destination);
+    assert_eq!(fs::read(worker).expect("read repaired worker"), b"worker");
+    fs::remove_dir_all(root).expect("remove payload repair fixture");
 }

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$CorpusManifest,
-    [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
     [string]$ModelRoot,
     [string]$OutputRoot,
     [string]$AsrBenchExe,
@@ -12,6 +12,7 @@ param(
     [string]$CloudOpenAiCompatibleApiKeyEnv = 'TALK_PROVIDER_API_KEY',
     [string]$Bind = '127.0.0.1:53171',
     [int]$ChunkMs = 80,
+    [int]$OnlineTailPaddingMs = 300,
     [int]$ConnectTimeoutMs = 1000,
     [int]$ReadyTimeoutMs = 1000,
     [int]$PartialIdleTimeoutMs = 10,
@@ -37,6 +38,7 @@ $entryCloudOpenAiCompatibleTransport = $CloudOpenAiCompatibleTransport
 $entryCloudOpenAiCompatibleApiKeyEnv = $CloudOpenAiCompatibleApiKeyEnv
 $entryBind = $Bind
 $entryChunkMs = $ChunkMs
+$entryOnlineTailPaddingMs = $OnlineTailPaddingMs
 $entryConnectTimeoutMs = $ConnectTimeoutMs
 $entryReadyTimeoutMs = $ReadyTimeoutMs
 $entryPartialIdleTimeoutMs = $PartialIdleTimeoutMs
@@ -65,6 +67,49 @@ function Get-TalkAsrJsonProperty {
     }
 
     $property.Value
+}
+
+function Get-TalkAsrOptionalJsonProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    $property.Value
+}
+
+function Get-TalkAsrFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Get-TalkAsrTextSha256 {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        ($sha256.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Assert-TalkAsrSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($Value -cnotmatch '^[0-9a-fA-F]{64}$') {
+        throw "$Name must be exactly 64 hexadecimal characters"
+    }
 }
 
 function Assert-TalkAsrSafeId {
@@ -157,6 +202,14 @@ function Read-TalkAsrCorpusManifest {
         if (-not (Test-Path -LiteralPath $resolvedAudioWav -PathType Leaf)) {
             throw "$context audioWav does not exist: $resolvedAudioWav"
         }
+        $audioSha256 = Get-TalkAsrFileSha256 -Path $resolvedAudioWav
+        $declaredAudioSha256 = [string](Get-TalkAsrOptionalJsonProperty -Object $sample -Name 'audioSha256')
+        if (-not [string]::IsNullOrWhiteSpace($declaredAudioSha256)) {
+            Assert-TalkAsrSha256 -Value $declaredAudioSha256 -Name "$context audioSha256"
+            if (-not [string]::Equals($declaredAudioSha256, $audioSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "$context audioSha256 does not match the current WAV: expected $declaredAudioSha256, actual $audioSha256"
+            }
+        }
 
         $referenceText = [string](Get-TalkAsrJsonProperty -Object $sample -Name 'referenceText' -Context $context)
         if ([string]::IsNullOrWhiteSpace($referenceText)) {
@@ -166,6 +219,7 @@ function Read-TalkAsrCorpusManifest {
         $samples.Add([pscustomobject]@{
             SampleId = $sampleId
             AudioWav = $resolvedAudioWav
+            AudioSha256 = $audioSha256
             ReferenceText = $referenceText
         }) | Out-Null
     }
@@ -221,7 +275,8 @@ function Get-TalkDirectorySizeMb {
 function New-TalkAsrDaemonArguments {
     param(
         [Parameter(Mandatory = $true)]$Validation,
-        [Parameter(Mandatory = $true)][string]$Bind
+        [Parameter(Mandatory = $true)][string]$Bind,
+        [Parameter(Mandatory = $true)][int]$OnlineTailPaddingMs
     )
 
     $arguments = @(
@@ -236,7 +291,10 @@ function New-TalkAsrDaemonArguments {
         '--provider', ([string]$Validation.Provider),
         '--num-threads', ([string]$Validation.NumThreads),
         '--sample-rate-hz', ([string]$Validation.SampleRateHz),
-        '--decoding-method', ([string]$Validation.DecodingMethod)
+        '--decoding-method', ([string]$Validation.DecodingMethod),
+        '--online-tail-padding-ms', ([string]$OnlineTailPaddingMs),
+        '--enable-endpoint', 'true',
+        '--endpoint-reset', 'true'
     )
     if (-not [string]::IsNullOrWhiteSpace([string]$Validation.JoinerPath)) {
         $arguments += @('--joiner', ([string]$Validation.JoinerPath))
@@ -255,7 +313,8 @@ function New-TalkAsrBenchArguments {
         [Parameter(Mandatory = $true)][int]$ConnectTimeoutMs,
         [Parameter(Mandatory = $true)][int]$ReadyTimeoutMs,
         [Parameter(Mandatory = $true)][int]$PartialIdleTimeoutMs,
-        [Parameter(Mandatory = $true)][int]$FinalTimeoutMs
+        [Parameter(Mandatory = $true)][int]$FinalTimeoutMs,
+        [Parameter(Mandatory = $true)][string]$CorpusManifestSha256
     )
 
     @(
@@ -264,6 +323,8 @@ function New-TalkAsrBenchArguments {
         '--audio-wav', ([string]$Sample.AudioWav),
         '--reference-text', ([string]$Sample.ReferenceText),
         '--sample-id', ([string]$Sample.SampleId),
+        '--corpus-manifest-sha256', $CorpusManifestSha256,
+        '--audio-sha256', ([string]$Sample.AudioSha256),
         '--model-size-mb', ([string]$ModelSizeMb),
         '--chunk-ms', ([string]$ChunkMs),
         '--connect-timeout-ms', ([string]$ConnectTimeoutMs),
@@ -281,7 +342,8 @@ function New-TalkAsrCloudOpenAiCompatibleBenchArguments {
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$Transport,
         [Parameter(Mandatory = $true)][string]$ApiKeyEnv,
-        [Parameter(Mandatory = $true)][string]$OutputJson
+        [Parameter(Mandatory = $true)][string]$OutputJson,
+        [Parameter(Mandatory = $true)][string]$CorpusManifestSha256
     )
 
     @(
@@ -292,6 +354,8 @@ function New-TalkAsrCloudOpenAiCompatibleBenchArguments {
         '--audio-wav', ([string]$Sample.AudioWav),
         '--reference-text', ([string]$Sample.ReferenceText),
         '--sample-id', ([string]$Sample.SampleId),
+        '--corpus-manifest-sha256', $CorpusManifestSha256,
+        '--audio-sha256', ([string]$Sample.AudioSha256),
         '--output-json', $OutputJson
     )
 }
@@ -311,6 +375,7 @@ function New-TalkAsrCorpusBenchmarkPlan {
         [string]$CloudOpenAiCompatibleApiKeyEnv = 'TALK_PROVIDER_API_KEY',
         [string]$Bind = '127.0.0.1:53171',
         [int]$ChunkMs = 80,
+        [int]$OnlineTailPaddingMs = 300,
         [int]$ConnectTimeoutMs = 1000,
         [int]$ReadyTimeoutMs = 1000,
         [int]$PartialIdleTimeoutMs = 10,
@@ -318,6 +383,9 @@ function New-TalkAsrCorpusBenchmarkPlan {
     )
 
     if ($ChunkMs -le 0) { throw 'ChunkMs must be greater than 0' }
+    if ($OnlineTailPaddingMs -lt 0 -or $OnlineTailPaddingMs -gt 2000) {
+        throw 'OnlineTailPaddingMs must be between 0 and 2000'
+    }
     if ($ConnectTimeoutMs -le 0) { throw 'ConnectTimeoutMs must be greater than 0' }
     if ($ReadyTimeoutMs -le 0) { throw 'ReadyTimeoutMs must be greater than 0' }
     if ($PartialIdleTimeoutMs -le 0) { throw 'PartialIdleTimeoutMs must be greater than 0' }
@@ -367,6 +435,7 @@ function New-TalkAsrCorpusBenchmarkPlan {
     }
     $endpoint = "ws://$Bind/asr"
     $resolvedCorpusManifest = Resolve-TalkAsrCorpusBenchmarkPath -Path $CorpusManifest
+    $corpusManifestSha256 = Get-TalkAsrFileSha256 -Path $resolvedCorpusManifest
     $samples = @(Read-TalkAsrCorpusManifest -CorpusManifest $resolvedCorpusManifest)
     if ($ModelId.Count -eq 0) {
         throw 'At least one ModelId is required'
@@ -379,7 +448,10 @@ function New-TalkAsrCorpusBenchmarkPlan {
         $modelDir = Join-Path $resolvedModelRoot $id
         $validation = Test-TalkSherpaModelInstall -ModelId $id -ModelDir $modelDir
         $modelSizeMb = Get-TalkDirectorySizeMb -Path $validation.ModelDir
-        $daemonArguments = @(New-TalkAsrDaemonArguments -Validation $validation -Bind $Bind)
+        $daemonArguments = @(New-TalkAsrDaemonArguments `
+                -Validation $validation `
+                -Bind $Bind `
+                -OnlineTailPaddingMs $OnlineTailPaddingMs)
         $runs = New-Object System.Collections.Generic.List[object]
         foreach ($sample in $samples) {
             $reportPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedOutputRoot "$id-$($sample.SampleId).json"))
@@ -400,7 +472,8 @@ function New-TalkAsrCorpusBenchmarkPlan {
                     -ConnectTimeoutMs $ConnectTimeoutMs `
                     -ReadyTimeoutMs $ReadyTimeoutMs `
                     -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
-                    -FinalTimeoutMs $FinalTimeoutMs)
+                    -FinalTimeoutMs $FinalTimeoutMs `
+                    -CorpusManifestSha256 $corpusManifestSha256)
             }) | Out-Null
         }
 
@@ -417,9 +490,13 @@ function New-TalkAsrCorpusBenchmarkPlan {
 
     $cloudOpenAiCompatibleBaseline = $null
     if ($hasCloudEndpoint -and $hasCloudModel) {
+        $cloudConfigFingerprint = (Get-TalkAsrTextSha256 -Value ("{0}`n{1}`n{2}" -f `
+                    $CloudOpenAiCompatibleTransport, `
+                    $CloudOpenAiCompatibleModel, `
+                    $CloudOpenAiCompatibleEndpoint)).Substring(0, 12)
         $cloudRuns = New-Object System.Collections.Generic.List[object]
         foreach ($sample in $samples) {
-            $reportPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedOutputRoot "cloud-openai-compatible-$CloudOpenAiCompatibleTransport-$($sample.SampleId).json"))
+            $reportPath = [System.IO.Path]::GetFullPath((Join-Path $resolvedOutputRoot "cloud-openai-compatible-$CloudOpenAiCompatibleTransport-$cloudConfigFingerprint-$($sample.SampleId).json"))
             $reportPaths.Add($reportPath) | Out-Null
             $cloudRuns.Add([pscustomobject]@{
                 SampleId = $sample.SampleId
@@ -432,7 +509,8 @@ function New-TalkAsrCorpusBenchmarkPlan {
                     -Model $CloudOpenAiCompatibleModel `
                     -Transport $CloudOpenAiCompatibleTransport `
                     -ApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
-                    -OutputJson $reportPath)
+                    -OutputJson $reportPath `
+                    -CorpusManifestSha256 $corpusManifestSha256)
             }) | Out-Null
         }
 
@@ -440,6 +518,7 @@ function New-TalkAsrCorpusBenchmarkPlan {
             Endpoint = $CloudOpenAiCompatibleEndpoint
             Model = $CloudOpenAiCompatibleModel
             Transport = $CloudOpenAiCompatibleTransport
+            ConfigFingerprint = $cloudConfigFingerprint
             ApiKeyEnv = $CloudOpenAiCompatibleApiKeyEnv
             Runs = $cloudRuns.ToArray()
         }
@@ -456,12 +535,14 @@ function New-TalkAsrCorpusBenchmarkPlan {
 
     [pscustomobject]@{
         CorpusManifest = $resolvedCorpusManifest
+        CorpusManifestSha256 = $corpusManifestSha256
         ModelRoot = $resolvedModelRoot
         OutputRoot = $resolvedOutputRoot
         AsrBenchExe = $resolvedAsrBenchExe
         LocalAsrDaemonExe = $resolvedLocalDaemonExe
         Bind = $Bind
         Endpoint = $endpoint
+        OnlineTailPaddingMs = $OnlineTailPaddingMs
         Samples = $samples
         Candidates = $candidates.ToArray()
         CloudOpenAiCompatibleBaseline = $cloudOpenAiCompatibleBaseline
@@ -615,7 +696,7 @@ function Invoke-TalkAsrCorpusBenchmark {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$CorpusManifest,
-        [string[]]$ModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$ModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
         [string]$ModelRoot,
         [string]$OutputRoot,
         [string]$AsrBenchExe,
@@ -626,6 +707,7 @@ function Invoke-TalkAsrCorpusBenchmark {
         [string]$CloudOpenAiCompatibleApiKeyEnv = 'TALK_PROVIDER_API_KEY',
         [string]$Bind = '127.0.0.1:53171',
         [int]$ChunkMs = 80,
+        [int]$OnlineTailPaddingMs = 300,
         [int]$ConnectTimeoutMs = 1000,
         [int]$ReadyTimeoutMs = 1000,
         [int]$PartialIdleTimeoutMs = 10,
@@ -649,6 +731,7 @@ function Invoke-TalkAsrCorpusBenchmark {
         -CloudOpenAiCompatibleApiKeyEnv $CloudOpenAiCompatibleApiKeyEnv `
         -Bind $Bind `
         -ChunkMs $ChunkMs `
+        -OnlineTailPaddingMs $OnlineTailPaddingMs `
         -ConnectTimeoutMs $ConnectTimeoutMs `
         -ReadyTimeoutMs $ReadyTimeoutMs `
         -PartialIdleTimeoutMs $PartialIdleTimeoutMs `
@@ -739,6 +822,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         -CloudOpenAiCompatibleApiKeyEnv $entryCloudOpenAiCompatibleApiKeyEnv `
         -Bind $entryBind `
         -ChunkMs $entryChunkMs `
+        -OnlineTailPaddingMs $entryOnlineTailPaddingMs `
         -ConnectTimeoutMs $entryConnectTimeoutMs `
         -ReadyTimeoutMs $entryReadyTimeoutMs `
         -PartialIdleTimeoutMs $entryPartialIdleTimeoutMs `

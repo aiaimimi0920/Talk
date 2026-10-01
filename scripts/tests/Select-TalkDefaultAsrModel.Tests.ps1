@@ -82,10 +82,22 @@ Describe 'Select-TalkDefaultAsrModel' {
         Resolve-TalkDefaultAsrCandidateModelId -Candidate $candidate | Should Be $modelId
     }
 
-    It 'requires multilingual, legacy, and Paraformer evidence in that order by default' {
+    It 'prefers the exact model fingerprint over unrelated report-directory names' {
+        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $candidate = [pscustomobject]@{
+            Engine = "streaming_service:sherpa-onnx:$modelId"
+            Sources = @(
+                'C:\tmp\reports-sherpa-paraformer\' + $modelId + '-short-search-001.json'
+            )
+        }
+
+        Resolve-TalkDefaultAsrCandidateModelId -Candidate $candidate | Should Be $modelId
+    }
+
+    It 'requires the product default, multilingual fallback, and Paraformer evidence in that order' {
         $expected = @(
-            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'zipformer-zh-en-punct-int8-480ms',
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'paraformer-bilingual-zh-en'
         )
         $tokens = $null
@@ -195,13 +207,13 @@ Describe 'Select-TalkDefaultAsrModel' {
             $status.ready | Should Be $false
             $status.cloudBaselinePresent | Should Be $false
             (@($status.requiredLocalModelIds) -join '|') | Should Be (@(
-                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
                 'zipformer-zh-en-punct-int8-480ms',
+                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
                 'paraformer-bilingual-zh-en'
             ) -join '|')
             (@($status.missingLocalModelIds) -join '|') | Should Be (@(
-                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
-                'zipformer-zh-en-punct-int8-480ms'
+                'zipformer-zh-en-punct-int8-480ms',
+                'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
             ) -join '|')
             ($status.blockingReasons -join "`n") | Should Match 'cloud'
             ($status.blockingReasons -join "`n") | Should Match 'MinSamples'
@@ -345,14 +357,14 @@ Describe 'Select-TalkDefaultAsrModel' {
                         -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
                         -SampleIds $sampleIds `
                         -Cer 0.03 `
-                        -FirstPartialMs 250 `
+                        -FirstPartialMs 801 `
                         -FinalLatencyMs 360 `
                         -Rtf 0.32),
                     (New-TestTalkDefaultAsrCandidate `
                         -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
                         -SampleIds $sampleIds `
                         -Cer 0.02 `
-                        -FirstPartialMs 180 `
+                        -FirstPartialMs 515 `
                         -FinalLatencyMs 290 `
                         -Rtf 0.24)
                 )
@@ -363,7 +375,113 @@ Describe 'Select-TalkDefaultAsrModel' {
                 -PassThru
 
             $selection.selectedModelId | Should Be 'zipformer-zh-en-punct-int8-480ms'
-            ($selection.rejectedCandidates | ConvertTo-Json -Depth 8) | Should Match 'latency'
+            ($selection.rejectedCandidates | ConvertTo-Json -Depth 8) | Should Match 'MaxRtf'
+            ($selection.rejectedCandidates | ConvertTo-Json -Depth 8) | Should Match 'MaxFirstPartialMs \[750\]'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects model selection when the cloud baseline proves corpus semantic drift' {
+        $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-semantic-drift-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
+            $outputPath = Join-Path $tempRoot 'selected-default-asr-model.json'
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
+            Write-TestTalkDefaultAsrComparison `
+                -Path $comparisonPath `
+                -SelectedEngine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                -Candidates @(
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'cloud_openai_compatible:chat_completions_audio_input:qwen3-asr-flash' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.96 `
+                        -FirstPartialMs 850 `
+                        -FinalLatencyMs 850),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.90),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.88),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.86)
+                )
+
+            $status = Select-TalkDefaultAsrModel `
+                -ComparisonJson $comparisonPath `
+                -OutputJson $outputPath `
+                -StatusOnly
+
+            $status.ready | Should Be $false
+            $status.cloudBaselineSemanticValidity | Should Be 'invalid'
+            $status.maxCloudBaselineCer | Should Be 0.60
+            @($status.semanticallyValidCloudBaselineEngines).Count | Should Be 0
+            ($status.blockingReasons -join "`n") | Should Match 'semantically invalid'
+            ($status.blockingReasons -join "`n") | Should Match 'corpus audio may not match'
+            {
+                Select-TalkDefaultAsrModel `
+                    -ComparisonJson $comparisonPath `
+                    -OutputJson $outputPath
+            } | Should Throw 'semantically invalid'
+            Test-Path -LiteralPath $outputPath | Should Be $false
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'allows long-form benchmark candidates when first-partial latency and rtf stay within budget' {
+        $tempRoot = Join-Path $env:TEMP ('talk-default-asr-select-longform-latency-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $comparisonPath = Join-Path $tempRoot 'asr-model-comparison.json'
+            $outputPath = Join-Path $tempRoot 'selected-default-asr-model.json'
+            $sampleIds = @(Get-TestTalkDefaultAsrRequiredSampleIds)
+            Write-TestTalkDefaultAsrComparison `
+                -Path $comparisonPath `
+                -SelectedEngine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                -Candidates @(
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'cloud_openai_compatible:chat_completions_audio_input:qwen-audio-asr-latest' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.0 `
+                        -FirstPartialMs 900 `
+                        -FinalLatencyMs 900),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:streaming-paraformer-bilingual-zh-en' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.05 `
+                        -FirstPartialMs 240 `
+                        -FinalLatencyMs 2100 `
+                        -Rtf 0.30),
+                    (New-TestTalkDefaultAsrCandidate `
+                        -Engine 'streaming_service:sherpa-onnx:sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10' `
+                        -SampleIds $sampleIds `
+                        -Cer 0.03 `
+                        -FirstPartialMs 220 `
+                        -FinalLatencyMs 1800 `
+                        -Rtf 0.28)
+                )
+
+            $selection = Select-TalkDefaultAsrModel `
+                -ComparisonJson $comparisonPath `
+                -OutputJson $outputPath `
+                -RequiredLocalModelId @(
+                    'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+                    'paraformer-bilingual-zh-en'
+                ) `
+                -PassThru
+
+            $selection.evidenceReady | Should Be $true
+            $selection.selectedModelId | Should Be 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+            ($selection.rejectedCandidates | ConvertTo-Json -Depth 8) | Should Not Match 'final_latency_ms'
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

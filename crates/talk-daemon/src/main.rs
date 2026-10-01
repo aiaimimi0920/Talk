@@ -3,8 +3,9 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, TcpListener};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use talk_audio::{
     play_wav, probe_audio_signal, probe_native_windows_audio_readiness_for_device,
@@ -12,11 +13,17 @@ use talk_audio::{
 };
 use talk_client::FrontContext;
 use talk_core::{AudioBackendMode, SessionStatus, TalkConfig, VoiceMode};
-use talk_runtime::{load_effective_config, run_voice_session, run_voice_session_with_audio_file};
+use talk_runtime::{
+    flush_pending_clipboard_restore, load_effective_config,
+    process_voice_transcript_text_from_provider_output_with_diagnostics,
+    process_voice_transcript_text_with_diagnostics, run_voice_session,
+    run_voice_session_with_audio_file, validate_faithful_output, FaithfulOutputValidation,
+};
 use uuid::Uuid;
 
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,6 +73,26 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    ProcessTranscript {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        transcript: String,
+        #[arg(long)]
+        provider_output_text: Option<String>,
+        #[arg(long)]
+        mode: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    ValidateFaithfulOutput {
+        #[arg(long)]
+        input_text: String,
+        #[arg(long)]
+        output_text: String,
+        #[arg(long)]
+        json: bool,
+    },
     Serve {
         #[arg(long)]
         config: PathBuf,
@@ -98,6 +125,27 @@ async fn main() -> Result<()> {
             seconds,
             json,
         }) => probe_audio_command(&config, seconds, json).await,
+        Some(Command::ProcessTranscript {
+            config,
+            transcript,
+            provider_output_text,
+            mode,
+            json,
+        }) => {
+            process_transcript_command(
+                &config,
+                &transcript,
+                provider_output_text.as_deref(),
+                mode.as_deref(),
+                json,
+            )
+            .await
+        }
+        Some(Command::ValidateFaithfulOutput {
+            input_text,
+            output_text,
+            json,
+        }) => validate_faithful_output_command(&input_text, &output_text, json),
         Some(Command::Serve {
             config,
             host,
@@ -152,6 +200,121 @@ async fn readiness_command(path: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_faithful_output_command(
+    input_text: &str,
+    output_text: &str,
+    json_output: bool,
+) -> Result<()> {
+    if input_text.trim().is_empty() {
+        anyhow::bail!("validate-faithful-output input text must not be blank");
+    }
+    if output_text.trim().is_empty() {
+        anyhow::bail!("validate-faithful-output output text must not be blank");
+    }
+
+    let validation = validate_faithful_output(input_text, output_text);
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&FaithfulOutputValidationReport {
+                app: "talk",
+                kind: "faithful_output_validation",
+                input_text,
+                output_text,
+                validation: CliFaithfulOutputValidation::from(validation),
+            })?
+        );
+    } else {
+        let reason = validation
+            .fallback_reason
+            .map(|value| value.as_str())
+            .unwrap_or("none");
+        println!(
+            "faithful output :: accepted={} reason={} input_chars={} output_chars={} retention_ratio={:.3} normalized_change_ratio={:.3}",
+            validation.accepted,
+            reason,
+            validation.input_char_count,
+            validation.output_char_count,
+            validation.retention_ratio,
+            validation.normalized_change_ratio
+        );
+    }
+
+    Ok(())
+}
+
+async fn process_transcript_command(
+    path: &Path,
+    transcript: &str,
+    provider_output_text: Option<&str>,
+    mode: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
+    if transcript.trim().is_empty() {
+        anyhow::bail!("process-transcript transcript must not be blank");
+    }
+
+    let config = load_effective_config(path).await?;
+    let mode_override = mode.map(parse_voice_mode_arg).transpose()?;
+    let requested_mode = mode_override.unwrap_or_else(|| config.default_voice_mode());
+    let output = if let Some(provider_output_text) = provider_output_text {
+        if provider_output_text.trim().is_empty() {
+            anyhow::bail!("process-transcript provider-output-text must not be blank");
+        }
+        process_voice_transcript_text_from_provider_output_with_diagnostics(
+            &config,
+            transcript.to_string(),
+            provider_output_text.to_string(),
+            mode_override,
+        )?
+    } else {
+        process_voice_transcript_text_with_diagnostics(
+            &config,
+            transcript.to_string(),
+            mode_override,
+            FrontContext::default(),
+        )
+        .await?
+    };
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ProcessedTranscriptReport {
+                app: "talk",
+                kind: "processed_transcript",
+                transcript,
+                requested_mode: voice_mode_name(requested_mode),
+                output_text: &output.text,
+                provider_output_text: &output.provider_output_text,
+                faithful_validation: output.faithful_validation.map(Into::into),
+            })?
+        );
+    } else {
+        let faithful = output
+            .faithful_validation
+            .map(|validation| {
+                format!(
+                    " accepted={} reason={}",
+                    validation.accepted,
+                    validation
+                        .fallback_reason
+                        .map(|reason| reason.as_str())
+                        .unwrap_or("none")
+                )
+            })
+            .unwrap_or_default();
+        println!(
+            "processed transcript :: mode={} output={}{}",
+            voice_mode_name(requested_mode),
+            output.text,
+            faithful
+        );
+    }
+
+    Ok(())
+}
+
 async fn once_command(
     path: &Path,
     mock_text: Option<String>,
@@ -174,6 +337,7 @@ async fn once_command(
             run_voice_session(&config, mock_text, None, FrontContext::default(), |_| {}).await?
         }
     };
+    flush_pending_clipboard_restore();
     if report.session.status() == SessionStatus::Failed {
         anyhow::bail!(
             "{}",
@@ -357,6 +521,82 @@ fn build_native_readiness_report(path: &Path, config: &TalkConfig) -> NativeRead
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FaithfulOutputValidationReport<'a> {
+    app: &'static str,
+    kind: &'static str,
+    input_text: &'a str,
+    output_text: &'a str,
+    validation: CliFaithfulOutputValidation,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessedTranscriptReport<'a> {
+    app: &'static str,
+    kind: &'static str,
+    transcript: &'a str,
+    requested_mode: &'static str,
+    output_text: &'a str,
+    provider_output_text: &'a str,
+    faithful_validation: Option<CliFaithfulOutputValidation>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CliFaithfulOutputValidation {
+    accepted: bool,
+    fallback_reason: Option<&'static str>,
+    input_char_count: usize,
+    output_char_count: usize,
+    retention_ratio: f64,
+    normalized_change_ratio: f64,
+}
+
+impl From<FaithfulOutputValidation> for CliFaithfulOutputValidation {
+    fn from(value: FaithfulOutputValidation) -> Self {
+        Self {
+            accepted: value.accepted,
+            fallback_reason: value.fallback_reason.map(|reason| reason.as_str()),
+            input_char_count: value.input_char_count,
+            output_char_count: value.output_char_count,
+            retention_ratio: value.retention_ratio,
+            normalized_change_ratio: value.normalized_change_ratio,
+        }
+    }
+}
+
+fn parse_voice_mode_arg(value: &str) -> Result<VoiceMode> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "transcribe" => Ok(VoiceMode::Transcribe),
+        "document" => Ok(VoiceMode::Document),
+        "generate" => Ok(VoiceMode::Generate),
+        "smart" => Ok(VoiceMode::Smart),
+        "dictate" | "dictation" => Ok(VoiceMode::Dictate),
+        "polish" => Ok(VoiceMode::Polish),
+        "translate" => Ok(VoiceMode::Translate),
+        "command" => Ok(VoiceMode::Command),
+        _ => anyhow::bail!(
+            "unsupported voice mode {value:?}; expected one of transcribe, document, generate, smart, dictate, polish, translate, command"
+        ),
+    }
+}
+
+fn voice_mode_name(mode: VoiceMode) -> &'static str {
+    match mode {
+        VoiceMode::Transcribe => "transcribe",
+        VoiceMode::Document => "document",
+        VoiceMode::Generate => "generate",
+        VoiceMode::Smart => "smart",
+        VoiceMode::Dictate => "dictate",
+        VoiceMode::Polish => "polish",
+        VoiceMode::Translate => "translate",
+        VoiceMode::Command => "command",
+    }
+}
+
 fn canonical_display_path(path: &Path) -> String {
     std::fs::canonicalize(path)
         .unwrap_or_else(|_| path.to_path_buf())
@@ -389,11 +629,9 @@ async fn serve_command(
     };
 
     let config = load_effective_config(config_path).await?;
-    let listener = TcpListener::bind((bind_host.as_str(), port))
+    let listener = tokio::net::TcpListener::bind((bind_host.as_str(), port))
+        .await
         .with_context(|| format!("bind Talk capability server to {host}:{port}"))?;
-    listener
-        .set_nonblocking(false)
-        .context("set Talk capability server blocking mode")?;
     let local_addr = listener
         .local_addr()
         .context("read Talk capability server address")?;
@@ -409,23 +647,96 @@ async fn serve_command(
         manifest_dir.join("talk.json").display()
     );
 
+    let config = Arc::new(config);
+    let auth_token = Arc::new(auth_token);
+    // Voice sessions own the microphone, so at most one may run at a time.
+    // The lock is only ever try-acquired: a second invoke is rejected
+    // immediately instead of queueing behind a session that can last minutes.
+    let voice_session_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let connection_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    // A single misbehaving client (e.g. a Windows ConnectionReset from a client
+    // that disconnected mid-request) must not take down the whole server, so
+    // per-connection failures are logged and skipped. Only a persistently
+    // failing accept loop is fatal.
+    const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 10;
+    let mut consecutive_accept_failures = 0_u32;
     loop {
-        let (mut stream, _) = listener.accept().context("accept Talk request")?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .context("set Talk request read timeout")?;
-        match read_http_request(&mut stream)? {
-            HttpReadOutcome::Empty => {}
-            HttpReadOutcome::Rejected { status, body } => {
-                write_http_json_response(&mut stream, status, &body)?;
+        // Acquire before accept so slow or abandoned clients cannot create an
+        // unbounded number of sockets and blocking request-reader tasks.
+        let connection_slot = Arc::clone(&connection_slots)
+            .acquire_owned()
+            .await
+            .context("acquire Talk connection slot")?;
+        let (stream, _) = match listener.accept().await {
+            Ok(connection) => {
+                consecutive_accept_failures = 0;
+                connection
             }
-            HttpReadOutcome::Request(request) => {
-                let parsed = ParsedHttpRequest::from_raw(&request);
-                let (status, body) = route_talk_request(&config, &auth_token, &parsed).await?;
-                write_http_json_response(&mut stream, status, &body)?;
+            Err(error) => {
+                consecutive_accept_failures += 1;
+                if consecutive_accept_failures >= MAX_CONSECUTIVE_ACCEPT_FAILURES {
+                    return Err(error).context("accept Talk request");
+                }
+                eprintln!("talk serve: failed to accept connection: {error}");
+                continue;
             }
-        }
+        };
+        let config = Arc::clone(&config);
+        let auth_token = Arc::clone(&auth_token);
+        let voice_session_lock = Arc::clone(&voice_session_lock);
+        // Each connection gets its own task so a long-running invoke (a voice
+        // session can take tens of seconds) never blocks health/capabilities
+        // requests or other clients.
+        tokio::spawn(async move {
+            let _connection_slot = connection_slot;
+            if let Err(error) =
+                handle_talk_connection(&config, &auth_token, &voice_session_lock, stream).await
+            {
+                eprintln!("talk serve: connection handling failed: {error:#}");
+            }
+        });
     }
+}
+
+async fn handle_talk_connection(
+    config: &TalkConfig,
+    auth_token: &str,
+    voice_session_lock: &tokio::sync::Mutex<()>,
+    stream: tokio::net::TcpStream,
+) -> Result<()> {
+    // The proven synchronous request reader/writer (including its 5s read
+    // timeout semantics) is kept as-is and moved to the blocking pool; only
+    // routing runs async so it never pins a tokio worker thread.
+    let stream = stream
+        .into_std()
+        .context("convert Talk connection to blocking stream")?;
+    stream
+        .set_nonblocking(false)
+        .context("set Talk connection blocking mode")?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .context("set Talk request read timeout")?;
+
+    let (read_outcome, mut stream) = tokio::task::spawn_blocking(move || {
+        let mut stream = stream;
+        let outcome = read_http_request(&mut stream);
+        (outcome, stream)
+    })
+    .await
+    .context("join Talk request reader task")?;
+
+    let (status, body) = match read_outcome? {
+        HttpReadOutcome::Empty => return Ok(()),
+        HttpReadOutcome::Rejected { status, body } => (status, body),
+        HttpReadOutcome::Request(request) => {
+            let parsed = ParsedHttpRequest::from_raw(&request);
+            route_talk_request(config, auth_token, voice_session_lock, &parsed).await?
+        }
+    };
+    tokio::task::spawn_blocking(move || write_http_json_response(&mut stream, status, &body))
+        .await
+        .context("join Talk response writer task")?
 }
 
 fn normalized_loopback_host(host: &str) -> Option<String> {
@@ -485,13 +796,123 @@ fn write_talk_manifest(manifest_dir: &Path, base_url: &str, auth_token: &str) ->
             .unwrap_or_default()
     });
     let path = manifest_dir.join("talk.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&manifest)?)
+    let contents = serde_json::to_vec_pretty(&manifest).context("serialize Talk manifest")?;
+    atomic_write_file(&path, &contents)
         .with_context(|| format!("write Talk manifest {}", path.display()))
+}
+
+fn atomic_write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    atomic_write_file_with_commit(path, contents, replace_file_with_retry)
+}
+
+fn replace_file_with_retry(source: &Path, destination: &Path) -> std::io::Result<()> {
+    const MAX_REPLACE_ATTEMPTS: usize = 100;
+    for attempt in 1..=MAX_REPLACE_ATTEMPTS {
+        match replace_file(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) if replace_error_is_transient(&error) && attempt < MAX_REPLACE_ATTEMPTS => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("replace loop returns on every final attempt")
+}
+
+#[cfg(windows)]
+fn replace_error_is_transient(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+#[cfg(not(windows))]
+fn replace_error_is_transient(_error: &std::io::Error) -> bool {
+    false
+}
+
+fn atomic_write_file_with_commit<F>(path: &Path, contents: &[u8], commit: F) -> std::io::Result<()>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("atomic write path has no parent: {}", path.display()),
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("atomic write path has no file name: {}", path.display()),
+        )
+    })?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        Uuid::new_v4()
+    ));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(contents)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        commit(&temp_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn nul_terminated_path(path: &Path) -> std::io::Result<Vec<u16>> {
+        let mut encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        if encoded.contains(&0) {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("path contains a NUL character: {}", path.display()),
+            ));
+        }
+        encoded.push(0);
+        Ok(encoded)
+    }
+
+    let source = nul_terminated_path(source)?;
+    let destination = nul_terminated_path(destination)?;
+    // SAFETY: both UTF-16 buffers are NUL-terminated and remain alive for the call.
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
 }
 
 async fn route_talk_request(
     config: &TalkConfig,
     auth_token: &str,
+    voice_session_lock: &tokio::sync::Mutex<()>,
     request: &ParsedHttpRequest,
 ) -> Result<(u16, String)> {
     if !request.valid_request_line {
@@ -536,7 +957,7 @@ async fn route_talk_request(
                     "Talk invoke requires Content-Type: application/json",
                 ));
             }
-            invoke_talk_capability(config, &request.body).await
+            invoke_talk_capability(config, voice_session_lock, &request.body).await
         }
         _ => Ok((
             404,
@@ -578,7 +999,11 @@ struct TalkInvokeRequest {
     input: Option<Value>,
 }
 
-async fn invoke_talk_capability(config: &TalkConfig, body: &str) -> Result<(u16, String)> {
+async fn invoke_talk_capability(
+    config: &TalkConfig,
+    voice_session_lock: &tokio::sync::Mutex<()>,
+    body: &str,
+) -> Result<(u16, String)> {
     let request = match parse_talk_invoke_request(body) {
         Ok(request) => request,
         Err(error) => {
@@ -665,8 +1090,25 @@ async fn invoke_talk_capability(config: &TalkConfig, body: &str) -> Result<(u16,
                     return invalid_talk_invoke_request(Some(&request.request_id), &message)
                 }
             };
+            // The microphone is exclusive: reject immediately (no queueing)
+            // when another voice session is already running.
+            let Ok(_voice_session_guard) = voice_session_lock.try_lock() else {
+                return Ok((
+                    409,
+                    json!({
+                        "requestId": request.request_id,
+                        "status": "failed",
+                        "error": {
+                            "code": "voice_session_busy",
+                            "message": "voice session already in progress"
+                        }
+                    })
+                    .to_string(),
+                ));
+            };
             let report =
                 run_voice_session(config, mock_text, mode_override, context, |_| {}).await?;
+            flush_pending_clipboard_restore();
             if report.session.status() == SessionStatus::Completed {
                 Ok((
                     200,
@@ -1271,6 +1713,7 @@ fn write_http_json_response(stream: &mut impl Write, status: u16, body: &str) ->
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        409 => "Conflict",
         413 => "Payload Too Large",
         _ => "Internal Server Error",
     };
@@ -1291,6 +1734,40 @@ mod tests {
         OpenAiTranscriptionTransport, OutputConfig, OutputMode, ProviderConfig, ProviderKind,
         TalkConfig, TriggerConfig, TriggerMode, VoiceMode,
     };
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "talk-daemon-{name}-{}-{}",
+                std::process::id(),
+                Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn assert_no_manifest_temp_files(directory: &Path) {
+        let temp_files = std::fs::read_dir(directory)
+            .expect("read manifest directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".talk.json.") && name.ends_with(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(temp_files.is_empty(), "temp_files={temp_files:?}");
+    }
 
     fn mock_config_without_transcript() -> TalkConfig {
         TalkConfig {
@@ -1330,6 +1807,129 @@ mod tests {
             speculative: Default::default(),
             voice_mode: VoiceMode::Dictate,
         }
+    }
+
+    #[test]
+    fn atomic_manifest_replacement_keeps_old_content_until_commit() {
+        let directory = TestDirectory::new("atomic-manifest-replace");
+        let path = directory.path().join("talk.json");
+        let old_contents = br#"{"generation":"old"}"#;
+        let new_contents = br#"{"generation":"new"}"#;
+        std::fs::write(&path, old_contents).expect("seed old manifest");
+
+        atomic_write_file_with_commit(&path, new_contents, |temp_path, destination| {
+            assert_eq!(
+                std::fs::read(destination).expect("read old manifest before commit"),
+                old_contents
+            );
+            replace_file(temp_path, destination)
+        })
+        .expect("replace manifest atomically");
+
+        assert_eq!(
+            std::fs::read(&path).expect("read replaced manifest"),
+            new_contents
+        );
+        assert_no_manifest_temp_files(directory.path());
+    }
+
+    #[test]
+    fn atomic_manifest_commit_failure_preserves_old_content_and_cleans_temp() {
+        let directory = TestDirectory::new("atomic-manifest-failure");
+        let path = directory.path().join("talk.json");
+        let old_contents = br#"{"generation":"old"}"#;
+        std::fs::write(&path, old_contents).expect("seed old manifest");
+
+        let error = atomic_write_file_with_commit(
+            &path,
+            br#"{"generation":"new"}"#,
+            |_temp_path, _destination| {
+                Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "simulated commit failure",
+                ))
+            },
+        )
+        .expect_err("simulated commit failure must surface");
+
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read(&path).expect("read preserved old manifest"),
+            old_contents
+        );
+        assert_no_manifest_temp_files(directory.path());
+    }
+
+    #[test]
+    fn atomic_manifest_replacement_keeps_concurrent_reads_complete() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Arc};
+
+        let directory = TestDirectory::new("atomic-manifest-concurrent-reader");
+        let path = directory.path().join("talk.json");
+        atomic_write_file(&path, br#"{"generation":0}"#).expect("seed manifest");
+        let keep_reading = Arc::new(AtomicBool::new(true));
+        let reader_flag = Arc::clone(&keep_reading);
+        let reader_path = path.clone();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || -> std::result::Result<usize, String> {
+            let mut reads = 0usize;
+            while reader_flag.load(Ordering::Acquire) {
+                let raw = std::fs::read_to_string(&reader_path)
+                    .map_err(|error| format!("read manifest: {error}"))?;
+                let manifest: Value = serde_json::from_str(&raw)
+                    .map_err(|error| format!("parse manifest {raw:?}: {error}"))?;
+                if !manifest["generation"].is_number() {
+                    return Err(format!("unexpected manifest: {manifest}"));
+                }
+                reads += 1;
+                if reads == 1 {
+                    ready_sender
+                        .send(())
+                        .map_err(|error| format!("signal reader readiness: {error}"))?;
+                }
+            }
+            Ok(reads)
+        });
+        ready_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("reader must observe seeded manifest");
+
+        let mut write_error = None;
+        for generation in 1..=64 {
+            let contents = format!(r#"{{"generation":{generation}}}"#);
+            if let Err(error) = atomic_write_file(&path, contents.as_bytes()) {
+                write_error = Some(error);
+                break;
+            }
+        }
+        keep_reading.store(false, Ordering::Release);
+
+        let reader_result = reader.join().expect("reader thread must not panic");
+        assert!(write_error.is_none(), "write_error={write_error:?}");
+        let reads = reader_result.expect("reader must only observe complete manifests");
+        assert!(reads > 0);
+        assert_no_manifest_temp_files(directory.path());
+    }
+
+    #[test]
+    fn talk_manifest_atomically_replaces_an_existing_manifest() {
+        let directory = TestDirectory::new("talk-manifest-replace");
+        let path = directory.path().join("talk.json");
+        std::fs::write(&path, br#"{"generation":"old"}"#).expect("seed old manifest");
+
+        write_talk_manifest(directory.path(), "http://127.0.0.1:4200", "test-token")
+            .expect("write Talk manifest");
+
+        let manifest: Value = serde_json::from_slice(
+            &std::fs::read(&path).expect("read atomically replaced Talk manifest"),
+        )
+        .expect("parse replaced Talk manifest");
+        assert_eq!(manifest["schemaVersion"], 1);
+        assert_eq!(manifest["appId"], "talk");
+        assert_eq!(manifest["transport"]["baseUrl"], "http://127.0.0.1:4200");
+        assert_eq!(manifest["transport"]["authToken"], "test-token");
+        assert_no_manifest_temp_files(directory.path());
     }
 
     #[tokio::test]

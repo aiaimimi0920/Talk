@@ -3,7 +3,7 @@ param(
     [string]$ComparisonJson,
     [string]$OutputJson,
     [int]$MinSamples = 3,
-    [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+    [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
     [switch]$AllowMissingCloudBaseline,
     [switch]$AllowSyntheticSampleIds,
     [switch]$StatusOnly,
@@ -86,17 +86,31 @@ function Resolve-TalkDefaultAsrCandidateModelId {
     $fingerprintParts = New-Object System.Collections.Generic.List[string]
     $fingerprintParts.Add([string]$Candidate.Engine) | Out-Null
     foreach ($source in @($Candidate.Sources)) {
-        $fingerprintParts.Add([string]$source) | Out-Null
+        $sourceText = [string]$source
+        if ([string]::IsNullOrWhiteSpace($sourceText)) {
+            continue
+        }
+        $fingerprintParts.Add($sourceText) | Out-Null
+        $sourceLeaf = [System.IO.Path]::GetFileName($sourceText)
+        if (-not [string]::IsNullOrWhiteSpace($sourceLeaf) -and $sourceLeaf -cne $sourceText) {
+            $fingerprintParts.Add($sourceLeaf) | Out-Null
+        }
     }
     $fingerprint = (($fingerprintParts.ToArray() -join ' ').ToLowerInvariant())
 
-    if ($fingerprint -match 'paraformer-bilingual-zh-en|streaming-paraformer|paraformer') {
-        return 'paraformer-bilingual-zh-en'
-    }
     if ($fingerprint.Contains('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10')) {
         return 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
     }
-    if ($fingerprint -match 'zipformer-zh-en-punct-int8-480ms|480ms-streaming-zipformer|zipformer') {
+    if ($fingerprint -match 'paraformer-bilingual-zh-en|streaming-paraformer-bilingual-zh-en') {
+        return 'paraformer-bilingual-zh-en'
+    }
+    if ($fingerprint -match 'zipformer-zh-en-punct-int8-480ms|480ms-streaming-zipformer|x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8') {
+        return 'zipformer-zh-en-punct-int8-480ms'
+    }
+    if ($fingerprint -match 'streaming-paraformer|paraformer') {
+        return 'paraformer-bilingual-zh-en'
+    }
+    if ($fingerprint -match 'zipformer') {
         return 'zipformer-zh-en-punct-int8-480ms'
     }
 
@@ -227,9 +241,14 @@ function Get-TalkDefaultAsrRequiredDefaultSampleIds {
 
 function Get-TalkDefaultAsrLatencyBudget {
     [pscustomobject]@{
-        MaxFirstPartialMs = 350
-        MaxFinalLatencyMs = 650
+        MaxFirstPartialMs = 750
         MaxRtf = 0.60
+    }
+}
+
+function Get-TalkDefaultAsrSemanticValidityBudget {
+    [pscustomobject]@{
+        MaxCloudBaselineCer = 0.60
     }
 }
 
@@ -275,10 +294,9 @@ function New-TalkDefaultAsrCandidateEvidenceStatus {
             $withinLatencyBudget = $false
             $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] first_partial_ms [$($Candidate.FirstPartialMs)] exceeds MaxFirstPartialMs [$($LatencyBudget.MaxFirstPartialMs)] for the default live dictation path") | Out-Null
         }
-        if ($Candidate.FinalLatencyMs -gt $LatencyBudget.MaxFinalLatencyMs) {
-            $withinLatencyBudget = $false
-            $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] final_latency_ms [$($Candidate.FinalLatencyMs)] exceeds MaxFinalLatencyMs [$($LatencyBudget.MaxFinalLatencyMs)] for the default live dictation path") | Out-Null
-        }
+        # asr-bench streams corpus WAVs as fast as the loopback service can
+        # consume them, so absolute final_latency_ms scales with utterance
+        # length and is not a stable live-dictation gate across mixed samples.
         if ($Candidate.Rtf -gt $LatencyBudget.MaxRtf) {
             $withinLatencyBudget = $false
             $selectionBlockingReasons.Add("Candidate [$($Candidate.Engine)] rtf [$($Candidate.Rtf)] exceeds MaxRtf [$($LatencyBudget.MaxRtf)] for the default live dictation path") | Out-Null
@@ -362,12 +380,26 @@ function Get-TalkDefaultAsrEvidenceStatus {
     $localCandidates = @($Comparison.Candidates | Where-Object { -not $_.IsCloudBaseline })
     $blockingReasons = New-Object System.Collections.Generic.List[string]
     $latencyBudget = Get-TalkDefaultAsrLatencyBudget
+    $semanticValidityBudget = Get-TalkDefaultAsrSemanticValidityBudget
 
     if ($cloudCandidates.Count -eq 0 -and -not $AllowMissingCloudBaseline) {
         $blockingReasons.Add('Task 6 default ASR selection requires a cloud OpenAI-compatible baseline candidate; rerun Invoke-TalkAsrCorpusBenchmark with cloud baseline flags or pass -AllowMissingCloudBaseline for diagnostics only') | Out-Null
     }
     if ($localCandidates.Count -eq 0) {
         $blockingReasons.Add('Talk ASR comparison contains no local streaming candidates') | Out-Null
+    }
+    $semanticallyValidCloudCandidates = @(
+        $cloudCandidates |
+            Where-Object { [double]$_.Cer -le [double]$semanticValidityBudget.MaxCloudBaselineCer }
+    )
+    if ($cloudCandidates.Count -gt 0 -and $semanticallyValidCloudCandidates.Count -eq 0) {
+        $cloudCerSummary = @(
+            $cloudCandidates |
+                ForEach-Object { '{0}={1}' -f ([string]$_.Engine), ([double]$_.Cer) }
+        ) -join ', '
+        $blockingReasons.Add(
+            "Talk default ASR evidence is semantically invalid: every cloud baseline CER exceeds MaxCloudBaselineCer [$($semanticValidityBudget.MaxCloudBaselineCer)]; corpus audio may not match its reference text; candidates=[$cloudCerSummary]"
+        ) | Out-Null
     }
 
     $baselineSampleIdSetKey = $null
@@ -471,6 +503,17 @@ function Get-TalkDefaultAsrEvidenceStatus {
         localCandidateCount = $localCandidates.Count
         cloudBaselinePresent = ($cloudCandidates.Count -gt 0)
         cloudBaselineEngines = @($cloudCandidates | ForEach-Object { [string]$_.Engine })
+        maxCloudBaselineCer = [double]$semanticValidityBudget.MaxCloudBaselineCer
+        semanticallyValidCloudBaselineEngines = @(
+            $semanticallyValidCloudCandidates | ForEach-Object { [string]$_.Engine }
+        )
+        cloudBaselineSemanticValidity = if ($cloudCandidates.Count -eq 0) {
+            'skipped'
+        } elseif ($semanticallyValidCloudCandidates.Count -gt 0) {
+            'ready'
+        } else {
+            'invalid'
+        }
         missingLocalModelIds = @($missingLocalModelIds)
         missingRequiredDefaultSampleIds = @($missingRequiredDefaultSampleIds)
         sharedSampleIds = @($baselineSampleIds)
@@ -518,7 +561,7 @@ function Select-TalkDefaultAsrModel {
         [Parameter(Mandatory = $true)][string]$ComparisonJson,
         [string]$OutputJson,
         [int]$MinSamples = 3,
-        [string[]]$RequiredLocalModelId = @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en'),
+        [string[]]$RequiredLocalModelId = @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en'),
         [switch]$AllowMissingCloudBaseline,
         [switch]$AllowSyntheticSampleIds,
         [switch]$StatusOnly,

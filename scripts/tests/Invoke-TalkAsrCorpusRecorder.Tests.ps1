@@ -106,6 +106,139 @@ Describe 'Invoke-TalkAsrCorpusRecorder helpers' {
         }
     }
 
+    It 'can resume an existing corpus in plan-only mode and mark only missing samples for recording' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-resume-plan-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            @'
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "referenceText": "打开 Talk の local first ASR test" }
+  ]
+}
+'@ | Set-Content -LiteralPath $promptPath -Encoding UTF8
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            $shortHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "audioWav": "short-search-001-16k-mono-s16.wav", "audioSha256": "$shortHash", "referenceText": "你好呀" }
+  ]
+}
+"@ | Set-Content -LiteralPath (Join-Path $outputRoot 'corpus.json') -Encoding UTF8
+
+            $plan = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -ResumeExisting `
+                -PlanOnly
+
+            $plan.ReusedSampleCount | Should Be 1
+            $plan.PlannedRecordingCount | Should Be 1
+            $plan.Samples.Count | Should Be 2
+            $plan.Samples[0].WillRecord | Should Be $false
+            $plan.Samples[0].ExistingAudioWav | Should Be ([System.IO.Path]::GetFullPath((Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')))
+            $plan.Samples[1].WillRecord | Should Be $true
+            $plan.Samples[1].ExistingAudioWav | Should Be $null
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rerecords a sample when the existing WAV no longer matches its manifest hash' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-resume-hash-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            '{"schemaVersion":1,"samples":[{"sampleId":"short-search-001","referenceText":"你好呀"}]}' |
+                Set-Content -LiteralPath $promptPath -Encoding UTF8
+            $wavPath = Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav'
+            Write-TestTalkPcmWav -Path $wavPath
+            $originalHash = Get-TalkAsrRecorderFileSha256 -Path $wavPath
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "audioWav": "short-search-001-16k-mono-s16.wav", "audioSha256": "$originalHash", "referenceText": "你好呀" }
+  ]
+}
+"@ | Set-Content -LiteralPath (Join-Path $outputRoot 'corpus.json') -Encoding UTF8
+            Add-Content -LiteralPath $wavPath -Value 'changed' -Encoding ASCII
+
+            $plan = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -ResumeExisting `
+                -PlanOnly
+
+            $plan.ReusedSampleCount | Should Be 0
+            $plan.PlannedRecordingCount | Should Be 1
+            $plan.Samples[0].WillRecord | Should Be $true
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'can force rerecord specific sample ids while still reusing other aligned corpus audio in plan-only mode' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-force-plan-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            @'
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "referenceText": "打开 Talk の local first ASR test" }
+  ]
+}
+'@ | Set-Content -LiteralPath $promptPath -Encoding UTF8
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'mixed-english-japanese-001-16k-mono-s16.wav')
+            $shortHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            $mixedHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'mixed-english-japanese-001-16k-mono-s16.wav')
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "audioWav": "short-search-001-16k-mono-s16.wav", "audioSha256": "$shortHash", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "audioWav": "mixed-english-japanese-001-16k-mono-s16.wav", "audioSha256": "$mixedHash", "referenceText": "打开 Talk の local first ASR test" }
+  ]
+}
+"@ | Set-Content -LiteralPath (Join-Path $outputRoot 'corpus.json') -Encoding UTF8
+
+            $plan = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -ResumeExisting `
+                -ForceRecordSampleId 'mixed-english-japanese-001' `
+                -PlanOnly
+
+            $plan.ReusedSampleCount | Should Be 1
+            $plan.PlannedRecordingCount | Should Be 1
+            $plan.Samples[0].SampleId | Should Be 'short-search-001'
+            $plan.Samples[0].WillRecord | Should Be $false
+            $plan.Samples[1].SampleId | Should Be 'mixed-english-japanese-001'
+            $plan.Samples[1].WillRecord | Should Be $true
+            $plan.Samples[1].ExistingAudioWav | Should Be $null
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'resolves explicit relative paths against the current PowerShell location instead of the process cwd' {
         $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-relative-' + [guid]::NewGuid().ToString())
         $releaseDir = Join-Path $tempRoot 'release'
@@ -188,11 +321,280 @@ Describe 'Invoke-TalkAsrCorpusRecorder helpers' {
             Test-Path -LiteralPath (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav') | Should Be $true
             $manifest = Get-Content -LiteralPath $result.CorpusManifestPath -Raw | ConvertFrom-Json
             $manifest.schemaVersion | Should Be 1
+            [string]::IsNullOrWhiteSpace([string]$manifest.createdAtUtc) | Should Be $false
+            $manifest.promptManifestSha256 | Should Be (Get-TalkAsrRecorderFileSha256 -Path $promptPath)
             $manifest.samples.Count | Should Be 1
             $manifest.samples[0].sampleId | Should Be 'short-search-001'
             $manifest.samples[0].audioWav | Should Be 'short-search-001-16k-mono-s16.wav'
+            $manifest.samples[0].audioSha256 | Should Be (Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav'))
             $manifest.samples[0].referenceText | Should Be '你好呀'
             $result.Recordings[0].Peak | Should Be 0.25
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'records the captured native_windows input device and warns when multiple devices are available without an explicit InputDevice' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-device-warning-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            '{"schemaVersion":1,"samples":[{"sampleId":"short-search-001","referenceText":"你好呀","captureSeconds":1}]}' |
+                Set-Content -LiteralPath $promptPath -Encoding UTF8
+
+            $sourceWav = Join-Path $tempRoot 'captured.wav'
+            Write-TestTalkPcmWav -Path $sourceWav
+            $probeInvoker = {
+                param($Plan, $Sample)
+                [pscustomobject]@{
+                    audio = [pscustomobject]@{
+                        signal = [pscustomobject]@{
+                            artifactPath = $sourceWav
+                            sampleRateHz = 16000
+                            channels = 1
+                            durationSeconds = 1.0
+                            peak = 0.25
+                            rms = 0.10
+                            silent = $false
+                        }
+                        nativeWindows = [pscustomobject]@{
+                            deviceName = '麦克风'
+                            availableDeviceNames = @('麦克风', 'Virtual Mic')
+                        }
+                    }
+                }
+            }
+
+            $output = @(Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -CountdownSeconds 0 `
+                -ProbeInvoker $probeInvoker `
+                -PassThru 3>&1)
+            $warnings = @(
+                $output |
+                    Where-Object { $_ -is [System.Management.Automation.WarningRecord] } |
+                    ForEach-Object { $_.Message }
+            )
+            $result = @(
+                $output |
+                    Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] }
+            )[0]
+
+            $warnings.Count | Should Be 1
+            $warnings[0] | Should Match 'multiple input devices'
+            $warnings[0] | Should Match 'Virtual Mic'
+            $warnings[0] | Should Match '-InputDevice'
+            $result.Recordings[0].CapturedInputDevice | Should Be '麦克风'
+            (@($result.Recordings[0].AvailableInputDevices) -join '|') | Should Be '麦克风|Virtual Mic'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does not warn about multiple devices when InputDevice is explicit' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-device-explicit-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            '{"schemaVersion":1,"samples":[{"sampleId":"short-search-001","referenceText":"你好呀","captureSeconds":1}]}' |
+                Set-Content -LiteralPath $promptPath -Encoding UTF8
+
+            $sourceWav = Join-Path $tempRoot 'captured.wav'
+            Write-TestTalkPcmWav -Path $sourceWav
+            $probeInvoker = {
+                param($Plan, $Sample)
+                [pscustomobject]@{
+                    audio = [pscustomobject]@{
+                        signal = [pscustomobject]@{
+                            artifactPath = $sourceWav
+                            sampleRateHz = 16000
+                            channels = 1
+                            durationSeconds = 1.0
+                            peak = 0.25
+                            rms = 0.10
+                            silent = $false
+                        }
+                        nativeWindows = [pscustomobject]@{
+                            deviceName = 'Virtual Mic'
+                            availableDeviceNames = @('麦克风', 'Virtual Mic')
+                        }
+                    }
+                }
+            }
+
+            $output = @(Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -InputDevice 'Virtual Mic' `
+                -CountdownSeconds 0 `
+                -ProbeInvoker $probeInvoker `
+                -PassThru 3>&1)
+            $warnings = @(
+                $output |
+                    Where-Object { $_ -is [System.Management.Automation.WarningRecord] } |
+                    ForEach-Object { $_.Message }
+            )
+            $result = @(
+                $output |
+                    Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] }
+            )[0]
+
+            $warnings.Count | Should Be 0
+            $result.Recordings[0].CapturedInputDevice | Should Be 'Virtual Mic'
+            (@($result.Recordings[0].AvailableInputDevices) -join '|') | Should Be '麦克风|Virtual Mic'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'can resume an existing corpus and only probe missing samples while rewriting a full manifest' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-resume-run-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            @'
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "referenceText": "打开 Talk の local first ASR test", "captureSeconds": 1 }
+  ]
+}
+'@ | Set-Content -LiteralPath $promptPath -Encoding UTF8
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            $shortHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "audioWav": "short-search-001-16k-mono-s16.wav", "audioSha256": "$shortHash", "referenceText": "你好呀" }
+  ]
+}
+"@ | Set-Content -LiteralPath (Join-Path $outputRoot 'corpus.json') -Encoding UTF8
+
+            $sourceWav = Join-Path $tempRoot 'captured.wav'
+            Write-TestTalkPcmWav -Path $sourceWav
+            $probeCalls = New-Object System.Collections.Generic.List[string]
+            $probeInvoker = {
+                param($Plan, $Sample)
+                $probeCalls.Add([string]$Sample.SampleId) | Out-Null
+                [pscustomobject]@{
+                    audio = [pscustomobject]@{
+                        signal = [pscustomobject]@{
+                            artifactPath = $sourceWav
+                            sampleRateHz = 16000
+                            channels = 1
+                            durationSeconds = 1.0
+                            peak = 0.25
+                            rms = 0.10
+                            silent = $false
+                        }
+                    }
+                }
+            }
+
+            $result = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -CountdownSeconds 0 `
+                -ResumeExisting `
+                -ProbeInvoker $probeInvoker `
+                -PassThru
+
+            $probeCalls.Count | Should Be 1
+            $probeCalls[0] | Should Be 'mixed-english-japanese-001'
+            $result.Recordings.Count | Should Be 2
+            $result.Recordings[0].SampleId | Should Be 'short-search-001'
+            $result.Recordings[0].Reused | Should Be $true
+            $result.Recordings[1].SampleId | Should Be 'mixed-english-japanese-001'
+            $result.Recordings[1].Reused | Should Be $false
+            $manifest = Get-Content -LiteralPath $result.CorpusManifestPath -Raw | ConvertFrom-Json
+            $manifest.samples.Count | Should Be 2
+            $manifest.samples[0].sampleId | Should Be 'short-search-001'
+            $manifest.samples[1].sampleId | Should Be 'mixed-english-japanese-001'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'can force rerecord drifted sample ids while reusing the rest of an aligned corpus' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-recorder-force-run-' + [guid]::NewGuid().ToString())
+        $outputRoot = Join-Path $tempRoot 'corpus'
+        New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+        try {
+            $promptPath = Join-Path $tempRoot 'prompts.json'
+            @'
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "referenceText": "打开 Talk の local first ASR test", "captureSeconds": 1 }
+  ]
+}
+'@ | Set-Content -LiteralPath $promptPath -Encoding UTF8
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            Write-TestTalkPcmWav -Path (Join-Path $outputRoot 'mixed-english-japanese-001-16k-mono-s16.wav')
+            $shortHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'short-search-001-16k-mono-s16.wav')
+            $mixedHash = Get-TalkAsrRecorderFileSha256 -Path (Join-Path $outputRoot 'mixed-english-japanese-001-16k-mono-s16.wav')
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    { "sampleId": "short-search-001", "audioWav": "short-search-001-16k-mono-s16.wav", "audioSha256": "$shortHash", "referenceText": "你好呀" },
+    { "sampleId": "mixed-english-japanese-001", "audioWav": "mixed-english-japanese-001-16k-mono-s16.wav", "audioSha256": "$mixedHash", "referenceText": "打开 Talk の local first ASR test" }
+  ]
+}
+"@ | Set-Content -LiteralPath (Join-Path $outputRoot 'corpus.json') -Encoding UTF8
+
+            $sourceWav = Join-Path $tempRoot 'captured.wav'
+            Write-TestTalkPcmWav -Path $sourceWav
+            $probeCalls = New-Object System.Collections.Generic.List[string]
+            $probeInvoker = {
+                param($Plan, $Sample)
+                $probeCalls.Add([string]$Sample.SampleId) | Out-Null
+                [pscustomobject]@{
+                    audio = [pscustomobject]@{
+                        signal = [pscustomobject]@{
+                            artifactPath = $sourceWav
+                            sampleRateHz = 16000
+                            channels = 1
+                            durationSeconds = 1.0
+                            peak = 0.25
+                            rms = 0.10
+                            silent = $false
+                        }
+                    }
+                }
+            }
+
+            $result = Invoke-TalkAsrCorpusRecorder `
+                -PromptManifest $promptPath `
+                -OutputRoot $outputRoot `
+                -TalkExe (Join-Path $tempRoot 'talk.exe') `
+                -CountdownSeconds 0 `
+                -ResumeExisting `
+                -ForceRecordSampleId 'mixed-english-japanese-001' `
+                -ProbeInvoker $probeInvoker `
+                -PassThru
+
+            $probeCalls.Count | Should Be 1
+            $probeCalls[0] | Should Be 'mixed-english-japanese-001'
+            $result.Recordings.Count | Should Be 2
+            $result.Recordings[0].SampleId | Should Be 'short-search-001'
+            $result.Recordings[0].Reused | Should Be $true
+            $result.Recordings[1].SampleId | Should Be 'mixed-english-japanese-001'
+            $result.Recordings[1].Reused | Should Be $false
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -13,8 +13,8 @@ mode = "toggle"
 toggle_shortcut = "RightAlt"
 
 [desktop.shortcuts]
-translate_shortcut = "RightAlt+/"
-ask_shortcut = "RightAlt+Space"
+translate_shortcut = "RightCtrl+/"
+ask_shortcut = "RightCtrl+Space"
 
 [audio]
 backend = "native_windows"
@@ -46,4 +46,4 @@ local_asr = "external_command"
 external_asr_command = "powershell -NoProfile -ExecutionPolicy Bypass -File examples/external-asr-jsonl-smoke.ps1 {audio_path}"
 cloud_correction = "provider_text_processor"
 max_patch_age_ms = 3000
-max_auto_patch_edit_ratio = 0.25
+max_auto_patch_edit_ratio = 0.35

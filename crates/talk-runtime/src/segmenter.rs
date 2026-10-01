@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmenterConfig {
     pub punctuation_pause_ms: u64,
     pub soft_pause_ms: u64,
@@ -22,8 +22,8 @@ impl Default for SegmenterConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SegmenterInput {
-    pub text: String,
+pub struct SegmenterInput<'a> {
+    pub text: &'a str,
     pub trailing_silence_ms: u64,
     pub asr_marked_final: bool,
 }
@@ -36,36 +36,61 @@ pub enum SegmentReadiness {
 
 pub fn evaluate_segment_readiness(
     config: &SegmenterConfig,
-    input: &SegmenterInput,
+    input: &SegmenterInput<'_>,
 ) -> SegmentReadiness {
-    let char_count = input
-        .text
-        .chars()
-        .filter(|item| !item.is_whitespace())
-        .count();
-    if char_count == 0 {
+    let text_analysis = analyze_segment_text(input.text);
+    if text_analysis.char_count == 0 {
         return SegmentReadiness::Wait;
     }
-    if char_count >= config.max_chunk_chars {
+    if text_analysis.char_count >= config.max_chunk_chars {
         return SegmentReadiness::Ready;
     }
-    if input.asr_marked_final && char_count >= config.min_final_chars {
+    if input.asr_marked_final && text_analysis.char_count >= config.min_final_chars {
         return SegmentReadiness::Ready;
     }
-    if ends_with_clause_punctuation(&input.text)
-        && content_char_count(&input.text) >= config.min_clause_chars
+    if text_analysis
+        .last_non_whitespace
+        .is_some_and(is_clause_punctuation)
+        && text_analysis.content_char_count >= config.min_clause_chars
     {
         return SegmentReadiness::Ready;
     }
-    if ends_with_sentence_punctuation(&input.text)
+    if text_analysis
+        .last_non_whitespace
+        .is_some_and(is_sentence_punctuation)
         && input.trailing_silence_ms >= config.punctuation_pause_ms
     {
         return SegmentReadiness::Ready;
     }
-    if char_count >= config.min_final_chars && input.trailing_silence_ms >= config.soft_pause_ms {
+    if text_analysis.char_count >= config.min_final_chars
+        && input.trailing_silence_ms >= config.soft_pause_ms
+    {
         return SegmentReadiness::Ready;
     }
     SegmentReadiness::Wait
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SegmentTextAnalysis {
+    char_count: usize,
+    content_char_count: usize,
+    last_non_whitespace: Option<char>,
+}
+
+fn analyze_segment_text(text: &str) -> SegmentTextAnalysis {
+    let mut analysis = SegmentTextAnalysis {
+        char_count: 0,
+        content_char_count: 0,
+        last_non_whitespace: None,
+    };
+    for character in text.chars().filter(|character| !character.is_whitespace()) {
+        analysis.char_count += 1;
+        if !is_segment_punctuation(character) {
+            analysis.content_char_count += 1;
+        }
+        analysis.last_non_whitespace = Some(character);
+    }
+    analysis
 }
 
 /// Clause-boundary punctuation (comma/semicolon/colon, CJK and ASCII).
@@ -84,22 +109,35 @@ pub(crate) fn is_segment_punctuation(character: char) -> bool {
     is_clause_punctuation(character) || is_sentence_punctuation(character)
 }
 
-fn content_char_count(text: &str) -> usize {
-    text.chars()
-        .filter(|item| !item.is_whitespace() && !is_segment_punctuation(*item))
-        .count()
-}
+#[cfg(test)]
+mod tests {
+    use super::{analyze_segment_text, SegmentTextAnalysis};
 
-fn ends_with_clause_punctuation(text: &str) -> bool {
-    text.trim_end()
-        .chars()
-        .last()
-        .is_some_and(is_clause_punctuation)
-}
-
-fn ends_with_sentence_punctuation(text: &str) -> bool {
-    text.trim_end()
-        .chars()
-        .last()
-        .is_some_and(is_sentence_punctuation)
+    #[test]
+    fn segment_text_analysis_counts_content_and_tail_in_one_pass() {
+        assert_eq!(
+            analyze_segment_text(" 你，好！ \t\n"),
+            SegmentTextAnalysis {
+                char_count: 4,
+                content_char_count: 2,
+                last_non_whitespace: Some('！'),
+            }
+        );
+        assert_eq!(
+            analyze_segment_text(" \t\r\n"),
+            SegmentTextAnalysis {
+                char_count: 0,
+                content_char_count: 0,
+                last_non_whitespace: None,
+            }
+        );
+        assert_eq!(
+            analyze_segment_text("\u{00a0}你，\u{2003}好？\u{202f}"),
+            SegmentTextAnalysis {
+                char_count: 4,
+                content_char_count: 2,
+                last_non_whitespace: Some('？'),
+            }
+        );
+    }
 }

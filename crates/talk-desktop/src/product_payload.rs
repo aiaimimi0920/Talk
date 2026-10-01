@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::FileOptions;
@@ -40,10 +40,10 @@ pub struct EmbeddedRuntimePayloadFile {
 }
 
 #[derive(Debug, Clone)]
-pub struct EmbeddedRuntimePayload {
+pub struct EmbeddedRuntimePayload<'a> {
     pub archive_sha256: String,
     pub files: Vec<EmbeddedRuntimePayloadFile>,
-    archive: Vec<u8>,
+    archive: &'a [u8],
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -124,7 +124,7 @@ pub fn build_embedded_runtime_payload(
 
 pub fn parse_embedded_runtime_payload(
     executable_bytes: &[u8],
-) -> Result<EmbeddedRuntimePayload, String> {
+) -> Result<EmbeddedRuntimePayload<'_>, String> {
     if executable_bytes.len() < PAYLOAD_TRAILER_LEN {
         return Err("Talk executable does not contain a complete runtime payload trailer".into());
     }
@@ -150,10 +150,10 @@ pub fn parse_embedded_runtime_payload(
         .checked_sub(content_len)
         .ok_or_else(|| "Talk runtime payload lengths exceed executable size".to_string())?;
     let manifest_start = archive_start + archive_len;
-    let archive = executable_bytes[archive_start..manifest_start].to_vec();
+    let archive = &executable_bytes[archive_start..manifest_start];
     let manifest_bytes = &executable_bytes[manifest_start..trailer_start];
     let expected_archive_hash = &trailer[28..60];
-    let actual_archive_hash = Sha256::digest(&archive);
+    let actual_archive_hash = Sha256::digest(archive);
     if actual_archive_hash.as_slice() != expected_archive_hash {
         return Err("Talk runtime payload archive SHA-256 mismatch".into());
     }
@@ -167,10 +167,10 @@ pub fn parse_embedded_runtime_payload(
         ));
     }
     let manifest_files = validated_manifest_map(&manifest)?;
-    validate_zip_members(&archive, &manifest_files)?;
+    validate_zip_members(archive, &manifest_files)?;
 
     Ok(EmbeddedRuntimePayload {
-        archive_sha256: sha256_hex(&archive),
+        archive_sha256: sha256_hex(archive),
         files: manifest_files
             .into_iter()
             .map(|(path, sha256)| EmbeddedRuntimePayloadFile {
@@ -179,6 +179,75 @@ pub fn parse_embedded_runtime_payload(
             })
             .collect(),
         archive,
+    })
+}
+
+struct EmbeddedRuntimePayloadSummary {
+    archive_sha256: String,
+    files: Vec<EmbeddedRuntimePayloadFile>,
+}
+
+/// Fast startup path: locates an already-extracted and verified runtime cache
+/// directory by reading only the payload trailer and manifest from the end of
+/// the executable, instead of loading the whole (potentially hundreds of MB)
+/// executable into memory. Returns `None` on any anomaly or cache miss so the
+/// caller can fall back to the full read + extraction path.
+pub fn locate_verified_embedded_runtime(
+    executable_path: &Path,
+    runtime_root: &Path,
+) -> Option<PathBuf> {
+    let summary = read_embedded_runtime_payload_summary(executable_path)?;
+    let destination = runtime_root.join(&summary.archive_sha256);
+    match verified_runtime_directory_matches(&destination, &summary.archive_sha256, &summary.files)
+    {
+        Ok(true) => Some(destination),
+        _ => None,
+    }
+}
+
+fn read_embedded_runtime_payload_summary(
+    executable_path: &Path,
+) -> Option<EmbeddedRuntimePayloadSummary> {
+    let mut file = fs::File::open(executable_path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let trailer_len = PAYLOAD_TRAILER_LEN as u64;
+    let trailer_start = file_len.checked_sub(trailer_len)?;
+    file.seek(SeekFrom::Start(trailer_start)).ok()?;
+    let mut trailer = [0_u8; PAYLOAD_TRAILER_LEN];
+    file.read_exact(&mut trailer).ok()?;
+    if !trailer.starts_with(PAYLOAD_MAGIC) {
+        return None;
+    }
+    if read_u32_le(&trailer[8..12]) != PAYLOAD_FORMAT_VERSION {
+        return None;
+    }
+    let archive_len = read_u64_le(&trailer[12..20]);
+    let manifest_len = read_u64_le(&trailer[20..28]);
+    let content_len = archive_len.checked_add(manifest_len)?;
+    trailer_start.checked_sub(content_len)?;
+    let manifest_start = trailer_start.checked_sub(manifest_len)?;
+    let manifest_len = usize::try_from(manifest_len).ok()?;
+    file.seek(SeekFrom::Start(manifest_start)).ok()?;
+    let mut manifest_bytes = vec![0_u8; manifest_len];
+    file.read_exact(&mut manifest_bytes).ok()?;
+    let manifest: PayloadManifest = serde_json::from_slice(&manifest_bytes).ok()?;
+    if manifest.schema_version != PAYLOAD_FORMAT_VERSION {
+        return None;
+    }
+    let manifest_files = validated_manifest_map(&manifest).ok()?;
+    let archive_sha256 = trailer[28..60]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Some(EmbeddedRuntimePayloadSummary {
+        archive_sha256,
+        files: manifest_files
+            .into_iter()
+            .map(|(path, sha256)| EmbeddedRuntimePayloadFile {
+                path: PathBuf::from(path),
+                sha256,
+            })
+            .collect(),
     })
 }
 
@@ -308,10 +377,9 @@ fn validate_zip_members(
         let expected_hash = manifest_files
             .get(&name)
             .ok_or_else(|| format!("unexpected Talk runtime payload ZIP member {name}"))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|error| format!("read Talk runtime payload member {name}: {error}"))?;
-        if sha256_hex(&bytes) != *expected_hash {
+        let actual_sha256 = sha256_reader_hex(&mut file)
+            .map_err(|error| format!("hash Talk runtime payload member {name}: {error}"))?;
+        if actual_sha256 != *expected_hash {
             return Err(format!(
                 "Talk runtime payload member {name} SHA-256 mismatch"
             ));
@@ -325,7 +393,7 @@ fn validate_zip_members(
 }
 
 fn extract_payload_to_directory(
-    payload: &EmbeddedRuntimePayload,
+    payload: &EmbeddedRuntimePayload<'_>,
     destination: &Path,
 ) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|error| {
@@ -334,7 +402,7 @@ fn extract_payload_to_directory(
             destination.display()
         )
     })?;
-    let mut archive = ZipArchive::new(Cursor::new(&payload.archive))
+    let mut archive = ZipArchive::new(Cursor::new(payload.archive))
         .map_err(|error| format!("open Talk runtime payload ZIP: {error}"))?;
     for index in 0..archive.len() {
         let mut file = archive
@@ -356,18 +424,24 @@ fn extract_payload_to_directory(
             )
         })?;
     }
-    for file in &payload.files {
-        let output_path = destination.join(&file.path);
-        let bytes = fs::read(&output_path).map_err(|error| {
+    for payload_file in &payload.files {
+        let output_path = destination.join(&payload_file.path);
+        let mut extracted_file = fs::File::open(&output_path).map_err(|error| {
             format!(
-                "read extracted Talk runtime payload member {}: {error}",
+                "open extracted Talk runtime payload member {}: {error}",
                 output_path.display()
             )
         })?;
-        if sha256_hex(&bytes) != file.sha256 {
+        let actual_sha256 = sha256_reader_hex(&mut extracted_file).map_err(|error| {
+            format!(
+                "hash extracted Talk runtime payload member {}: {error}",
+                output_path.display()
+            )
+        })?;
+        if actual_sha256 != payload_file.sha256 {
             return Err(format!(
                 "extracted Talk runtime payload member {} SHA-256 mismatch",
-                file.path.display()
+                payload_file.path.display()
             ));
         }
     }
@@ -388,7 +462,15 @@ fn extract_payload_to_directory(
 
 fn verified_runtime_matches(
     directory: &Path,
-    payload: &EmbeddedRuntimePayload,
+    payload: &EmbeddedRuntimePayload<'_>,
+) -> Result<bool, String> {
+    verified_runtime_directory_matches(directory, &payload.archive_sha256, &payload.files)
+}
+
+fn verified_runtime_directory_matches(
+    directory: &Path,
+    archive_sha256: &str,
+    files: &[EmbeddedRuntimePayloadFile],
 ) -> Result<bool, String> {
     if !directory.is_dir() {
         return Ok(false);
@@ -408,24 +490,28 @@ fn verified_runtime_matches(
         Ok(marker) => marker,
         Err(_) => return Ok(false),
     };
-    if marker.schema_version != PAYLOAD_FORMAT_VERSION
-        || marker.archive_sha256 != payload.archive_sha256
-    {
+    if marker.schema_version != PAYLOAD_FORMAT_VERSION || marker.archive_sha256 != archive_sha256 {
         return Ok(false);
     }
-    for file in &payload.files {
+    for file in files {
         let path = directory.join(&file.path);
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
+        let mut cached_file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => {
                 return Err(format!(
-                    "read cached Talk runtime member {}: {error}",
+                    "open cached Talk runtime member {}: {error}",
                     path.display()
                 ))
             }
         };
-        if sha256_hex(&bytes) != file.sha256 {
+        let actual_sha256 = sha256_reader_hex(&mut cached_file).map_err(|error| {
+            format!(
+                "hash cached Talk runtime member {}: {error}",
+                path.display()
+            )
+        })?;
+        if actual_sha256 != file.sha256 {
             return Ok(false);
         }
     }
@@ -485,4 +571,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn sha256_reader_hex(reader: &mut impl Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }

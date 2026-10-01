@@ -38,7 +38,7 @@ evidence.
   matches the core Typeless start/stop gesture out of the box.
   The desktop shell now also supports a small Typeless-style action set from
   one config: `RightAlt` for the primary dictation route,
-  `RightAlt+/` for translate, and `RightAlt+Space` for ask / assistant mode.
+  `RightCtrl+/` for translate, and `RightCtrl+Space` for ask / assistant mode.
   To support that correctly, the desktop shell now uses a side-aware low-level
   keyboard hook for shortcuts that cannot be represented faithfully through
   `RegisterHotKey`, while still keeping the simpler `RegisterHotKey` path for
@@ -120,7 +120,10 @@ inserts the local final transcript without waiting for provider text
 processing, and then optionally starts asynchronous cloud correction through
 `speculative.cloud_correction = "provider_text_processor"`. Safe corrections
 patch the original target; unsafe or stale corrections become an editable copy
-popup.
+popup. Patch safety uses the real character-level Levenshtein edit ratio rather
+than treating every character between the first and last edit as changed. The
+default `0.35` limit matches the faithful-output guard while target identity,
+focus, age, generation, and user-edit checks remain mandatory.
 
 ## MVP behavior
 

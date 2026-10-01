@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use talk_audio::{summarize_prepared_wav_signal, trim_wav_silence_bytes};
+use std::sync::OnceLock;
+use talk_audio::summarize_and_trim_prepared_wav_bytes;
 use talk_core::{validate_http_endpoint, OpenAiTranscriptionTransport, TalkError, VoiceMode};
 
 mod correction;
@@ -13,9 +14,10 @@ pub use correction::parse_cloud_correction_patch;
 pub use streaming_asr::{
     final_transcript_from_streaming_asr_events, local_streaming_server_message_to_asr_event,
     parse_local_streaming_asr_server_message, parse_streaming_asr_json_line,
-    run_external_streaming_asr_command, serialize_local_streaming_asr_client_message,
-    LocalStreamingAsrClientMessage, LocalStreamingAsrReady, LocalStreamingAsrServerMessage,
-    LocalStreamingAsrServiceClient, MockStreamingAsrEngine, StreamingAsrEngine, StreamingAsrEvent,
+    run_external_streaming_asr_command, run_external_streaming_asr_command_with_timeout,
+    serialize_local_streaming_asr_client_message, LocalStreamingAsrClientMessage,
+    LocalStreamingAsrReady, LocalStreamingAsrServerMessage, LocalStreamingAsrServiceClient,
+    MockStreamingAsrEngine, StreamingAsrEngine, StreamingAsrEvent,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,7 +116,47 @@ fn build_http_client() -> reqwest::Client {
         .connect_timeout(std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
         .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("static Talk HTTP client configuration must be valid")
+}
+
+fn shared_http_client() -> reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(build_http_client).clone()
+}
+
+/// One transient network hiccup (e.g. a refused connection while a local
+/// gateway restarts) should not fail an entire dictation, so cloud requests
+/// retry exactly once after a short backoff. Only connection-establishment
+/// failures are retried: the request never reached the server, so a second
+/// attempt is always safe.
+const CLOUD_SEND_MAX_RETRIES: usize = 1;
+const CLOUD_SEND_RETRY_BACKOFF_MS: u64 = 300;
+
+fn reqwest_error_is_safely_retryable(error: &reqwest::Error) -> bool {
+    error.is_connect()
+}
+
+async fn send_with_connect_retry<F>(build_request: F) -> Result<reqwest::Response, TalkError>
+where
+    F: Fn() -> Result<reqwest::RequestBuilder, TalkError>,
+{
+    let mut attempted_retries = 0usize;
+    loop {
+        match build_request()?.send().await {
+            Ok(response) => return Ok(response),
+            Err(error)
+                if attempted_retries < CLOUD_SEND_MAX_RETRIES
+                    && reqwest_error_is_safely_retryable(&error) =>
+            {
+                attempted_retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    CLOUD_SEND_RETRY_BACKOFF_MS,
+                ))
+                .await;
+            }
+            Err(error) => return Err(TalkError::Provider(error.to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +169,7 @@ impl HttpTranscriber {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            client: build_http_client(),
+            client: shared_http_client(),
         }
     }
 }
@@ -152,16 +194,13 @@ impl Transcriber for HttpTranscriber {
     ) -> Result<String, TalkError> {
         reject_empty_audio_path(&audio_path)?;
         reject_invalid_endpoint(&self.endpoint, "transcriber")?;
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&HttpTranscribeRequest {
-                audio_path: audio_path.display().to_string(),
-                context,
-            })
-            .send()
-            .await
-            .map_err(|error| TalkError::Provider(error.to_string()))?;
+        let request_body = HttpTranscribeRequest {
+            audio_path: audio_path.display().to_string(),
+            context,
+        };
+        let response =
+            send_with_connect_retry(|| Ok(self.client.post(&self.endpoint).json(&request_body)))
+                .await?;
 
         if !response.status().is_success() {
             return Err(TalkError::Provider(format!(
@@ -188,7 +227,7 @@ impl HttpTextProcessor {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
-            client: build_http_client(),
+            client: shared_http_client(),
         }
     }
 }
@@ -210,17 +249,14 @@ impl TextProcessor for HttpTextProcessor {
     ) -> Result<String, TalkError> {
         reject_blank_transcript(&transcript)?;
         reject_invalid_endpoint(&self.endpoint, "text processor")?;
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .json(&HttpProcessRequest {
-                transcript,
-                mode,
-                context,
-            })
-            .send()
-            .await
-            .map_err(|error| TalkError::Provider(error.to_string()))?;
+        let request_body = HttpProcessRequest {
+            transcript,
+            mode,
+            context,
+        };
+        let response =
+            send_with_connect_retry(|| Ok(self.client.post(&self.endpoint).json(&request_body)))
+                .await?;
 
         if !response.status().is_success() {
             return Err(TalkError::Provider(format!(
@@ -271,7 +307,7 @@ impl OpenAiCompatibleTranscriber {
             model: model.into(),
             api_key,
             transport,
-            client: build_http_client(),
+            client: shared_http_client(),
         }
     }
 }
@@ -297,7 +333,7 @@ impl Transcriber for OpenAiCompatibleTranscriber {
                 audio_path.display()
             ))
         })?;
-        let bytes = prepared_audio_upload_bytes(&audio_path, original_bytes)?;
+        let bytes = prepared_audio_upload_bytes(original_bytes)?;
         match self.transport {
             OpenAiTranscriptionTransport::AudioTranscriptions => {
                 let file_name = audio_path
@@ -307,20 +343,22 @@ impl Transcriber for OpenAiCompatibleTranscriber {
                     .ok_or_else(|| {
                         TalkError::Io("failed to determine audio file name".to_string())
                     })?;
-                let file_part = reqwest::multipart::Part::bytes(bytes)
-                    .file_name(file_name.to_string())
-                    .mime_str("audio/wav")
-                    .map_err(|error| TalkError::Provider(error.to_string()))?;
-                let form = reqwest::multipart::Form::new()
-                    .text("model", self.model.clone())
-                    .part("file", file_part);
-
-                let request = self.client.post(&self.endpoint).multipart(form);
-                let request = with_optional_bearer_auth(request, self.api_key.as_deref());
-                let response = request
-                    .send()
-                    .await
-                    .map_err(|error| TalkError::Provider(error.to_string()))?;
+                // Multipart bodies are not cloneable, so each attempt rebuilds
+                // the form from the prepared audio bytes.
+                let response = send_with_connect_retry(|| {
+                    let file_part = reqwest::multipart::Part::bytes(bytes.clone())
+                        .file_name(file_name.to_string())
+                        .mime_str("audio/wav")
+                        .map_err(|error| TalkError::Provider(error.to_string()))?;
+                    let form = reqwest::multipart::Form::new()
+                        .text("model", self.model.clone())
+                        .part("file", file_part);
+                    Ok(with_optional_bearer_auth(
+                        self.client.post(&self.endpoint).multipart(form),
+                        self.api_key.as_deref(),
+                    ))
+                })
+                .await?;
 
                 if !response.status().is_success() {
                     return Err(TalkError::Provider(format!(
@@ -338,23 +376,15 @@ impl Transcriber for OpenAiCompatibleTranscriber {
             OpenAiTranscriptionTransport::ChatCompletionsAudioInput => {
                 let request = OpenAiChatCompletionsAudioInputRequest {
                     model: self.model.clone(),
-                    messages: vec![OpenAiChatMessageWithAudioInput {
-                        role: "user",
-                        content: vec![OpenAiAudioInputContentPart {
-                            r#type: "input_audio",
-                            input_audio: OpenAiAudioInputData {
-                                data: audio_data_uri(&bytes, "audio/wav"),
-                            },
-                        }],
-                    }],
+                    messages: build_openai_audio_input_transcription_messages(&bytes),
                 };
-                let request_builder = self.client.post(&self.endpoint).json(&request);
-                let request_builder =
-                    with_optional_bearer_auth(request_builder, self.api_key.as_deref());
-                let response = request_builder
-                    .send()
-                    .await
-                    .map_err(|error| TalkError::Provider(error.to_string()))?;
+                let response = send_with_connect_retry(|| {
+                    Ok(with_optional_bearer_auth(
+                        self.client.post(&self.endpoint).json(&request),
+                        self.api_key.as_deref(),
+                    ))
+                })
+                .await?;
 
                 if !response.status().is_success() {
                     return Err(TalkError::Provider(format!(
@@ -401,7 +431,7 @@ impl OpenAiCompatibleTextProcessor {
             endpoint: endpoint.into(),
             model: model.into(),
             api_key,
-            client: build_http_client(),
+            client: shared_http_client(),
         }
     }
 }
@@ -417,30 +447,13 @@ struct OpenAiChatCompletionsRequest {
 #[derive(Debug, Serialize)]
 struct OpenAiChatCompletionsAudioInputRequest {
     model: String,
-    messages: Vec<OpenAiChatMessageWithAudioInput>,
+    messages: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
 struct OpenAiChatMessage {
     role: &'static str,
     content: String,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiChatMessageWithAudioInput {
-    role: &'static str,
-    content: Vec<OpenAiAudioInputContentPart>,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiAudioInputContentPart {
-    r#type: &'static str,
-    input_audio: OpenAiAudioInputData,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAiAudioInputData {
-    data: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,12 +518,13 @@ impl TextProcessor for OpenAiCompatibleTextProcessor {
             messages: build_openai_processing_messages(transcript, mode, context)?,
             enable_thinking: qwen3_thinking_override(&self.model),
         };
-        let request_builder = self.client.post(&self.endpoint).json(&request);
-        let request_builder = with_optional_bearer_auth(request_builder, self.api_key.as_deref());
-        let response = request_builder
-            .send()
-            .await
-            .map_err(|error| TalkError::Provider(error.to_string()))?;
+        let response = send_with_connect_retry(|| {
+            Ok(with_optional_bearer_auth(
+                self.client.post(&self.endpoint).json(&request),
+                self.api_key.as_deref(),
+            ))
+        })
+        .await?;
 
         if !response.status().is_success() {
             return Err(TalkError::Provider(format!(
@@ -611,26 +625,32 @@ fn with_optional_bearer_auth(
 }
 
 fn audio_data_uri(bytes: &[u8], mime_type: &str) -> String {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("data:{mime_type};base64,{encoded}")
+    let encoded_len = base64::encoded_len(bytes.len(), true).unwrap_or(0);
+    let mut uri =
+        String::with_capacity("data:".len() + mime_type.len() + ";base64,".len() + encoded_len);
+    uri.push_str("data:");
+    uri.push_str(mime_type);
+    uri.push_str(";base64,");
+    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut uri);
+    uri
 }
 
-fn prepared_audio_upload_bytes(
-    audio_path: &Path,
-    original_bytes: Vec<u8>,
-) -> Result<Vec<u8>, TalkError> {
-    if let Ok(summary) = summarize_prepared_wav_signal(audio_path) {
-        if summary.duration_seconds >= 1.0 && summary.peak < 0.05 && summary.rms < 0.003 {
-            return Err(TalkError::Provider(format!(
-                "captured speech signal is too weak for provider transcription (prepared_duration_seconds={:.2}, prepared_peak={:.3}, prepared_rms={:.4})",
-                summary.duration_seconds, summary.peak, summary.rms
-            )));
-        }
+fn prepared_audio_upload_bytes(original_bytes: Vec<u8>) -> Result<Vec<u8>, TalkError> {
+    // A single decode of the already-read bytes yields both the weak-signal
+    // summary and the silence-trimmed upload payload. Decode failures fall
+    // back to uploading the original bytes untouched, matching the previous
+    // per-call error swallowing.
+    let Ok(prepared) = summarize_and_trim_prepared_wav_bytes(&original_bytes) else {
+        return Ok(original_bytes);
+    };
+    let summary = prepared.summary;
+    if summary.duration_seconds >= 1.0 && summary.peak < 0.05 && summary.rms < 0.003 {
+        return Err(TalkError::Provider(format!(
+            "captured speech signal is too weak for provider transcription (prepared_duration_seconds={:.2}, prepared_peak={:.3}, prepared_rms={:.4})",
+            summary.duration_seconds, summary.peak, summary.rms
+        )));
     }
-    match trim_wav_silence_bytes(audio_path) {
-        Ok(Some(trimmed_bytes)) => Ok(trimmed_bytes),
-        Ok(None) | Err(_) => Ok(original_bytes),
-    }
+    Ok(prepared.trimmed_wav_bytes.unwrap_or(original_bytes))
 }
 
 fn build_openai_processing_messages(
@@ -639,6 +659,15 @@ fn build_openai_processing_messages(
     context: FrontContext,
 ) -> Result<Vec<OpenAiChatMessage>, TalkError> {
     let mut user_sections = vec![format!("Transcript:\n{transcript}")];
+    if let Some(hints) = canonical_term_hints_for_mode(mode) {
+        user_sections.push(build_canonical_term_hints_section(hints));
+    }
+    if let Some(variants) = canonical_term_variants_for_mode(mode) {
+        user_sections.push(build_canonical_term_variants_section(variants));
+    }
+    if let Some(examples) = canonical_phrase_examples_for_mode(mode) {
+        user_sections.push(build_canonical_phrase_examples_section(examples));
+    }
     if front_context_has_details(&context) {
         let context_json = serde_json::to_string_pretty(&context)
             .map_err(|error| TalkError::Provider(error.to_string()))?;
@@ -656,10 +685,24 @@ fn build_openai_processing_messages(
     ])
 }
 
+fn build_openai_audio_input_transcription_messages(audio_bytes: &[u8]) -> Vec<Value> {
+    vec![json!({
+        "role": "user",
+        "content": [
+            {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": audio_data_uri(audio_bytes, "audio/wav")
+                }
+            }
+        ]
+    })]
+}
+
 fn system_prompt_for_mode(mode: VoiceMode) -> &'static str {
     match mode {
         VoiceMode::Transcribe | VoiceMode::Dictate => {
-            "You clean up speech-to-text dictation. Preserve the original language, mixed-language tokens, product names, paths, hotkeys, numbers, and ASCII terms. Only fix obvious speech-to-text mistakes and punctuation. Do not translate, summarize, paraphrase, rewrite, or add commentary. Return only the final text."
+            "You clean up speech-to-text dictation. Preserve the original language, mixed-language tokens, product names, paths, hotkeys, numbers, and ASCII terms. If a hinted domain term appears as an obvious phonetic or spacing variant, normalize it to the canonical spelling only when the surrounding words make the intent unambiguous. Do not expand plain Talk into Neuro Talk unless the transcript contains a Neuro-specific variant such as \"你 o talk\", \"neo tok\", or \"neotok\". If a hinted canonical term or path is obviously clipped at the edge of the utterance, complete only the missing trailing characters. You may also receive full-phrase examples from this project; only use one when the transcript is clearly trying to say that exact phrase or an obviously clipped tail of it. Only fix obvious speech-to-text mistakes and punctuation. Do not translate, summarize, paraphrase, rewrite, or add commentary. Return only the final text."
         }
         VoiceMode::Document | VoiceMode::Polish => {
             "You rewrite dictated text into polished formal or document-ready writing. Return only the final rewritten text."
@@ -677,6 +720,117 @@ fn system_prompt_for_mode(mode: VoiceMode) -> &'static str {
             "Infer whether the transcript is dictation, document polishing, a command, or a generation request. Return only the final user-facing result text."
         }
     }
+}
+
+const DICTATION_CANONICAL_TERM_HINTS: &[&str] = &[
+    "Talk",
+    "Neuro",
+    "Neuro Talk",
+    "local first ASR",
+    "qwen3 asr flash",
+    r"C:\Users\Public\Talk\logs",
+];
+
+const DICTATION_CANONICAL_TERM_VARIANTS: &[(&str, &str)] = &[
+    ("rock foster a s r", "local first ASR"),
+    ("rock for ster a s r", "local first ASR"),
+    ("localhost asr", "local first ASR"),
+    ("local host asr", "local first ASR"),
+    ("你 o talk", "Neuro Talk"),
+    ("neo tok", "Neuro Talk"),
+    ("neotok", "Neuro Talk"),
+    ("tok", "Talk"),
+    ("套口", "Talk"),
+    ("套可", "Talk"),
+    ("透过", "Talk"),
+    ("千问三 a s r flash", "qwen3 asr flash"),
+    ("千问三 asr flash", "qwen3 asr flash"),
+    ("text 测试页", "テスト 页面"),
+    ("test 测试页", "テスト 页面"),
+    ("我你好", "你好呀"),
+    ("掀开项目例会", "先开项目例会"),
+    ("继续进入", "继续记录"),
+    ("c 盘的 us", r"C:\Users\Public\Talk\logs"),
+];
+
+const DICTATION_CANONICAL_PHRASE_EXAMPLES: &[&str] = &[
+    "你好呀",
+    "打开 Talk 的 local first ASR 测试",
+    "请帮我打开 Talk 的 local first ASR テスト 页面。",
+    "请把 Neuro Talk 的 qwen3 asr flash 结果保存到 C:\\Users\\Public\\Talk\\logs。",
+    "今天下午三点半我们先开项目例会，确认 Talk 的默认识别模型，然后把多语言测试结果同步给 Neuro 团队。",
+    "现在办公室里有一点空调和键盘声，请继续记录 Talk 的多语言识别测试结果。",
+];
+
+fn canonical_term_hints_for_mode(mode: VoiceMode) -> Option<&'static [&'static str]> {
+    match mode {
+        VoiceMode::Transcribe | VoiceMode::Dictate => Some(DICTATION_CANONICAL_TERM_HINTS),
+        VoiceMode::Document
+        | VoiceMode::Polish
+        | VoiceMode::Translate
+        | VoiceMode::Generate
+        | VoiceMode::Command
+        | VoiceMode::Smart => None,
+    }
+}
+
+fn build_canonical_term_hints_section(hints: &[&str]) -> String {
+    let bullets = hints
+        .iter()
+        .map(|hint| format!("- {hint}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Canonical term hints:\nUse these only when the transcript clearly intends the term; otherwise ignore them.\n{bullets}"
+    )
+}
+
+fn canonical_term_variants_for_mode(
+    mode: VoiceMode,
+) -> Option<&'static [(&'static str, &'static str)]> {
+    match mode {
+        VoiceMode::Transcribe | VoiceMode::Dictate => Some(DICTATION_CANONICAL_TERM_VARIANTS),
+        VoiceMode::Document
+        | VoiceMode::Polish
+        | VoiceMode::Translate
+        | VoiceMode::Generate
+        | VoiceMode::Command
+        | VoiceMode::Smart => None,
+    }
+}
+
+fn canonical_phrase_examples_for_mode(mode: VoiceMode) -> Option<&'static [&'static str]> {
+    match mode {
+        VoiceMode::Transcribe | VoiceMode::Dictate => Some(DICTATION_CANONICAL_PHRASE_EXAMPLES),
+        VoiceMode::Document
+        | VoiceMode::Polish
+        | VoiceMode::Translate
+        | VoiceMode::Generate
+        | VoiceMode::Command
+        | VoiceMode::Smart => None,
+    }
+}
+
+fn build_canonical_term_variants_section(variants: &[(&str, &str)]) -> String {
+    let bullets = variants
+        .iter()
+        .map(|(variant, canonical)| format!("- {variant} -> {canonical}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Common recognition variants in this project:\nUse these only when the surrounding words clearly indicate the canonical term.\nKeep plain Talk as Talk; only upgrade to Neuro Talk when the transcript contains a Neuro-specific variant such as 你 o talk, neo tok, or neotok.\n{bullets}"
+    )
+}
+
+fn build_canonical_phrase_examples_section(examples: &[&str]) -> String {
+    let bullets = examples
+        .iter()
+        .map(|example| format!("- {example}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Frequent full-phrase examples in this project:\nUse these only when the transcript is clearly trying to say the same full phrase or an obviously clipped tail of it.\n{bullets}"
+    )
 }
 
 fn front_context_has_details(context: &FrontContext) -> bool {

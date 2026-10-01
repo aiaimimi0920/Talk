@@ -22,10 +22,10 @@ function New-TestTalkSherpaModelDir {
 }
 
 Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
-    It 'defaults every benchmark entry point to multilingual, legacy, and Paraformer models in that order' {
+    It 'defaults every benchmark entry point to product, multilingual, and Paraformer models in that order' {
         $expected = @(
-            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'zipformer-zh-en-punct-int8-480ms',
+            'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
             'paraformer-bilingual-zh-en'
         )
         $tokens = $null
@@ -46,6 +46,42 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
         foreach ($default in $defaults) {
             (@($default.DefaultValue.SafeGetValue()) -join '|') | Should Be ($expected -join '|')
         }
+    }
+
+    It 'defaults every benchmark entry point to 300 milliseconds of online tail padding' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $scriptPath,
+            [ref]$tokens,
+            [ref]$parseErrors)
+        $defaults = @($ast.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.ParameterAst] -and
+                    $node.Name.VariablePath.UserPath -eq 'OnlineTailPaddingMs' -and
+                    $null -ne $node.DefaultValue
+                }, $true))
+
+        $parseErrors.Count | Should Be 0
+        $defaults.Count | Should Be 3
+        foreach ($default in $defaults) {
+            $default.DefaultValue.SafeGetValue() | Should Be 300
+        }
+    }
+
+    It 'rejects online tail padding outside the worker allocation bound' {
+        {
+            New-TalkAsrCorpusBenchmarkPlan `
+                -CorpusManifest 'unused.json' `
+                -ModelId @('zipformer') `
+                -OnlineTailPaddingMs -1
+        } | Should Throw 'OnlineTailPaddingMs must be between 0 and 2000'
+        {
+            New-TalkAsrCorpusBenchmarkPlan `
+                -CorpusManifest 'unused.json' `
+                -ModelId @('zipformer') `
+                -OnlineTailPaddingMs 2001
+        } | Should Throw 'OnlineTailPaddingMs must be between 0 and 2000'
     }
 
     It 'loads a corpus manifest and resolves sample WAV paths relative to the manifest' {
@@ -73,7 +109,36 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
             $samples.Count | Should Be 1
             $samples[0].SampleId | Should Be 'short-search-001'
             $samples[0].AudioWav | Should Be ([System.IO.Path]::GetFullPath($samplePath))
+            $samples[0].AudioSha256 | Should Be (Get-TalkAsrFileSha256 -Path $samplePath)
             $samples[0].ReferenceText | Should Be '你好呀'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects a corpus sample whose declared audio hash no longer matches the WAV' {
+        $tempRoot = Join-Path $env:TEMP ('talk-asr-corpus-hash-mismatch-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $samplePath = Join-Path $tempRoot 'short-search.wav'
+            Set-Content -LiteralPath $samplePath -Value 'changed wav bytes' -Encoding ASCII
+            $manifestPath = Join-Path $tempRoot 'corpus.json'
+            @"
+{
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "sampleId": "short-search-001",
+      "audioWav": "short-search.wav",
+      "audioSha256": "$('a' * 64)",
+      "referenceText": "你好呀"
+    }
+  ]
+}
+"@ | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+
+            { Read-TalkAsrCorpusManifest -CorpusManifest $manifestPath } | Should Throw 'audioSha256 does not match the current WAV'
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -132,6 +197,7 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
                 -OutputRoot $outputRoot `
                 -AsrBenchExe (Join-Path $tempRoot 'asr-bench.exe') `
                 -LocalAsrDaemonExe (Join-Path $tempRoot 'talk-local-asr-sherpa.exe') `
+                -OnlineTailPaddingMs 725 `
                 -PlanOnly
 
             $plan.Candidates.Count | Should Be 2
@@ -142,6 +208,14 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
             ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains '--sample-id') | Should Be $true
             ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains 'short-search-001') | Should Be $true
             ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains '--model-size-mb') | Should Be $true
+            ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains '--corpus-manifest-sha256') | Should Be $true
+            ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains $plan.CorpusManifestSha256) | Should Be $true
+            ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains '--audio-sha256') | Should Be $true
+            ($plan.Candidates[0].Runs[0].AsrBenchArguments -contains $plan.Samples[0].AudioSha256) | Should Be $true
+            ($plan.Candidates[0].DaemonArguments -join ' ') | Should Match '--enable-endpoint true'
+            ($plan.Candidates[0].DaemonArguments -join ' ') | Should Match '--endpoint-reset true'
+            ($plan.Candidates[0].DaemonArguments -join ' ') | Should Match '--online-tail-padding-ms 725'
+            $plan.OnlineTailPaddingMs | Should Be 725
         }
         finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -234,6 +308,7 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
 
             $plan.Candidates.Count | Should Be 1
             $plan.CloudOpenAiCompatibleBaseline.Model | Should Be 'qwen-audio-test'
+            $plan.CloudOpenAiCompatibleBaseline.ConfigFingerprint.Length | Should Be 12
             $plan.CloudOpenAiCompatibleBaseline.Runs.Count | Should Be 1
             $plan.ReportPaths.Count | Should Be 2
             $cloudRun = $plan.CloudOpenAiCompatibleBaseline.Runs[0]
@@ -246,6 +321,7 @@ Describe 'Invoke-TalkAsrCorpusBenchmark helpers' {
             ($cloudRun.AsrBenchArguments -contains 'chat_completions_audio_input') | Should Be $true
             ($cloudRun.AsrBenchArguments -contains '--cloud-openai-compatible-api-key-env') | Should Be $true
             ($cloudRun.AsrBenchArguments -contains 'TALK_TEST_PROVIDER_API_KEY') | Should Be $true
+            $cloudRun.OutputJson | Should Match ([regex]::Escape($plan.CloudOpenAiCompatibleBaseline.ConfigFingerprint))
             ($plan.ComparisonArguments -contains $cloudRun.OutputJson) | Should Be $true
         }
         finally {

@@ -7,14 +7,14 @@ the product release does not contain a PowerShell script.
 The pinned default is:
 
 ```text
-sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
-SHA-256: 28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4
+zipformer-zh-en-punct-int8-480ms
+SHA-256: fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74
 ```
 
 Talk stores the validated model under:
 
 ```text
-%LOCALAPPDATA%\Talk\models\sherpa-onnx\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
+%LOCALAPPDATA%\Talk\models\sherpa-onnx\zipformer-zh-en-punct-int8-480ms
 ```
 
 The archive is downloaded over HTTPS into a `.partial` file while its SHA-256
@@ -39,7 +39,7 @@ From a Talk source checkout, an engineer can still install a catalog model
 explicitly:
 
 ```powershell
-.\scripts\Install-TalkSherpaModel.ps1 -ModelId sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10
+.\scripts\Install-TalkSherpaModel.ps1 -ModelId paraformer-bilingual-zh-en
 ```
 
 The script downloads the archive, extracts it under `.runtime\models\sherpa-onnx`,
@@ -86,7 +86,7 @@ typing one command per model/sample:
 ```powershell
 .\Invoke-TalkAsrCorpusBenchmark.ps1 `
   -CorpusManifest .\.runtime\asr-bench\real-mic-corpus\corpus.json `
-  -ModelId @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
+  -ModelId @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en') `
   -OutputRoot .\.runtime\asr-bench\real-mic-corpus\reports `
   -CloudOpenAiCompatibleEndpoint https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions `
   -CloudOpenAiCompatibleModel qwen3-asr-flash `
@@ -110,7 +110,7 @@ config-locking commands:
 
 ```powershell
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 `
-  -ModelId @('sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'zipformer-zh-en-punct-int8-480ms', 'paraformer-bilingual-zh-en') `
+  -ModelId @('zipformer-zh-en-punct-int8-480ms', 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10', 'paraformer-bilingual-zh-en') `
   -ModelRoot .\.runtime\models\sherpa-onnx `
   -ConfigPath .\talk-desktop.toml
 ```
@@ -128,7 +128,11 @@ redacted API-key environment-variable template directly from the preflight
 output. When `TALK_PROVIDER_API_KEY` is not set but the release
 `talk-desktop.toml` contains `[provider].api_key`, the workflow treats that
 packaged key as the cloud baseline key source and temporarily exposes it only to
-the nested benchmark process. Plain `-PreflightOnly` never records audio; add
+the nested benchmark process. DashScope-compatible runs also reuse the standard
+per-user credential file at
+`%USERPROFILE%\.neuro\qwen-platform\qwen-dashscope-openai\api-key\manual-live.json`
+when that file exists and neither the process environment nor the config file
+provides a key. Plain `-PreflightOnly` never records audio; add
 `-ProbeAudio -AudioProbeSeconds 2` only when the operator also wants a short
 non-silent microphone signal gate before recording the full corpus. That optional
 probe adds a `microphone_signal` check and fails when the Windows backend is not
@@ -142,6 +146,11 @@ benchmarking, `-SkipRecording` to reuse an existing `corpus.json`, or
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 -RecordOnly -PreflightOnly
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 -RecordOnly -PreflightOnly -ProbeAudio -AudioProbeSeconds 2
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 -RecordOnly
+.\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 `
+  -PromptManifest .\asr-real-mic-prompts.json `
+  -CorpusRoot .\.runtime\asr-bench\real-mic-corpus `
+  -RecordOnly `
+  -ResumeExistingCorpus
 .\Invoke-TalkAsrRealMicDefaultModelWorkflow.ps1 `
   -SkipRecording `
   -ModelRoot .\.runtime\models\sherpa-onnx `
@@ -159,6 +168,14 @@ status file must be ready and must point at the same `corpus.json`; otherwise
 preflight and the full `-SkipRecording` workflow fail before benchmarking. A
 missing status file is tolerated so older or hand-built corpus manifests can
 still be benchmarked directly.
+
+When the prompt manifest expands after a previous real-microphone pass, prefer
+`-RecordOnly -ResumeExistingCorpus`. That incremental refresh reuses already
+aligned WAV files, records only the newly required sample IDs, and rewrites
+`corpus.json` in prompt order before the later `-SkipRecording` benchmark pass.
+If you try `-SkipRecording` against a stale corpus, preflight now fails and
+returns the incremental refresh command instead of silently accepting partial
+evidence.
 
 After the comparison exists, use the source-checkout selection gate:
 
@@ -214,31 +231,108 @@ selected sherpa model instead of dry-run mode.
 
 | Model ID | Family | Size | Use |
 | --- | --- | ---: | --- |
-| `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10` | transducer | ~247 MiB | Packaged default local model. Streaming multilingual Zipformer for Chinese/English/Japanese mixed speech plus other supported languages. |
-| `zipformer-zh-en-punct-int8-480ms` | transducer | ~128 MiB | Recommended first real local model. Low-latency streaming Chinese/English with punctuation. |
+| `paraformer-bilingual-zh-en` | paraformer | ~999 MiB | Legacy packaged fallback. Still supported for manual comparison and recovery, but no longer the preferred default. |
+| `zipformer-zh-en-punct-int8-480ms` | transducer | ~128 MiB | Packaged default. Best raw CER on the aligned Chinese/English real-microphone corpus, with punctuation and the lowest package size among the compared bilingual models. |
+| `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10` | transducer | ~247 MiB | Multilingual fallback for language coverage beyond the default Chinese/English dictation target. |
 | `zipformer-zh-int8-2025-06-30` | transducer | ~126 MiB | Chinese-only streaming Zipformer fallback. |
-| `paraformer-bilingual-zh-en` | paraformer | ~999 MiB | Larger bilingual streaming Paraformer comparison target. |
+| `offline-zipformer-zh-en-int8-2023-11-22` | offline transducer | ~72 MiB int8 runtime | Benchmark-only bilingual final-rescore candidate; rejected on the aligned corpus. |
+| `offline-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09` | offline SenseVoice | ~227 MiB int8 runtime | Benchmark-only multilingual final-rescore candidate; rejected on the aligned corpus. |
+| `offline-whisper-base-int8` | offline Whisper | ~154 MiB int8 runtime | Benchmark-only multilingual final-rescore candidate; rejected on the aligned corpus. |
+| `offline-whisper-small-int8` | offline Whisper | ~359 MiB int8 runtime | Benchmark-only multilingual final-rescore candidate; rejected on accuracy and latency. |
 
-The default model is `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10`.
+The default model is `zipformer-zh-en-punct-int8-480ms`.
+The packaged release verifies archive SHA-256 `fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74`.
 
 Current evidence status:
 
-- `zipformer-zh-en-punct-int8-480ms` has been validated end-to-end through the
-  source-built daemon and `asr-bench` on a short Microsoft Huihui Chinese TTS
-  WAV. The extracted model directory in that release measured about 162 MiB,
-  first partial latency was 255 ms, final latency was 317 ms, RTF was 0.207, and
-  CER was 0.333 against the reference `你好呀` because the recognized text was
-  `你好`.
+- On the six aligned real-microphone samples in
+  `.runtime/asr-bench/real-mic-corpus-r17-faithful-20260729-r1`, the refreshed
+  2026-08-05 baseline measured raw CER `0.2909` for
+  `zipformer-zh-en-punct-int8-480ms`, versus `0.4875` for the previous
+  multilingual default and `0.4591` for Paraformer. This is a 40.3% relative
+  raw-error reduction from the previous default, and the selected model won all
+  six non-aggregate sample comparisons.
+- With product-equivalent endpoint reset enabled, the selected model measured
+  first partial `432 ms`, final latency `1745 ms`, and RTF `0.213` in that run.
+  The accuracy-first live gate is now
+  `MaxFirstPartialMs = 750` and `MaxRtf = 0.60`; it still rejects clearly slow
+  candidates while allowing the more accurate sub-second model.
+- A 2026-08-07 same-corpus run rejected the Chinese-only
+  `zipformer-zh-int8-2025-06-30` candidate. Its aggregate CER was `0.5358`
+  versus `0.2909` for the packaged bilingual model; both mixed-language samples
+  measured `0.75` CER and the proper-noun sample measured `0.8438`. It is not a
+  viable default for Talk's Chinese/English dictation target.
+- A live `qwen3.7-plus` provider-correction replay on the same six local reports
+  produced six exact final outputs (`meanProcessedCer = 0`). The desktop patch
+  gate previously classified distributed casing, spacing, and punctuation edits
+  as one large contiguous rewrite, so none of the five changed samples qualified
+  for live auto-apply at `0.25`. Talk now measures actual character-level edit
+  distance and uses a `0.35` product limit aligned with the faithful-output guard.
+  On the recorded replay, three of five changed samples qualify for live apply;
+  the two broad corrections still require the unchanged-target whole-document
+  path or the editable popup.
+- A 2026-08-07 offline final-rescore study used the same six sample IDs, corpus
+  manifest SHA-256, and per-WAV SHA-256 values. None of the four offline
+  candidates beat the packaged streaming model's raw CER `0.2909`: SenseVoice
+  measured `0.3623`, offline Zipformer `0.4982`, Whisper small `0.5076`, and
+  Whisper base `0.5662`. Mean one-shot final latency, including process startup
+  and model load, was `3.38 s`, `4.29 s`, `8.80 s`, and `3.64 s` respectively,
+  versus `1.72 s` for the current streaming model. No offline candidate is wired
+  into the desktop stop path. The reproducible comparison is stored at
+  `.runtime/asr-bench/accuracy-optimization-20260807-r34/offline-five-model-comparison.json`.
+- A 2026-08-07 performance matrix kept the selected model, endpoint reset, and
+  all six aligned WAV hashes fixed. CPU `num_threads = 2` remained best at CER
+  `0.2909`, first partial `417 ms`, final latency `1716 ms`, and RTF `0.2097`;
+  one thread measured `492/1859/0.2255`, while four threads measured
+  `494/1816/0.2226`. Client audio chunks also remain `80 ms`: `120 ms` raised
+  first partial to `805 ms`, while `40 ms` raised final latency to `3505 ms`.
+  The reports are under
+  `.runtime/asr-bench/accuracy-optimization-20260807-r35/{num-threads,chunk-ms}`.
+- The r35 partial-idle follow-up separates throughput and real-time replay.
+  Burst-mode replay measured `1 ms` at `390/1578/0.1935`, `5 ms` at
+  `395/1649/0.2015`, and `10 ms` at `435/1744/0.2130` (first partial/final
+  latency/RTF). That mode sends the next chunk as soon as polling becomes idle,
+  so its latency includes the polling value once per chunk and cannot select the
+  desktop timer. The new `--streaming-realtime` mode paces chunks against the WAV
+  timeline and records that mode in every report. It measured `10 ms`, `1 ms`,
+  and `5 ms` at `1868/8137/0.9967`, `1869/8135/0.9964`, and
+  `1872/8139/0.9969`; all three kept CER `0.2909`, and the 1-5 ms differences
+  are below run-to-run noise. The desktop therefore retains its shorter `1 ms`
+  idle wait rather than blocking each pump for an unproven `10 ms` benefit.
+  Evidence is stored under
+  `.runtime/asr-bench/accuracy-optimization-20260807-r35/{partial-idle-ms,partial-idle-realtime-ms}`.
+- A follow-up 2026-08-05 parameter matrix confirmed that the product defaults
+  remain the best measured configuration. `blank_penalty = -0.30` and `-0.15`
+  did not change CER; `0.45` and `0.60` worsened CER to `0.3233`; changing
+  endpoint rule 2 from `1.2 s` to `0.8 s` did not improve CER or latency, while
+  `1.6 s` was slower. Applying the existing silence trimmer to the corpus
+  worsened CER from `0.2909` to `0.2996`, so no trimming or non-default decoding
+  parameter is enabled on the live streaming path.
+- The same follow-up run fixed sherpa segment-boundary whitespace before strict
+  WebSocket events are emitted. This prevents otherwise valid partial/final
+  hypotheses from being rejected when a decoder setting returns surrounding
+  whitespace; internal word spacing is preserved.
+- The newer `real-mic-corpus/reports-20260804-r28` corpus is not default-model
+  evidence because its WAV speech no longer matches its reference text. The
+  benchmark now binds every generated report to the exact corpus manifest and
+  WAV SHA-256. Explicit mismatches fail preflight, and legacy reports without
+  provenance are skipped instead of interpreting their CER as current model
+  quality.
+- Product auto-discovery stays on `greedy_search` and does not inject a managed
+  regression hotword list. Hotwords remain an explicit user configuration:
+  the measured full regression list improved one domain phrase but slightly
+  worsened aggregate CER and could fail tokenization on unsupported phrases.
+  A second seven-phrase, BPE-only ablation also failed to beat the default:
+  scores `0.5`, `1.0`, and `1.5` measured CER `0.3068`, `0.3095`, and `0.2909`
+  with first-partial latency `577`, `641`, and `607 ms`, versus baseline CER
+  `0.2909` and `435 ms`. Managed hotwords therefore remain disabled.
 - `paraformer-bilingual-zh-en` has also been validated on the same Huihui TTS
   WAV from the source checkout. The extracted model directory measured about
   1052 MiB, first partial latency was 185 ms, final latency was 322 ms, RTF was
   0.210, and CER was 0.0 against `你好呀`.
-- On this one synthetic smoke sample, `asr-bench --compare-report` selects
-  Paraformer because accuracy is prioritized over the much smaller package size.
-- This is a runtime smoke result, not a final accuracy result. It proves the
-  sherpa-online paths work, but it does not replace real microphone benchmarks.
-  Do not promote Paraformer or reject Zipformer until both are benchmarked on
-  the same real microphone clips with the same JSON schema.
+- The Huihui TTS smoke sample still proves Paraformer can work end-to-end, but
+  the packaged default now follows the stronger real-microphone evidence rather
+  than the one synthetic sample.
 - `Invoke-TalkAsrCorpusBenchmark.ps1` is available in the source tree so the
   same real microphone corpus can be replayed against Zipformer, Paraformer,
   future local streaming engines, and cloud-only OpenAI-compatible baselines

@@ -7,6 +7,35 @@ $summaryValidatorScriptPath = Join-Path (Split-Path $here -Parent) 'Test-TalkRel
 . $summaryValidatorScriptPath
 
 Describe 'Publish-TalkRelease helpers' {
+    It 'accepts safe release version identifiers and resolves them inside the release root' {
+        $releaseRoot = Join-Path $env:TEMP 'talk-release-safe-version-root'
+        $versionId = Resolve-TalkReleaseVersionId -VersionId 'talk-opt-20260815-r1'
+
+        $versionId | Should Be 'talk-opt-20260815-r1'
+        (Resolve-TalkReleaseChildPath -ParentPath $releaseRoot -ChildName $versionId) |
+            Should Be ([System.IO.Path]::GetFullPath((Join-Path $releaseRoot $versionId)))
+    }
+
+    It 'rejects release version identifiers that can escape or nest outside the release root' {
+        foreach ($unsafeVersionId in @(
+                '..\outside',
+                '../outside',
+                'nested/release',
+                'nested\release',
+                '.hidden-release',
+                ('x' * 129)
+            )) {
+            { Resolve-TalkReleaseVersionId -VersionId $unsafeVersionId } | Should Throw
+        }
+    }
+
+    It 'rejects a release child path that escapes its parent even when called directly' {
+        $releaseRoot = Join-Path $env:TEMP 'talk-release-contained-root'
+
+        { Resolve-TalkReleaseChildPath -ParentPath $releaseRoot -ChildName '..\outside' } |
+            Should Throw
+    }
+
     It 'publishes a product profile as exactly Talk.exe and talk.toml' {
         $tempRoot = Join-Path $env:TEMP ('talk-release-product-profile-' + [guid]::NewGuid().ToString())
         $releaseRoot = Join-Path $tempRoot 'release-root'
@@ -16,6 +45,7 @@ Describe 'Publish-TalkRelease helpers' {
                 -VersionId 'talk-product-profile-red' `
                 -ReleaseRoot $releaseRoot `
                 -ProductProfile `
+                -EmitEvidence `
                 -SkipVerification `
                 -SkipBuild `
                 -SkipSmoke `
@@ -31,26 +61,86 @@ Describe 'Publish-TalkRelease helpers' {
             $result.ProductValidation.Files | Should Be @('Talk.exe', 'talk.toml')
             $result.ProductValidation.EmbeddedRuntimeSha256 |
                 Should Be $result.EmbeddedRuntimeSha256
+            $evidencePath = Join-Path $result.EvidenceDir 'product-evidence.json'
+            $evidenceText = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8
+            $evidence = $evidenceText | ConvertFrom-Json
+            $evidence.schemaVersion | Should Be 2
+            $evidence.productDirectory | Should Be '.'
+            $evidence.productFileSha256.'Talk.exe' | Should Match '^[0-9a-f]{64}$'
+            $evidence.productFileSha256.'talk.toml' | Should Match '^[0-9a-f]{64}$'
+            $evidence.sourceSnapshot.gitHead | Should Match '^[0-9a-f]{40}$'
+            $evidence.sourceSnapshot.fileCount | Should BeGreaterThan 0
+            $evidence.sourceSnapshot.sha256 | Should Match '^[0-9a-f]{64}$'
+            $evidence.sourceSnapshot.dirty | Should Not Be $null
+            $evidenceText | Should Not Match '(?i)[A-Z]:[\\/]'
+            $evidenceText | Should Not Match '\\\\[^\\]'
         } finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    It 'documents the product default multilingual Zipformer model files' {
+    It 'remaps build-machine source roots for product release binaries' {
+        $environment = New-TalkReleaseBuildEnvironment -TalkRepoRoot $talkRoot
+        $flags = @($environment.CARGO_ENCODED_RUSTFLAGS -split [char]0x1f)
+        $resolvedTalkRoot = [System.IO.Path]::GetFullPath($talkRoot)
+
+        ($flags -contains "--remap-path-prefix=$resolvedTalkRoot=talk-source") | Should Be $true
+        ($flags -contains "--remap-path-prefix=$($resolvedTalkRoot.Replace('\', '/'))=talk-source") |
+            Should Be $true
+        if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            $resolvedUserProfile = [System.IO.Path]::GetFullPath($env:USERPROFILE)
+            ($flags -contains "--remap-path-prefix=$resolvedUserProfile=user-home") | Should Be $true
+        }
+    }
+
+    It 'rejects product binaries that still contain build-machine roots' {
+        $tempRoot = Join-Path $env:TEMP ('talk-release-build-path-' + [guid]::NewGuid().ToString())
+        $binaryPath = Join-Path $tempRoot 'Talk.exe'
+        $forbiddenRoot = Join-Path $tempRoot 'builder-home'
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            Set-Content -LiteralPath $binaryPath -Value "panic at $forbiddenRoot\src\main.rs" -Encoding ASCII
+            {
+                Assert-TalkReleaseBinaryBuildPathsRedacted `
+                    -BinaryPath $binaryPath `
+                    -ForbiddenPathRoots @($forbiddenRoot)
+            } | Should Throw
+
+            Set-Content -LiteralPath $binaryPath -Value 'panic at talk-source/src/main.rs' -Encoding ASCII
+            {
+                Assert-TalkReleaseBinaryBuildPathsRedacted `
+                    -BinaryPath $binaryPath `
+                    -ForbiddenPathRoots @($forbiddenRoot)
+            } | Should Not Throw
+
+            $nonBlankRoots = @($forbiddenRoot, $null, '') |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            {
+                Assert-TalkReleaseBinaryBuildPathsRedacted `
+                    -BinaryPath $binaryPath `
+                    -ForbiddenPathRoots $nonBlankRoots
+            } | Should Not Throw
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'documents the product default Zipformer model files' {
         $config = New-TalkReleaseDesktopConfigContent
-        $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+        $modelId = 'zipformer-zh-en-punct-int8-480ms'
         $modelRoot = "%LOCALAPPDATA%\Talk\models\sherpa-onnx\$modelId"
+        $modelName = 'zipformer-zh-en-punct-int8-480ms'
 
         foreach ($expectedLine in @(
-                "# model = `"$modelId`"",
+                "# model = `"$modelName`"",
                 "# tokens = `"$modelRoot\tokens.txt`"",
-                "# encoder = `"$modelRoot\encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx`"",
-                "# decoder = `"$modelRoot\decoder-epoch-75-avg-11-chunk-16-left-128.onnx`"",
-                "# joiner = `"$modelRoot\joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx`""
+                "# encoder = `"$modelRoot\encoder.int8.onnx`"",
+                "# decoder = `"$modelRoot\decoder.onnx`"",
+                "# joiner = `"$modelRoot\joiner.int8.onnx`""
             )) {
             $config.Contains($expectedLine) | Should Be $true
         }
-        $config | Should Not Match 'zipformer-zh-en-punct-int8-480ms'
+        $config | Should Match 'model_family = "transducer"'
         $config | Should Not Match '\.runtime/models/sherpa-onnx'
     }
 
@@ -58,10 +148,10 @@ Describe 'Publish-TalkRelease helpers' {
         $docPath = Join-Path $talkRoot 'docs\LOCAL_SHERPA_MODELS.md'
         $doc = Get-Content -LiteralPath $docPath -Raw -Encoding UTF8
 
-        $doc | Should Match 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
-        $doc | Should Match '28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4'
-        $doc | Should Match '%LOCALAPPDATA%\\Talk\\models\\sherpa-onnx\\sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
-        $doc | Should Match 'The default model is `sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10`'
+        $doc | Should Match 'zipformer-zh-en-punct-int8-480ms'
+        $doc | Should Match 'fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74'
+        $doc | Should Match '%LOCALAPPDATA%\\Talk\\models\\sherpa-onnx\\zipformer-zh-en-punct-int8-480ms'
+        $doc | Should Match 'The default model is `zipformer-zh-en-punct-int8-480ms`'
     }
 
     It 'embeds the five-member runtime payload into the product executable' {
@@ -1214,8 +1304,8 @@ Describe 'Publish-TalkRelease helpers' {
             $desktopConfigText | Should Match 'command_shortcut = "RightCtrl\+3"'
             $desktopConfigText | Should Match 'generate_shortcut = "RightCtrl\+4"'
             $desktopConfigText | Should Match 'smart_shortcut = "RightCtrl\+5"'
-            $desktopConfigText | Should Match 'translate_shortcut = "RightAlt\+/"'
-            $desktopConfigText | Should Match 'ask_shortcut = "RightAlt\+Space"'
+            $desktopConfigText | Should Match 'translate_shortcut = "RightCtrl\+/"'
+            $desktopConfigText | Should Match 'ask_shortcut = "RightCtrl\+Space"'
             $desktopConfigText | Should Match 'backend = "native_windows"'
             $desktopConfigText | Should Match 'max_recording_seconds = 0'
             $desktopConfigText | Should Match 'transcription_transport = "chat_completions_audio_input"'
@@ -1356,6 +1446,9 @@ Describe 'Publish-TalkRelease helpers' {
             $readmeText | Should Match 'Invoke-TalkDesktopLiveHotkeyProbe.ps1'
             $readmeText | Should Match 'TALK_PROVIDER_API_KEY'
             $readmeText | Should Match 'AudioOverridePath'
+            $readmeText | Should Match 'ResumeExistingCorpus'
+            $readmeText | Should Match 'asr-real-mic-prompts\.json'
+            $readmeText | Should Match 'standard per-user DashScope credential file'
             $readmeText | Should Match 'checksums.sha256'
             $readmeText | Should Match '```powershell'
             $readmeText | Should Match '`talk-desktop\.exe`'
@@ -1438,7 +1531,7 @@ Describe 'Publish-TalkRelease helpers' {
             Test-Path -LiteralPath $installerPath | Should Be $true
             $installerText = Get-Content -LiteralPath $installerPath -Raw
             $installerText | Should Match 'function Install-TalkSherpaModel'
-            $installerText | Should Match 'zipformer-zh-en-punct-int8-480ms'
+            $installerText | Should Match 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
 
             $manifest = Get-Content -LiteralPath (Join-Path $result.DestinationDir 'manifest.json') -Raw | ConvertFrom-Json
             @($manifest.supportFiles | Where-Object { $_.kind -eq 'local-asr-model-installer' }).Count | Should Be 1
@@ -1546,6 +1639,7 @@ Describe 'Publish-TalkRelease helpers' {
             $helperText = Get-Content -LiteralPath $helperPath -Raw
             $helperText | Should Match 'function Invoke-TalkAsrCorpusRecorder'
             $helperText | Should Match 'Read-TalkAsrCorpusRecorderPrompts'
+            $helperText | Should Match 'ResumeExisting'
 
             $manifest = Get-Content -LiteralPath (Join-Path $result.DestinationDir 'manifest.json') -Raw | ConvertFrom-Json
             @($manifest.supportFiles | Where-Object { $_.kind -eq 'asr-corpus-recorder-helper' }).Count | Should Be 1
@@ -1584,10 +1678,13 @@ Describe 'Publish-TalkRelease helpers' {
 
             $promptTemplate = Get-Content -LiteralPath $promptTemplatePath -Raw | ConvertFrom-Json
             $promptTemplate.schemaVersion | Should Be 1
-            @($promptTemplate.samples).Count | Should Not BeLessThan 3
+            @($promptTemplate.samples).Count | Should Not BeLessThan 6
             @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'short-search-001' }).Count | Should Be 1
             @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'mixed-english-001' }).Count | Should Be 1
-            @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'punctuation-001' }).Count | Should Be 1
+            @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'mixed-english-japanese-001' }).Count | Should Be 1
+            @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'proper-nouns-001' }).Count | Should Be 1
+            @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'punctuation-longform-001' }).Count | Should Be 1
+            @($promptTemplate.samples | Where-Object { $_.sampleId -eq 'noise-realistic-001' }).Count | Should Be 1
 
             $manifest = Get-Content -LiteralPath (Join-Path $result.DestinationDir 'manifest.json') -Raw | ConvertFrom-Json
             @($manifest.supportFiles | Where-Object { $_.kind -eq 'asr-corpus-prompt-template' }).Count | Should Be 1
@@ -1746,6 +1843,7 @@ Describe 'Publish-TalkRelease helpers' {
             $workflowText | Should Match 'PreflightOnly'
             $workflowText | Should Match 'ProbeAudio'
             $workflowText | Should Match 'RecordOnly'
+            $workflowText | Should Match 'ResumeExistingCorpus'
             $workflowText | Should Match 'microphone_signal'
             $workflowText | Should Match 'cloud_baseline_api_key'
 

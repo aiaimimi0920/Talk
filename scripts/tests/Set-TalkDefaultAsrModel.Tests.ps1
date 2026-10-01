@@ -183,6 +183,59 @@ endpoint = "ws://127.0.0.1:53171/asr"
         }
     }
 
+    It 'replaces stale evidence metadata comments instead of accumulating duplicates' {
+        $tempRoot = Join-Path $env:TEMP ('talk-set-default-asr-model-metadata-' + [guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $modelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
+            $modelRoot = Join-Path $tempRoot 'models'
+            New-TestTalkSherpaModelFiles -ModelRoot $modelRoot -ModelId $modelId | Out-Null
+            $selectionPath = Join-Path $tempRoot 'selected-default-asr-model.json'
+            New-TestTalkSelectedDefaultAsrModelJson -Path $selectionPath -ModelId $modelId
+            $configPath = Join-Path $tempRoot 'talk-desktop.toml'
+            @'
+[speculative.streaming_service]
+endpoint = "ws://127.0.0.1:53171/asr"
+
+# Optional: uncomment this block to override the packaged model auto-discovery.
+# [speculative.streaming_service.local_daemon]
+# model = "zipformer-zh-en-punct-int8-480ms"
+# Talk evidence-selected default local ASR model.
+# selected_model_id = "zipformer-zh-en-punct-int8-480ms"
+# selection_json = "C:\reports\old-selected-default-asr-model.json"
+[speculative.streaming_service.local_daemon]
+mode = "sherpa-online"
+model_family = "transducer"
+model = "x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8"
+tokens = "C:/old/tokens.txt"
+encoder = "C:/old/encoder.onnx"
+decoder = "C:/old/decoder.onnx"
+joiner = "C:/old/joiner.onnx"
+
+[output]
+mode = "clipboard_paste"
+'@ | Set-Content -LiteralPath $configPath -Encoding UTF8
+
+            Set-TalkDefaultAsrModel `
+                -SelectionJson $selectionPath `
+                -ConfigPath $configPath `
+                -ModelRoot $modelRoot `
+                -InstallScriptPath $installScriptPath `
+                -NoBackup | Out-Null
+
+            $updated = Get-Content -LiteralPath $configPath -Raw
+            ([regex]::Matches($updated, '(?m)^# Talk evidence-selected default local ASR model\.\r?$').Count) | Should Be 1
+            ([regex]::Matches($updated, '(?m)^# selected_model_id = "zipformer-zh-en-punct-int8-480ms"\r?$').Count) | Should Be 0
+            ([regex]::Matches($updated, '(?m)^# selected_model_id = "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"\r?$').Count) | Should Be 1
+            ([regex]::Matches($updated, '(?m)^# selection_json = "C:\\reports\\old-selected-default-asr-model\.json"\r?$').Count) | Should Be 0
+            ([regex]::Matches($updated, '(?m)^# selection_json = ".+selected-default-asr-model\.json"\r?$').Count) | Should Be 1
+            $updated | Should Match 'model = "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10"'
+        }
+        finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'rejects a selection record that did not pass the evidence gate' {
         $tempRoot = Join-Path $env:TEMP ('talk-set-default-asr-model-weak-' + [guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null

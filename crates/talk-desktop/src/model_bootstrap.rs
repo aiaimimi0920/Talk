@@ -7,11 +7,14 @@ use std::env;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 const MODEL_MANIFEST_FILE: &str = "model-manifest.json";
+const MODEL_DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const MODEL_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
@@ -30,17 +33,17 @@ struct InstalledModelManifest {
     archive_sha256: String,
 }
 
-pub fn default_zipformer_model_spec() -> ModelSpec {
+pub fn default_product_local_asr_model_spec() -> ModelSpec {
     ModelSpec {
-        id: "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10".to_string(),
-        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2".to_string(),
-        archive_name: "sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2".to_string(),
-        sha256: "28044b67324f7f831689f0a3761473dd2ade380e93aa53f1dbcd479ef71c40d4".to_string(),
+        id: "zipformer-zh-en-punct-int8-480ms".to_string(),
+        url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2".to_string(),
+        archive_name: "sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2".to_string(),
+        sha256: "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74".to_string(),
         required_files: vec![
             "tokens.txt".to_string(),
-            "encoder-epoch-75-avg-11-chunk-16-left-128.int8.onnx".to_string(),
-            "decoder-epoch-75-avg-11-chunk-16-left-128.onnx".to_string(),
-            "joiner-epoch-75-avg-11-chunk-16-left-128.int8.onnx".to_string(),
+            "encoder.int8.onnx".to_string(),
+            "decoder.onnx".to_string(),
+            "joiner.int8.onnx".to_string(),
         ],
     }
 }
@@ -67,13 +70,16 @@ pub fn validate_installed_model(spec: &ModelSpec, model_dir: &Path) -> Result<()
             model_dir.display()
         ));
     }
-    for required in &spec.required_files {
-        if find_file_by_name(model_dir, required)?.is_none() {
-            return Err(format!(
-                "Talk model {} is missing required file {required}",
-                spec.id
-            ));
-        }
+    let present_files = find_required_files(model_dir, &spec.required_files)?;
+    if let Some(required) = spec
+        .required_files
+        .iter()
+        .find(|required| !present_files.contains(required.as_str()))
+    {
+        return Err(format!(
+            "Talk model {} is missing required file {required}",
+            spec.id
+        ));
     }
     let marker_path = model_dir.join(MODEL_MANIFEST_FILE);
     let marker_bytes = fs::read(&marker_path).map_err(|error| {
@@ -107,6 +113,10 @@ pub fn install_model_from_reader<R: Read>(
     model_root: &Path,
 ) -> Result<PathBuf, String> {
     validate_model_spec(spec)?;
+    let destination = model_root.join(&spec.id);
+    if validate_installed_model(spec, &destination).is_ok() {
+        return Ok(destination);
+    }
     let mut archive_bytes = Vec::new();
     reader
         .read_to_end(&mut archive_bytes)
@@ -118,13 +128,14 @@ pub fn install_model_from_reader<R: Read>(
             spec.id, spec.sha256
         ));
     }
-    install_verified_model_archive(spec, &archive_bytes, model_root)
+    install_verified_model_from_reader(spec, Cursor::new(archive_bytes), model_root)
 }
 
 pub async fn download_and_install_model(
     spec: &ModelSpec,
     model_root: &Path,
 ) -> Result<PathBuf, String> {
+    validate_model_spec(spec)?;
     let destination = model_root.join(&spec.id);
     if validate_installed_model(spec, &destination).is_ok() {
         return Ok(destination);
@@ -138,98 +149,117 @@ pub async fn download_and_install_model(
             downloads.display()
         )
     })?;
-    let partial_path = downloads.join(format!("{}.partial", spec.archive_name));
-    let response = reqwest::Client::new()
-        .get(&spec.url)
-        .send()
-        .await
-        .map_err(|error| format!("download Talk model {}: {error}", spec.id))?
-        .error_for_status()
-        .map_err(|error| format!("download Talk model {}: {error}", spec.id))?;
-    let mut output = tokio::fs::File::create(&partial_path)
-        .await
-        .map_err(|error| {
-            format!(
-                "write Talk model partial archive {}: {error}",
-                partial_path.display()
-            )
-        })?;
-    let mut stream = response.bytes_stream();
-    let mut hasher = Sha256::new();
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result
-            .map_err(|error| format!("read Talk model download {}: {error}", spec.id))?;
-        hasher.update(&chunk);
-        output.write_all(&chunk).await.map_err(|error| {
-            format!(
-                "write Talk model partial archive {}: {error}",
-                partial_path.display()
-            )
-        })?;
-    }
-    output.flush().await.map_err(|error| {
-        format!(
-            "flush Talk model partial archive {}: {error}",
-            partial_path.display()
-        )
-    })?;
-    drop(output);
-    let actual_hash = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if actual_hash != spec.sha256.to_ascii_lowercase() {
-        let _ = tokio::fs::remove_file(&partial_path).await;
-        return Err(format!(
-            "Talk model archive SHA-256 mismatch for {}: expected {}, got {actual_hash}",
-            spec.id, spec.sha256
-        ));
-    }
-
-    let install_spec = spec.clone();
-    let install_root = model_root.to_path_buf();
-    let install_archive = partial_path.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let file = fs::File::open(&install_archive).map_err(|error| {
-            format!(
-                "open Talk model partial archive {}: {error}",
-                install_archive.display()
-            )
-        })?;
-        install_model_from_reader(&install_spec, file, &install_root)
-    })
-    .await
-    .map_err(|error| format!("join Talk model installation worker: {error}"))?;
-    if result.is_ok() {
-        tokio::fs::remove_file(&partial_path)
+    let partial_path = downloads.join(format!(
+        "{}.{}.partial",
+        spec.archive_name,
+        Uuid::new_v4().simple()
+    ));
+    let install_result = async {
+        let client = reqwest::Client::builder()
+            .connect_timeout(MODEL_DOWNLOAD_CONNECT_TIMEOUT)
+            .timeout(MODEL_DOWNLOAD_TIMEOUT)
+            .build()
+            .map_err(|error| format!("configure Talk model download client: {error}"))?;
+        let response = client
+            .get(&spec.url)
+            .send()
+            .await
+            .map_err(|error| format!("download Talk model {}: {error}", spec.id))?
+            .error_for_status()
+            .map_err(|error| format!("download Talk model {}: {error}", spec.id))?;
+        let mut output = tokio::fs::File::create(&partial_path)
             .await
             .map_err(|error| {
                 format!(
-                    "remove Talk model partial archive {}: {error}",
+                    "write Talk model partial archive {}: {error}",
                     partial_path.display()
                 )
             })?;
+        let mut stream = response.bytes_stream();
+        let mut hasher = Sha256::new();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result
+                .map_err(|error| format!("read Talk model download {}: {error}", spec.id))?;
+            hasher.update(&chunk);
+            output.write_all(&chunk).await.map_err(|error| {
+                format!(
+                    "write Talk model partial archive {}: {error}",
+                    partial_path.display()
+                )
+            })?;
+        }
+        output.flush().await.map_err(|error| {
+            format!(
+                "flush Talk model partial archive {}: {error}",
+                partial_path.display()
+            )
+        })?;
+        drop(output);
+        let actual_hash = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual_hash != spec.sha256.to_ascii_lowercase() {
+            return Err(format!(
+                "Talk model archive SHA-256 mismatch for {}: expected {}, got {actual_hash}",
+                spec.id, spec.sha256
+            ));
+        }
+
+        let install_spec = spec.clone();
+        let install_root = model_root.to_path_buf();
+        let install_archive = partial_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let file = fs::File::open(&install_archive).map_err(|error| {
+                format!(
+                    "open Talk model partial archive {}: {error}",
+                    install_archive.display()
+                )
+            })?;
+            install_verified_model_from_reader(&install_spec, file, &install_root)
+        })
+        .await
+        .map_err(|error| format!("join Talk model installation worker: {error}"))?
     }
-    result
+    .await;
+
+    let cleanup_error = match tokio::fs::remove_file(&partial_path).await {
+        Ok(()) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => Some(format!(
+            "remove Talk model partial archive {}: {error}",
+            partial_path.display()
+        )),
+    };
+    finish_model_install(install_result, cleanup_error)
 }
 
-fn install_verified_model_archive(
+fn finish_model_install(
+    install_result: Result<PathBuf, String>,
+    cleanup_error: Option<String>,
+) -> Result<PathBuf, String> {
+    match (install_result, cleanup_error) {
+        (Ok(destination), Some(cleanup_error)) => {
+            eprintln!(
+                "Talk model install succeeded, but partial archive cleanup failed: {cleanup_error}"
+            );
+            Ok(destination)
+        }
+        (Ok(destination), None) => Ok(destination),
+        (Err(error), None) => Err(error),
+        (Err(error), Some(cleanup_error)) => Err(format!("{error}; {cleanup_error}")),
+    }
+}
+
+fn install_verified_model_from_reader<R: Read>(
     spec: &ModelSpec,
-    archive_bytes: &[u8],
+    reader: R,
     model_root: &Path,
 ) -> Result<PathBuf, String> {
     fs::create_dir_all(model_root)
         .map_err(|error| format!("create Talk model root {}: {error}", model_root.display()))?;
-    let temp_dir = model_root.join(format!(
-        ".{}.tmp-{}-{}",
-        spec.id,
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("resolve Talk model extraction timestamp: {error}"))?
-            .as_nanos()
-    ));
+    let temp_dir = model_root.join(format!(".{}.tmp-{}", spec.id, Uuid::new_v4().simple()));
     fs::create_dir_all(&temp_dir).map_err(|error| {
         format!(
             "create Talk model temp directory {}: {error}",
@@ -237,7 +267,7 @@ fn install_verified_model_archive(
         )
     })?;
 
-    let extraction_result = extract_model_archive(archive_bytes, &temp_dir);
+    let extraction_result = extract_model_archive(reader, &temp_dir);
     let package_root = match extraction_result {
         Ok(root) => root,
         Err(error) => {
@@ -245,53 +275,107 @@ fn install_verified_model_archive(
             return Err(error);
         }
     };
-    for required in &spec.required_files {
-        if find_file_by_name(&package_root, required)?.is_none() {
+    let present_files = match find_required_files(&package_root, &spec.required_files) {
+        Ok(present_files) => present_files,
+        Err(error) => {
             let _ = fs::remove_dir_all(&temp_dir);
-            return Err(format!(
-                "Talk model archive {} is missing required file {required}",
-                spec.archive_name
-            ));
+            return Err(error);
         }
+    };
+    if let Some(required) = spec
+        .required_files
+        .iter()
+        .find(|required| !present_files.contains(required.as_str()))
+    {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(format!(
+            "Talk model archive {} is missing required file {required}",
+            spec.archive_name
+        ));
     }
     let marker = InstalledModelManifest {
         schema_version: 1,
         model_id: spec.id.clone(),
         archive_sha256: spec.sha256.to_ascii_lowercase(),
     };
-    let marker_bytes = serde_json::to_vec_pretty(&marker)
-        .map_err(|error| format!("serialize Talk model manifest: {error}"))?;
-    fs::write(package_root.join(MODEL_MANIFEST_FILE), marker_bytes)
-        .map_err(|error| format!("write Talk model manifest: {error}"))?;
+    let marker_bytes = match serde_json::to_vec_pretty(&marker) {
+        Ok(marker_bytes) => marker_bytes,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(format!("serialize Talk model manifest: {error}"));
+        }
+    };
+    if let Err(error) = fs::write(package_root.join(MODEL_MANIFEST_FILE), marker_bytes) {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(format!("write Talk model manifest: {error}"));
+    }
 
     let destination = model_root.join(&spec.id);
-    if destination.exists() {
-        fs::remove_dir_all(&destination).map_err(|error| {
-            format!(
-                "remove invalid Talk model directory {}: {error}",
-                destination.display()
-            )
-        })?;
+    if validate_installed_model(spec, &destination).is_ok() {
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Ok(destination);
     }
-    fs::rename(&package_root, &destination).map_err(|error| {
-        format!(
+
+    let displaced_destination =
+        model_root.join(format!(".{}.invalid-{}", spec.id, Uuid::new_v4().simple()));
+    let displaced_destination = if destination.exists() {
+        match fs::rename(&destination, &displaced_destination) {
+            Ok(()) => Some(displaced_destination),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                if validate_installed_model(spec, &destination).is_ok() {
+                    let _ = fs::remove_dir_all(&temp_dir);
+                    return Ok(destination);
+                }
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(format!(
+                    "quarantine invalid Talk model directory {}: {error}",
+                    destination.display()
+                ));
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Err(error) = fs::rename(&package_root, &destination) {
+        if validate_installed_model(spec, &destination).is_ok() {
+            let _ = fs::remove_dir_all(&temp_dir);
+            if let Some(displaced_destination) = displaced_destination {
+                let _ = fs::remove_dir_all(displaced_destination);
+            }
+            return Ok(destination);
+        }
+        if !destination.exists() {
+            if let Some(displaced_destination) = displaced_destination.as_ref() {
+                let _ = fs::rename(displaced_destination, &destination);
+            }
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(format!(
             "activate Talk model {} -> {}: {error}",
             package_root.display(),
             destination.display()
-        )
-    })?;
-    fs::remove_dir_all(&temp_dir).map_err(|error| {
-        format!(
-            "remove Talk model temp directory {}: {error}",
-            temp_dir.display()
-        )
-    })?;
-    validate_installed_model(spec, &destination)?;
+        ));
+    }
+
+    if let Err(error) = validate_installed_model(spec, &destination) {
+        let _ = fs::remove_dir_all(&destination);
+        if let Some(displaced_destination) = displaced_destination.as_ref() {
+            let _ = fs::rename(displaced_destination, &destination);
+        }
+        let _ = fs::remove_dir_all(&temp_dir);
+        return Err(error);
+    }
+    if let Some(displaced_destination) = displaced_destination {
+        let _ = fs::remove_dir_all(displaced_destination);
+    }
+    let _ = fs::remove_dir_all(&temp_dir);
     Ok(destination)
 }
 
-fn extract_model_archive(archive_bytes: &[u8], destination: &Path) -> Result<PathBuf, String> {
-    let decoder = BzDecoder::new(Cursor::new(archive_bytes));
+fn extract_model_archive<R: Read>(reader: R, destination: &Path) -> Result<PathBuf, String> {
+    let decoder = BzDecoder::new(reader);
     let mut archive = Archive::new(decoder);
     let entries = archive
         .entries()
@@ -370,6 +454,21 @@ fn validate_model_spec(spec: &ModelSpec) -> Result<(), String> {
             spec.id
         ));
     }
+    for (field_name, value) in [
+        ("id", spec.id.as_str()),
+        ("archive_name", spec.archive_name.as_str()),
+    ] {
+        let path = Path::new(value);
+        let mut components = path.components();
+        if value.trim() != value
+            || !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(format!(
+                "Talk model catalog {field_name} must be a single safe path component: {value}"
+            ));
+        }
+    }
     for required in &spec.required_files {
         let path = Path::new(required);
         let mut components = path.components();
@@ -400,7 +499,9 @@ fn validate_archive_relative_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn find_file_by_name(root: &Path, required_name: &str) -> Result<Option<PathBuf>, String> {
+fn find_required_files(root: &Path, required_files: &[String]) -> Result<BTreeSet<String>, String> {
+    let targets = required_files.iter().cloned().collect::<BTreeSet<_>>();
+    let mut found = BTreeSet::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         let entries = fs::read_dir(&directory).map_err(|error| {
@@ -419,12 +520,18 @@ fn find_file_by_name(root: &Path, required_name: &str) -> Result<Option<PathBuf>
             })?;
             if file_type.is_dir() {
                 pending.push(path);
-            } else if file_type.is_file() && entry.file_name().to_string_lossy() == required_name {
-                return Ok(Some(path));
+            } else if file_type.is_file() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if targets.contains(&name) {
+                    found.insert(name);
+                    if found.len() == targets.len() {
+                        return Ok(found);
+                    }
+                }
             }
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -432,4 +539,35 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::finish_model_install;
+    use std::path::PathBuf;
+
+    #[test]
+    fn cleanup_failure_does_not_mask_a_successful_model_install() {
+        let destination = PathBuf::from("model-destination");
+
+        let result = finish_model_install(
+            Ok(destination.clone()),
+            Some("partial archive is locked".to_string()),
+        );
+
+        assert_eq!(result, Ok(destination));
+    }
+
+    #[test]
+    fn cleanup_failure_is_appended_to_a_failed_model_install() {
+        let result = finish_model_install(
+            Err("archive extraction failed".to_string()),
+            Some("partial archive is locked".to_string()),
+        );
+
+        assert_eq!(
+            result,
+            Err("archive extraction failed; partial archive is locked".to_string())
+        );
+    }
 }

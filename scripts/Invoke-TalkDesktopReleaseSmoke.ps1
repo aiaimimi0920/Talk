@@ -861,6 +861,26 @@ function Get-ChildWindowTexts {
     $script:talkDesktopChildTexts.ToArray()
 }
 
+function Get-TalkDesktopLastChildWindowByClass {
+    param(
+        [Parameter(Mandatory = $true)][System.IntPtr]$Hwnd,
+        [Parameter(Mandatory = $true)][string]$ClassName
+    )
+
+    Ensure-TalkDesktopSmokeWin32Type
+    $script:talkDesktopChildClassMatch = [System.IntPtr]::Zero
+    $callback = [TalkDesktopSmokeWin32+EnumWindowsProc]{
+        param([System.IntPtr]$child, [System.IntPtr]$lParam)
+        if ((Get-WindowClass -Hwnd $child) -ieq $ClassName) {
+            $script:talkDesktopChildClassMatch = $child
+        }
+        return $true
+    }
+
+    [void][TalkDesktopSmokeWin32]::EnumChildWindows($Hwnd, $callback, [System.IntPtr]::Zero)
+    $script:talkDesktopChildClassMatch
+}
+
 function Get-TalkDesktopDialogText {
     param([Parameter(Mandatory = $true)][System.IntPtr]$DialogHwnd)
 
@@ -894,12 +914,15 @@ function Send-TalkDesktopMenuCommand {
     )
 
     $WM_COMMAND = 0x0111
-    [void][TalkDesktopSmokeWin32]::PostMessageW(
+    $posted = [TalkDesktopSmokeWin32]::PostMessageW(
         $Hwnd,
         $WM_COMMAND,
         [System.IntPtr]$CommandId,
         [System.IntPtr]::Zero
     )
+    if (-not $posted) {
+        throw "Failed to post Talk desktop menu command $CommandId to window $Hwnd"
+    }
 }
 
 function New-TalkDesktopMouseLParam {
@@ -1058,6 +1081,23 @@ function Get-TalkDesktopCopyPopupCopyButtonClickPoint {
     $size = Get-TalkDesktopWindowClientSize -Hwnd $Hwnd
     $dpi = Get-TalkDesktopWindowDpi -Hwnd $Hwnd
     Get-TalkDesktopCopyPopupCopyButtonClickPointForDpi -Width $size.Width -Height $size.Height -Dpi $dpi
+}
+
+function Activate-TalkDesktopCopyPopupEditor {
+    param([Parameter(Mandatory = $true)][System.IntPtr]$Hwnd)
+
+    $size = Get-TalkDesktopWindowClientSize -Hwnd $Hwnd
+    Send-TalkDesktopWindowLeftClick `
+        -Hwnd $Hwnd `
+        -X ([int][Math]::Floor($size.Width / 2)) `
+        -Y ([int][Math]::Floor($size.Height / 2))
+    Start-Sleep -Milliseconds 150
+
+    $editHwnd = Get-TalkDesktopLastChildWindowByClass -Hwnd $Hwnd -ClassName 'Edit'
+    if ($editHwnd -eq [System.IntPtr]::Zero) {
+        throw "Talk desktop copy popup has no EDIT child control"
+    }
+    $editHwnd
 }
 
 function Send-TalkDesktopWindowLeftClick {
@@ -1635,6 +1675,116 @@ function Format-TalkDesktopSmokeWindowHandleForEnv {
     '0x{0:X}' -f $Hwnd.ToInt64()
 }
 
+function Wait-TalkDesktopStartupConfigSettled {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][System.IntPtr]$Hwnd,
+        [System.Diagnostics.Stopwatch]$StartupStopwatch,
+        [int]$TimeoutMs = 15000
+    )
+
+    if ($null -eq $StartupStopwatch) {
+        $StartupStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    }
+    $waitStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastStatusText = ''
+    $loadingStatusObserved = $false
+    $probeCount = 0
+    do {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "Talk desktop exited before startup configuration settled (exit code $($Process.ExitCode))"
+        }
+
+        $probeCount += 1
+        Send-TalkDesktopMenuCommand -Hwnd $Hwnd -CommandId 1004
+        $dialog = Find-DialogByProcessIdAndTitle `
+            -TargetProcessId $Process.Id `
+            -Title 'Talk status' `
+            -TimeoutMs 1000
+        if ($dialog -ne [System.IntPtr]::Zero) {
+            try {
+                $lastStatusText = Wait-TalkDesktopDialogText `
+                    -DialogHwnd $dialog `
+                    -ExpectedText 'Current:' `
+                    -TimeoutMs 1000
+            }
+            finally {
+                Close-TalkDesktopDialog -DialogHwnd $dialog
+                Wait-TalkDesktopDialogClosed `
+                    -TargetProcessId $Process.Id `
+                    -Title 'Talk status' `
+                    -TimeoutMs 1000
+            }
+            if ($lastStatusText -like '*Current: Talk: loading config*') {
+                $loadingStatusObserved = $true
+            } else {
+                return [pscustomobject][ordered]@{
+                    StatusText = $lastStatusText
+                    ConfigSettledElapsedMs = [long]$StartupStopwatch.ElapsedMilliseconds
+                    ConfigSettleWaitElapsedMs = [long]$waitStopwatch.ElapsedMilliseconds
+                    LoadingStatusObserved = $loadingStatusObserved
+                    StatusProbeCount = $probeCount
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ($waitStopwatch.ElapsedMilliseconds -lt $TimeoutMs)
+
+    throw "Talk desktop startup configuration did not settle within ${TimeoutMs}ms. Last status: [$lastStatusText]"
+}
+
+function Wait-TalkDesktopStatusText {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][System.IntPtr]$Hwnd,
+        [Parameter(Mandatory = $true)][string]$ExpectedText,
+        [int]$TimeoutMs = 15000
+    )
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastStatusText = ''
+    $probeCount = 0
+    do {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "Talk desktop exited while waiting for status [$ExpectedText] (exit code $($Process.ExitCode))"
+        }
+
+        $probeCount += 1
+        Send-TalkDesktopMenuCommand -Hwnd $Hwnd -CommandId 1004
+        $dialog = Find-DialogByProcessIdAndTitle `
+            -TargetProcessId $Process.Id `
+            -Title 'Talk status' `
+            -TimeoutMs 1000
+        if ($dialog -ne [System.IntPtr]::Zero) {
+            try {
+                $lastStatusText = Wait-TalkDesktopDialogText `
+                    -DialogHwnd $dialog `
+                    -ExpectedText 'Current:' `
+                    -TimeoutMs 1000
+            }
+            finally {
+                Close-TalkDesktopDialog -DialogHwnd $dialog
+                Wait-TalkDesktopDialogClosed `
+                    -TargetProcessId $Process.Id `
+                    -Title 'Talk status' `
+                    -TimeoutMs 1000
+            }
+            if ($lastStatusText -like "*$ExpectedText*") {
+                return [pscustomobject][ordered]@{
+                    StatusText = $lastStatusText
+                    ElapsedMs = [long]$stopwatch.ElapsedMilliseconds
+                    StatusProbeCount = $probeCount
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ($stopwatch.ElapsedMilliseconds -lt $TimeoutMs)
+
+    throw "Talk desktop status [$ExpectedText] was not observed within ${TimeoutMs}ms. Last status: [$lastStatusText]"
+}
+
 function Start-TalkDesktopSmokeInstance {
     param(
         [Parameter(Mandatory = $true)][string]$TalkDesktopBinaryPath,
@@ -1642,6 +1792,8 @@ function Start-TalkDesktopSmokeInstance {
         [hashtable]$EnvironmentOverrides = @{}
     )
 
+    $startupStartedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $startupStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $previousValues = @{}
     foreach ($name in $EnvironmentOverrides.Keys) {
         $previousValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -1654,6 +1806,7 @@ function Start-TalkDesktopSmokeInstance {
             -ArgumentList @('--config', $ConfigPath) `
             -PassThru `
             -WindowStyle Hidden
+        $processStartedElapsedMs = [long]$startupStopwatch.ElapsedMilliseconds
     }
     finally {
         foreach ($name in $EnvironmentOverrides.Keys) {
@@ -1669,11 +1822,41 @@ function Start-TalkDesktopSmokeInstance {
         try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
         throw "Failed to find Talk desktop window for pid $($process.Id)"
     }
+    $windowReadyElapsedMs = [long]$startupStopwatch.ElapsedMilliseconds
+
+    try {
+        $startupStatus = Wait-TalkDesktopStartupConfigSettled `
+            -Process $process `
+            -Hwnd $hwnd `
+            -StartupStopwatch $startupStopwatch
+    }
+    catch {
+        try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+        throw
+    }
+
+    $startupMetricsPath = Join-Path (Split-Path -Parent $ConfigPath) 'startup-metrics.json'
+    $startupMetrics = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        processId = $process.Id
+        startedAtUtc = $startupStartedAtUtc
+        processStartedElapsedMs = $processStartedElapsedMs
+        windowReadyElapsedMs = $windowReadyElapsedMs
+        configSettledElapsedMs = [long]$startupStatus.ConfigSettledElapsedMs
+        configSettleWaitElapsedMs = [long]$startupStatus.ConfigSettleWaitElapsedMs
+        shellReadyBeforeConfigSettled = ($windowReadyElapsedMs -le [long]$startupStatus.ConfigSettledElapsedMs)
+        loadingStatusObserved = [bool]$startupStatus.LoadingStatusObserved
+        statusProbeCount = [int]$startupStatus.StatusProbeCount
+    }
+    Write-TalkDesktopSmokeJson -Path $startupMetricsPath -Value $startupMetrics
 
     [PSCustomObject]@{
         Process = $process
         Hwnd = $hwnd
         ConfigPath = $ConfigPath
+        StartupStatusText = [string]$startupStatus.StatusText
+        StartupMetrics = $startupMetrics
+        StartupMetricsPath = $startupMetricsPath
     }
 }
 
@@ -4107,6 +4290,8 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupKeyboardEnterS
             )
 
             Set-TalkDesktopClipboardText -Value 'talk-copy-popup-pending'
+            $editHwnd = Activate-TalkDesktopCopyPopupEditor -Hwnd $popupHwnd
+            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x09
             Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D
             Start-Sleep -Milliseconds 150
             Wait-TalkDesktopVisibleWindowByProcessIdAndClass `
@@ -4114,15 +4299,20 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupKeyboardEnterS
                 -ClassName 'TalkDesktopCopyPopupWindow' `
                 -TimeoutMs 1000 | Out-Null
             $copiedText = Get-TalkDesktopClipboardText
-            if ($copiedText.Trim() -ne 'assistant reply from audio input chat') {
+            if ($copiedText -cne 'assistant reply from audio input chat') {
                 throw "Expected popup copy text [assistant reply from audio input chat], got [$copiedText]"
             }
             Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-keyboard-enter-copied'
-            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B
+            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x09
+            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x09
+            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x0D
             Wait-TalkDesktopWindowHiddenByProcessIdAndClass `
                 -TargetProcessId $instance.Process.Id `
                 -ClassName 'TalkDesktopCopyPopupWindow' `
                 -TimeoutMs 5000
+            if (-not (Wait-TalkDesktopForegroundWindow -TargetHwnd $alternateTarget.Hwnd -TimeoutMs 5000)) {
+                throw "Expected popup Escape to restore the alternate text target foreground window"
+            }
             Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-keyboard-enter-closed'
 
             [pscustomobject][ordered]@{
@@ -4150,11 +4340,15 @@ function Invoke-OpenAiCompatibleChatAudioInputFocusSwitchCopyPopupKeyboardEscape
             )
 
             Set-TalkDesktopClipboardText -Value 'talk-copy-popup-escape-sentinel'
-            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $popupHwnd -VirtualKey 0x1B
+            $editHwnd = Activate-TalkDesktopCopyPopupEditor -Hwnd $popupHwnd
+            Send-TalkDesktopWindowVirtualKeyInput -Hwnd $editHwnd -VirtualKey 0x1B
             Wait-TalkDesktopWindowHiddenByProcessIdAndClass `
                 -TargetProcessId $instance.Process.Id `
                 -ClassName 'TalkDesktopCopyPopupWindow' `
                 -TimeoutMs 5000
+            if (-not (Wait-TalkDesktopForegroundWindow -TargetHwnd $alternateTarget.Hwnd -TimeoutMs 5000)) {
+                throw "Expected popup Escape to restore the alternate text target foreground window"
+            }
             Write-TalkSmokeProgress -Path $progressPath -Message 'copy-popup-keyboard-escape-closed'
             Start-Sleep -Milliseconds 150
             $clipboardText = Get-TalkDesktopClipboardText
@@ -4237,14 +4431,7 @@ function Invoke-BrokenConfigRecoverySmoke {
     $instance = $null
     try {
         $instance = Start-TalkDesktopSmokeInstance -TalkDesktopBinaryPath $TalkDesktopBinaryPath -ConfigPath $configPath
-        Start-Sleep -Milliseconds 700
-
-        Send-TalkDesktopMenuCommand -Hwnd $instance.Hwnd -CommandId 1004
-        $beforeReloadDialog = Find-DialogByProcessIdAndTitle -TargetProcessId $instance.Process.Id -Title 'Talk status' -TimeoutMs 5000
-        if ($beforeReloadDialog -eq [System.IntPtr]::Zero) {
-            throw 'Talk status dialog did not open for broken-config-recovery pre-reload state'
-        }
-        $beforeReloadText = Wait-TalkDesktopDialogText -DialogHwnd $beforeReloadDialog -ExpectedText 'Current: Talk: config unavailable'
+        $beforeReloadText = [string]$instance.StartupStatusText
         $beforeReloadStatusFields = Convert-TalkDesktopStatusTextToMap -DialogText $beforeReloadText
         $beforeReloadStatusKind = Get-TalkDesktopStatusKind -Fields $beforeReloadStatusFields
         $beforeReloadStatusSummary = Get-TalkDesktopStatusSummary -Fields $beforeReloadStatusFields
@@ -4254,19 +4441,14 @@ function Invoke-BrokenConfigRecoverySmoke {
             -ExpectedFields ([ordered]@{
                 Current = 'Talk: config unavailable'
             })
-        Close-TalkDesktopDialog -DialogHwnd $beforeReloadDialog
-        Wait-TalkDesktopDialogClosed -TargetProcessId $instance.Process.Id -Title 'Talk status'
 
         Write-TalkSmokeConfig -ConfigPath $configPath -Hotkey 'Ctrl+Alt+F22' -Transcript 'recovered config smoke'
         Send-TalkDesktopMenuCommand -Hwnd $instance.Hwnd -CommandId 1007
-        Start-Sleep -Milliseconds 900
-
-        Send-TalkDesktopMenuCommand -Hwnd $instance.Hwnd -CommandId 1004
-        $afterReloadDialog = Find-DialogByProcessIdAndTitle -TargetProcessId $instance.Process.Id -Title 'Talk status' -TimeoutMs 5000
-        if ($afterReloadDialog -eq [System.IntPtr]::Zero) {
-            throw 'Talk status dialog did not reopen after config reload'
-        }
-        $afterReloadText = Wait-TalkDesktopDialogText -DialogHwnd $afterReloadDialog -ExpectedText 'Current: Talk: idle'
+        $reloadStatus = Wait-TalkDesktopStatusText `
+            -Process $instance.Process `
+            -Hwnd $instance.Hwnd `
+            -ExpectedText 'Current: Talk: idle'
+        $afterReloadText = [string]$reloadStatus.StatusText
         $afterReloadStatusFields = Convert-TalkDesktopStatusTextToMap -DialogText $afterReloadText
         $afterReloadStatusKind = Get-TalkDesktopStatusKind -Fields $afterReloadStatusFields
         $afterReloadStatusSummary = Get-TalkDesktopStatusSummary -Fields $afterReloadStatusFields
@@ -4279,15 +4461,16 @@ function Invoke-BrokenConfigRecoverySmoke {
                 'Audio backend' = 'silent'
                 'Clipboard backend' = 'dry_run'
             })
-        Close-TalkDesktopDialog -DialogHwnd $afterReloadDialog
-        Wait-TalkDesktopDialogClosed -TargetProcessId $instance.Process.Id -Title 'Talk status'
 
         Send-TalkDesktopMenuCommand -Hwnd $instance.Hwnd -CommandId 1001
-        Start-Sleep -Milliseconds 400
+        $listeningStatus = Wait-TalkDesktopStatusText `
+            -Process $instance.Process `
+            -Hwnd $instance.Hwnd `
+            -ExpectedText 'Current: Talk: listening'
+        $cancelStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         Send-TalkDesktopMenuCommand -Hwnd $instance.Hwnd -CommandId 1003
-        Start-Sleep -Milliseconds 1200
 
-        $log = Get-LatestSessionLog -LogsDir (Join-Path $ScenarioRoot 'logs')
+        $log = Wait-LatestSessionLog -LogsDir (Join-Path $ScenarioRoot 'logs')
         $session = Get-Content -LiteralPath $log.FullName -Raw | ConvertFrom-Json
         if ($session.status -ne 'cancelled') {
             throw "Expected cancelled session after config reload, got [$($session.status)]"
@@ -4309,6 +4492,15 @@ function Invoke-BrokenConfigRecoverySmoke {
             AfterReloadStatusFields = $afterReloadStatusFields
             BeforeReloadStatusSnapshot = $beforeReloadStatusSnapshot
             AfterReloadStatusSnapshot = $afterReloadStatusSnapshot
+            StartupMetricsPath = $instance.StartupMetricsPath
+            StartupMetrics = $instance.StartupMetrics
+            ReloadRecoveryElapsedMs = [long]$reloadStatus.ElapsedMs
+            ReloadStatusProbeCount = [int]$reloadStatus.StatusProbeCount
+            ListeningStatusText = [string]$listeningStatus.StatusText
+            ListeningReadyElapsedMs = [long]$listeningStatus.ElapsedMs
+            ListeningStatusProbeCount = [int]$listeningStatus.StatusProbeCount
+            CancelPersistenceElapsedMs = [long]$cancelStopwatch.ElapsedMilliseconds
+            StateSequence = @('config_unavailable', 'idle', 'listening', 'cancelled')
         }
     }
     finally {
@@ -4501,9 +4693,26 @@ function Invoke-TalkDesktopReleaseSmoke {
                 throw "Unsupported Talk desktop smoke scenario: $scenarioName"
             }
         }
+
+        $scenarioResult = $results[$results.Count - 1]
+        $scenarioResultPath = Join-Path $scenarioRoot 'result.json'
+        $scenarioResult | Add-Member `
+            -NotePropertyName ResultPath `
+            -NotePropertyValue $scenarioResultPath `
+            -Force
+        Write-TalkDesktopSmokeJson -Path $scenarioResultPath -Value $scenarioResult
     }
 
     $resultItems = $results.ToArray()
+    $runSummaryPath = Join-Path $effectiveSmokeRoot 'run-summary.json'
+    Write-TalkDesktopSmokeJson `
+        -Path $runSummaryPath `
+        -Value ([pscustomobject][ordered]@{
+            schemaVersion = 1
+            binaryPath = $talkDesktopBinaryPath
+            scenarioCount = $resultItems.Count
+            scenarios = $resultItems
+        })
     if (-not $ContinueOnFailure) {
         Assert-TalkDesktopSmokeResultsPassed -Results $resultItems
     }

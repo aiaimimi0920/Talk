@@ -59,6 +59,7 @@ dir = ".runtime/talk/logs"
         config.output.clipboard_backend,
         ClipboardBackendMode::Fallback
     );
+    assert_eq!(config.speculative.max_auto_patch_edit_ratio, 0.35);
     assert_eq!(config.default_voice_mode(), VoiceMode::Smart);
 }
 
@@ -536,6 +537,39 @@ final_timeout_ms = 0
     );
 }
 
+#[test]
+fn missing_streaming_service_is_reported_alongside_other_config_problems() {
+    let raw = speculative_streaming_service_config_with(
+        r#"
+endpoint = "ws://127.0.0.1:53171/asr"
+sample_rate_hz = 16000
+channels = 1
+connect_timeout_ms = 1000
+idle_timeout_ms = 3000
+final_timeout_ms = 7000
+"#,
+    );
+    let mut config = TalkConfig::from_toml_str(&raw).expect("valid streaming service config");
+    config.speculative.streaming_service = None;
+    config.logging.dir = " ".into();
+
+    let error = config
+        .validate()
+        .expect_err("missing streaming service config must fail");
+    let message = error.to_string();
+
+    assert!(
+        message.contains(
+            "speculative.streaming_service must be set when local_asr is streaming_service"
+        ),
+        "error={error}"
+    );
+    assert!(
+        message.contains("logging.dir must not be empty"),
+        "missing streaming_service must not swallow later config problems, error={error}"
+    );
+}
+
 fn speculative_streaming_service_config_with(streaming_service_table: &str) -> String {
     format!(
         r#"
@@ -573,7 +607,7 @@ cloud_correction = "disabled"
 }
 
 #[test]
-fn parses_optional_desktop_shortcut_routes() {
+fn upgrades_legacy_right_alt_auxiliary_shortcuts_to_right_ctrl_routes() {
     let raw = r#"
 voice_mode = "dictate"
 
@@ -608,11 +642,11 @@ dir = ".runtime/talk/logs"
 
     assert_eq!(
         config.desktop.shortcuts.translate_shortcut.as_deref(),
-        Some("RightAlt+/")
+        Some("RightCtrl+/")
     );
     assert_eq!(
         config.desktop.shortcuts.ask_shortcut.as_deref(),
-        Some("RightAlt+Space")
+        Some("RightCtrl+Space")
     );
 }
 
@@ -767,6 +801,15 @@ dir = ".runtime/talk/logs"
 "#;
 
     let config = TalkConfig::from_toml_str(raw).expect("desktop paste overrides should parse");
+
+    assert_eq!(
+        config.desktop.shortcuts.translate_shortcut.as_deref(),
+        Some("RightCtrl+/")
+    );
+    assert_eq!(
+        config.desktop.shortcuts.ask_shortcut.as_deref(),
+        Some("RightCtrl+Space")
+    );
 
     assert_eq!(config.desktop.paste.shortcut_overrides.len(), 2);
     assert_eq!(
@@ -2063,11 +2106,11 @@ fn parses_desktop_http_live_example_config() {
     assert_eq!(config.default_voice_mode(), VoiceMode::Dictate);
     assert_eq!(
         config.desktop.shortcuts.translate_shortcut.as_deref(),
-        Some("RightAlt+/")
+        Some("RightCtrl+/")
     );
     assert_eq!(
         config.desktop.shortcuts.ask_shortcut.as_deref(),
-        Some("RightAlt+Space")
+        Some("RightCtrl+Space")
     );
 }
 
@@ -2128,11 +2171,11 @@ fn parses_desktop_openai_compatible_live_example_config() {
     assert_eq!(config.default_voice_mode(), VoiceMode::Dictate);
     assert_eq!(
         config.desktop.shortcuts.translate_shortcut.as_deref(),
-        Some("RightAlt+/")
+        Some("RightCtrl+/")
     );
     assert_eq!(
         config.desktop.shortcuts.ask_shortcut.as_deref(),
-        Some("RightAlt+Space")
+        Some("RightCtrl+Space")
     );
 }
 
@@ -2197,11 +2240,11 @@ fn parses_desktop_qwen_audio_input_live_example_config() {
     assert_eq!(config.default_voice_mode(), VoiceMode::Dictate);
     assert_eq!(
         config.desktop.shortcuts.translate_shortcut.as_deref(),
-        Some("RightAlt+/")
+        Some("RightCtrl+/")
     );
     assert_eq!(
         config.desktop.shortcuts.ask_shortcut.as_deref(),
-        Some("RightAlt+Space")
+        Some("RightCtrl+Space")
     );
 }
 
@@ -2251,6 +2294,25 @@ fn parses_desktop_streaming_service_speculative_example_config() {
         config.speculative.cloud_correction,
         "provider_text_processor"
     );
+    let local_daemon = service
+        .local_daemon
+        .as_ref()
+        .expect("streaming service example should pin a local daemon model");
+    assert_eq!(
+        local_daemon.mode,
+        SpeculativeLocalAsrDaemonMode::SherpaOnline
+    );
+    assert_eq!(
+        local_daemon.model_family,
+        SpeculativeSherpaOnlineModelFamily::Transducer
+    );
+    assert_eq!(
+        local_daemon.model.as_deref(),
+        Some("zipformer-zh-en-punct-int8-480ms")
+    );
+    assert_eq!(local_daemon.enable_endpoint, Some(true));
+    assert_eq!(local_daemon.endpoint_reset, Some(true));
+    assert!(local_daemon.joiner.is_some());
     assert_eq!(service.endpoint, "ws://127.0.0.1:53171/asr");
     assert_eq!(service.sample_rate_hz, 16_000);
     assert_eq!(service.channels, 1);

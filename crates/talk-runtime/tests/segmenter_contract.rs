@@ -3,7 +3,7 @@ use talk_runtime::{evaluate_segment_readiness, SegmentReadiness, SegmenterConfig
 #[test]
 fn segmenter_commits_sentence_punctuation_after_short_pause() {
     let input = SegmenterInput {
-        text: "我明天下午三点有空。".to_string(),
+        text: "我明天下午三点有空。",
         trailing_silence_ms: 320,
         asr_marked_final: false,
     };
@@ -16,7 +16,7 @@ fn segmenter_commits_sentence_punctuation_after_short_pause() {
 #[test]
 fn segmenter_waits_for_short_text_without_pause_or_punctuation() {
     let input = SegmenterInput {
-        text: "我明天".to_string(),
+        text: "我明天",
         trailing_silence_ms: 40,
         asr_marked_final: false,
     };
@@ -29,7 +29,7 @@ fn segmenter_waits_for_short_text_without_pause_or_punctuation() {
 #[test]
 fn segmenter_forces_long_chunks_even_without_punctuation() {
     let input = SegmenterInput {
-        text: "这是一段已经超过最大本地等待长度但是用户还没有明确停顿的中文语音内容".to_string(),
+        text: "这是一段已经超过最大本地等待长度但是用户还没有明确停顿的中文语音内容",
         trailing_silence_ms: 0,
         asr_marked_final: false,
     };
@@ -42,7 +42,7 @@ fn segmenter_forces_long_chunks_even_without_punctuation() {
 #[test]
 fn segmenter_commits_short_clause_at_chinese_comma() {
     let input = SegmenterInput {
-        text: "你好，".to_string(),
+        text: "你好，",
         trailing_silence_ms: 0,
         asr_marked_final: false,
     };
@@ -55,7 +55,7 @@ fn segmenter_commits_short_clause_at_chinese_comma() {
 #[test]
 fn segmenter_waits_for_one_character_clause_at_comma() {
     let input = SegmenterInput {
-        text: "好，".to_string(),
+        text: "好，",
         trailing_silence_ms: 0,
         asr_marked_final: false,
     };

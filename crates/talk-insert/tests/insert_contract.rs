@@ -1,15 +1,25 @@
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use talk_core::TalkError;
 use talk_insert::{
-    probe_native_windows_clipboard_readiness, AroundPasteShortcut, AroundTextInserter,
-    BeforePasteShortcut, ClipboardBackend, ClipboardFallbackInserter, ClipboardPasteInserter,
-    ClipboardRestorePolicy, DryRunInserter, InsertMethod, InsertOutcome, NativeReadinessStatus,
-    PasteShortcut, TextInserter, WindowsPasteShortcut, WindowsPasteShortcutMode,
+    flush_pending_clipboard_restore, probe_native_windows_clipboard_readiness,
+    resolve_windows_paste_plan, AroundPasteShortcut, AroundTextInserter, BeforePasteShortcut,
+    ClipboardBackend, ClipboardFallbackInserter, ClipboardPasteInserter, ClipboardRestorePolicy,
+    DryRunInserter, InsertMethod, InsertOutcome, NativeReadinessStatus, PasteShortcut,
+    TextInserter, WindowsPasteOverrides, WindowsPastePlan, WindowsPasteShortcut,
+    WindowsPasteShortcutMode,
 };
 
 static NATIVE_CLIPBOARD_ENV_LOCK: Mutex<()> = Mutex::new(());
+static CLIPBOARD_INSERT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_clipboard_insert_tests() -> std::sync::MutexGuard<'static, ()> {
+    CLIPBOARD_INSERT_TEST_LOCK
+        .lock()
+        .expect("clipboard insert test mutex poisoned")
+}
 
 #[test]
 fn dry_run_inserter_reports_success_without_touching_clipboard() {
@@ -96,7 +106,103 @@ fn windows_paste_shortcut_mode_falls_back_to_ctrl_v_for_unknown_env_values() {
 }
 
 #[test]
+fn windows_paste_target_hwnd_parser_accepts_decimal_and_hex_values() {
+    assert_eq!(
+        talk_insert::resolve_windows_paste_target_hwnd_from_env_value(Some("258")),
+        Some(258)
+    );
+    assert_eq!(
+        talk_insert::resolve_windows_paste_target_hwnd_from_env_value(Some("0x202")),
+        Some(0x202)
+    );
+}
+
+#[test]
+fn windows_paste_target_hwnd_parser_ignores_blank_and_invalid_values() {
+    assert_eq!(
+        talk_insert::resolve_windows_paste_target_hwnd_from_env_value(Some(" ")),
+        None
+    );
+    assert_eq!(
+        talk_insert::resolve_windows_paste_target_hwnd_from_env_value(Some("not-a-hwnd")),
+        None
+    );
+}
+
+#[test]
+fn windows_paste_plan_prefers_explicit_values_over_thread_and_env_overrides() {
+    let explicit = WindowsPasteOverrides::new()
+        .with_shortcut_mode(WindowsPasteShortcutMode::ShiftInsert)
+        .with_target_hwnd(0x111);
+    let thread = WindowsPasteOverrides::new()
+        .with_shortcut_mode(WindowsPasteShortcutMode::ControlShiftV)
+        .with_target_hwnd(0x222);
+
+    assert_eq!(
+        resolve_windows_paste_plan(explicit, thread, Some("ctrl_v"), Some("0x333"),),
+        WindowsPastePlan {
+            shortcut_mode: WindowsPasteShortcutMode::ShiftInsert,
+            target_hwnd: Some(0x111),
+        }
+    );
+}
+
+#[test]
+fn windows_paste_plan_falls_back_to_thread_then_env_when_explicit_is_unset() {
+    let thread =
+        WindowsPasteOverrides::new().with_shortcut_mode(WindowsPasteShortcutMode::ControlShiftV);
+
+    assert_eq!(
+        resolve_windows_paste_plan(
+            WindowsPasteOverrides::default(),
+            thread,
+            Some("shift_insert"),
+            Some("0x202"),
+        ),
+        WindowsPastePlan {
+            shortcut_mode: WindowsPasteShortcutMode::ControlShiftV,
+            target_hwnd: Some(0x202),
+        }
+    );
+
+    assert_eq!(
+        resolve_windows_paste_plan(
+            WindowsPasteOverrides::default(),
+            WindowsPasteOverrides::default(),
+            Some("shift_insert"),
+            Some("258"),
+        ),
+        WindowsPastePlan {
+            shortcut_mode: WindowsPasteShortcutMode::ShiftInsert,
+            target_hwnd: Some(258),
+        }
+    );
+}
+
+#[test]
+fn windows_paste_thread_overrides_install_and_restore_without_touching_env() {
+    let previous = talk_insert::set_windows_paste_thread_overrides(
+        WindowsPasteOverrides::new()
+            .with_shortcut_mode(WindowsPasteShortcutMode::ShiftInsert)
+            .with_target_hwnd(0xABC),
+    );
+    assert_eq!(
+        talk_insert::windows_paste_thread_overrides(),
+        WindowsPasteOverrides::new()
+            .with_shortcut_mode(WindowsPasteShortcutMode::ShiftInsert)
+            .with_target_hwnd(0xABC),
+    );
+    let restored = talk_insert::set_windows_paste_thread_overrides(previous);
+    assert_eq!(
+        restored.shortcut_mode,
+        Some(WindowsPasteShortcutMode::ShiftInsert)
+    );
+    assert_eq!(talk_insert::windows_paste_thread_overrides(), previous);
+}
+
+#[test]
 fn clipboard_paste_inserter_writes_text_sends_paste_and_restores_original_clipboard() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls.clone());
@@ -133,6 +239,7 @@ fn clipboard_paste_inserter_writes_text_sends_paste_and_restores_original_clipbo
 
 #[test]
 fn clipboard_paste_inserter_keeps_inserted_success_when_restore_fails_after_paste() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard =
         FailingRestoreClipboard::new(Some("before clipboard".to_string()), calls.clone());
@@ -171,6 +278,7 @@ fn clipboard_paste_inserter_keeps_inserted_success_when_restore_fails_after_past
 
 #[test]
 fn clipboard_paste_inserter_accepts_explicit_settle_delay_without_using_default_delay() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls);
@@ -193,7 +301,112 @@ fn clipboard_paste_inserter_accepts_explicit_settle_delay_without_using_default_
 }
 
 #[test]
+fn deferred_clipboard_restore_returns_before_restore_and_flush_completes_it() {
+    let _test_guard = lock_clipboard_insert_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
+    let paste = RecordingPasteShortcut::new(calls.clone());
+    let inserter = ClipboardPasteInserter::with_settle_delay(
+        clipboard.clone(),
+        paste,
+        ClipboardRestorePolicy::RestoreOriginal,
+        Duration::from_millis(80),
+    )
+    .with_deferred_restore();
+
+    let started_at = Instant::now();
+    inserter
+        .insert_text("hello clipboard")
+        .expect("deferred restore insert");
+    let elapsed = started_at.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(50),
+        "deferred restore should not block insert on settle delay, elapsed={elapsed:?}"
+    );
+    assert_eq!(
+        clipboard.current_text(),
+        Some("hello clipboard".to_string())
+    );
+    assert_eq!(
+        recorded_calls(&calls),
+        vec![
+            "capture".to_string(),
+            "write:hello clipboard".to_string(),
+            "paste_shortcut".to_string(),
+        ]
+    );
+
+    flush_pending_clipboard_restore();
+    assert_eq!(
+        clipboard.current_text(),
+        Some("before clipboard".to_string())
+    );
+    assert_eq!(
+        recorded_calls(&calls),
+        vec![
+            "capture".to_string(),
+            "write:hello clipboard".to_string(),
+            "paste_shortcut".to_string(),
+            "restore:before clipboard".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn concurrent_clipboard_inserts_are_serialized_and_restore_the_original_clipboard() {
+    let _test_guard = lock_clipboard_insert_tests();
+    flush_pending_clipboard_restore();
+    let clipboard = RecordingClipboard::new(
+        Some("before clipboard".to_string()),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let paste = ConcurrencyTrackingPasteShortcut::new(Duration::from_millis(75));
+    let inserter = ClipboardPasteInserter::with_settle_delay(
+        clipboard.clone(),
+        paste.clone(),
+        ClipboardRestorePolicy::RestoreOriginal,
+        Duration::ZERO,
+    )
+    .with_deferred_restore();
+    let barrier = Arc::new(Barrier::new(3));
+
+    let workers = ["first concurrent insert", "second concurrent insert"]
+        .into_iter()
+        .map(|text| {
+            let barrier = Arc::clone(&barrier);
+            let inserter = inserter.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                inserter
+                    .insert_text(text)
+                    .expect("concurrent clipboard insert");
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for worker in workers {
+        worker
+            .join()
+            .expect("clipboard insert worker must not panic");
+    }
+
+    flush_pending_clipboard_restore();
+    assert_eq!(
+        paste.max_active(),
+        1,
+        "clipboard paste transactions overlapped"
+    );
+    assert_eq!(
+        clipboard.current_text(),
+        Some("before clipboard".to_string()),
+        "serialized inserts must leave the original clipboard restored"
+    );
+}
+
+#[test]
 fn clipboard_paste_inserter_can_leave_inserted_text_when_restore_is_disabled() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls.clone());
@@ -298,6 +511,7 @@ fn clipboard_fallback_inserter_reports_current_talk_reason_without_legacy_mvp_wo
 
 #[test]
 fn clipboard_paste_inserter_restores_original_clipboard_when_paste_shortcut_fails() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = FailingPasteShortcut::new(calls.clone());
@@ -332,6 +546,7 @@ fn clipboard_paste_inserter_restores_original_clipboard_when_paste_shortcut_fail
 
 #[test]
 fn clipboard_paste_inserter_keeps_inserted_text_available_until_async_paste_consumer_reads_it() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let (paste_called_tx, paste_called_rx) = mpsc::channel();
@@ -392,6 +607,7 @@ fn clipboard_paste_inserter_keeps_inserted_text_available_until_async_paste_cons
 
 #[test]
 fn clipboard_paste_inserter_keeps_inserted_text_available_for_delayed_async_paste_consumers() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let (observed_text_tx, observed_text_rx) = mpsc::channel();
@@ -439,6 +655,7 @@ fn clipboard_paste_inserter_keeps_inserted_text_available_for_delayed_async_past
 
 #[test]
 fn before_paste_shortcut_runs_hook_after_clipboard_write_and_before_paste_shortcut() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls.clone());
@@ -483,6 +700,7 @@ fn before_paste_shortcut_runs_hook_after_clipboard_write_and_before_paste_shortc
 
 #[test]
 fn around_paste_shortcut_runs_before_and_after_hooks_around_paste_shortcut() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls.clone());
@@ -534,6 +752,7 @@ fn around_paste_shortcut_runs_before_and_after_hooks_around_paste_shortcut() {
 
 #[test]
 fn around_paste_shortcut_runs_after_hook_even_when_paste_shortcut_fails() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = FailingPasteShortcut::new(calls.clone());
@@ -583,6 +802,7 @@ fn around_paste_shortcut_runs_after_hook_even_when_paste_shortcut_fails() {
 
 #[test]
 fn around_text_inserter_runs_after_hook_after_clipboard_restore() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = RecordingPasteShortcut::new(calls.clone());
@@ -634,6 +854,7 @@ fn around_text_inserter_runs_after_hook_after_clipboard_restore() {
 
 #[test]
 fn around_text_inserter_runs_after_hook_even_when_clipboard_insert_fails() {
+    let _test_guard = lock_clipboard_insert_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let clipboard = RecordingClipboard::new(Some("before clipboard".to_string()), calls.clone());
     let paste = FailingPasteShortcut::new(calls.clone());
@@ -825,6 +1046,37 @@ struct RecordingPasteShortcut {
 impl RecordingPasteShortcut {
     fn new(calls: Arc<Mutex<Vec<String>>>) -> Self {
         Self { calls }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConcurrencyTrackingPasteShortcut {
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+    hold_for: Duration,
+}
+
+impl ConcurrencyTrackingPasteShortcut {
+    fn new(hold_for: Duration) -> Self {
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            max_active: Arc::new(AtomicUsize::new(0)),
+            hold_for,
+        }
+    }
+
+    fn max_active(&self) -> usize {
+        self.max_active.load(Ordering::SeqCst)
+    }
+}
+
+impl PasteShortcut for ConcurrencyTrackingPasteShortcut {
+    fn send_paste(&self) -> Result<(), TalkError> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        thread::sleep(self.hold_for);
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 

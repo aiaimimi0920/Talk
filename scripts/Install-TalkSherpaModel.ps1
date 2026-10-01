@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ModelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+    [string]$ModelId = 'zipformer-zh-en-punct-int8-480ms',
     [string]$DestinationRoot,
     [string]$ArchivePath,
     [switch]$SkipDownload,
@@ -15,7 +15,8 @@ function Get-TalkSherpaModelCatalog {
     @(
         [pscustomobject]@{
             Id = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
-            Recommended = $true
+            Recommended = $false
+            RuntimeMode = 'online'
             Family = 'transducer'
             ModelName = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10'
             ArchiveName = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10.tar.bz2'
@@ -29,11 +30,13 @@ function Get-TalkSherpaModelCatalog {
         }
         [pscustomobject]@{
             Id = 'zipformer-zh-en-punct-int8-480ms'
-            Recommended = $false
+            Recommended = $true
+            RuntimeMode = 'online'
             Family = 'transducer'
             ModelName = 'x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8'
             ArchiveName = 'sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2'
             ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2'
+            Sha256 = 'fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74'
             SizeBytes = 133895136
             SampleRateHz = 16000
             Provider = 'cpu'
@@ -43,6 +46,7 @@ function Get-TalkSherpaModelCatalog {
         [pscustomobject]@{
             Id = 'zipformer-zh-int8-2025-06-30'
             Recommended = $false
+            RuntimeMode = 'online'
             Family = 'transducer'
             ModelName = 'streaming-zipformer-zh-int8-2025-06-30'
             ArchiveName = 'sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30.tar.bz2'
@@ -56,11 +60,71 @@ function Get-TalkSherpaModelCatalog {
         [pscustomobject]@{
             Id = 'paraformer-bilingual-zh-en'
             Recommended = $false
+            RuntimeMode = 'online'
             Family = 'paraformer'
             ModelName = 'streaming-paraformer-bilingual-zh-en'
             ArchiveName = 'sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2'
             ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-paraformer-bilingual-zh-en.tar.bz2'
             SizeBytes = 1047319737
+            SampleRateHz = 16000
+            Provider = 'cpu'
+            NumThreads = 2
+            DecodingMethod = 'greedy_search'
+        }
+        [pscustomobject]@{
+            Id = 'offline-zipformer-zh-en-int8-2023-11-22'
+            Recommended = $false
+            RuntimeMode = 'offline'
+            Family = 'transducer'
+            ModelName = 'sherpa-onnx-zipformer-zh-en-2023-11-22'
+            ArchiveName = 'sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2'
+            ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-zh-en-2023-11-22.tar.bz2'
+            SizeBytes = 312398028
+            SampleRateHz = 16000
+            Provider = 'cpu'
+            NumThreads = 2
+            DecodingMethod = 'greedy_search'
+        }
+        [pscustomobject]@{
+            Id = 'offline-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09'
+            Recommended = $false
+            RuntimeMode = 'offline'
+            Family = 'sense-voice'
+            ModelName = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09'
+            ArchiveName = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2'
+            ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09.tar.bz2'
+            Sha256 = '7305f7905bfcf77fa0b39388a313f3da35c68d971661a65475b56fb2162c8e63'
+            SizeBytes = 165783878
+            SampleRateHz = 16000
+            Provider = 'cpu'
+            NumThreads = 2
+            DecodingMethod = 'greedy_search'
+            Language = 'auto'
+            UseItn = $true
+        }
+        [pscustomobject]@{
+            Id = 'offline-whisper-base-int8'
+            Recommended = $false
+            RuntimeMode = 'offline'
+            Family = 'whisper'
+            ModelName = 'sherpa-onnx-whisper-base'
+            ArchiveName = 'sherpa-onnx-whisper-base.tar.bz2'
+            ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-base.tar.bz2'
+            SizeBytes = 207557382
+            SampleRateHz = 16000
+            Provider = 'cpu'
+            NumThreads = 2
+            DecodingMethod = 'greedy_search'
+        }
+        [pscustomobject]@{
+            Id = 'offline-whisper-small-int8'
+            Recommended = $false
+            RuntimeMode = 'offline'
+            Family = 'whisper'
+            ModelName = 'sherpa-onnx-whisper-small'
+            ArchiveName = 'sherpa-onnx-whisper-small.tar.bz2'
+            ArchiveUrl = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-small.tar.bz2'
+            SizeBytes = 639387718
             SampleRateHz = 16000
             Provider = 'cpu'
             NumThreads = 2
@@ -107,15 +171,16 @@ function ConvertTo-TalkSherpaTomlBasicString {
 function Find-TalkSherpaModelFile {
     param(
         [Parameter(Mandatory = $true)][string]$ModelDir,
-        [Parameter(Mandatory = $true)][ValidateSet('tokens', 'encoder', 'decoder', 'joiner')][string]$Kind,
+        [Parameter(Mandatory = $true)][ValidateSet('tokens', 'encoder', 'decoder', 'joiner', 'model')][string]$Kind,
         [switch]$Required
     )
 
     $filter = switch ($Kind) {
-        'tokens' { 'tokens.txt' }
-        'encoder' { 'encoder*.onnx' }
-        'decoder' { 'decoder*.onnx' }
-        'joiner' { 'joiner*.onnx' }
+        'tokens' { '*tokens.txt' }
+        'encoder' { '*encoder*.onnx' }
+        'decoder' { '*decoder*.onnx' }
+        'joiner' { '*joiner*.onnx' }
+        'model' { 'model*.onnx' }
     }
 
     $candidate = Get-ChildItem -LiteralPath $ModelDir -Recurse -File -Filter $filter -ErrorAction SilentlyContinue |
@@ -176,30 +241,44 @@ function Test-TalkSherpaModelInstall {
 
     $model = Get-TalkSherpaModelSpec -ModelId $ModelId
     $tokens = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind tokens -Required
-    $encoder = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind encoder -Required
-    $decoder = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind decoder -Required
+    $encoder = ''
+    $decoder = ''
     $joiner = ''
-    if ([string]$model.Family -eq 'transducer') {
-        $joiner = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind joiner -Required
+    $modelPath = ''
+    if ([string]$model.Family -eq 'sense-voice') {
+        $modelPath = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind model -Required
+    }
+    else {
+        $encoder = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind encoder -Required
+        $decoder = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind decoder -Required
+        if ([string]$model.Family -eq 'transducer') {
+            $joiner = Find-TalkSherpaModelFile -ModelDir $resolvedModelDir -Kind joiner -Required
+        }
     }
 
-    $snippet = New-TalkSherpaModelConfigSnippet `
-        -ModelSpec $model `
-        -TokensPath $tokens `
-        -EncoderPath $encoder `
-        -DecoderPath $decoder `
-        -JoinerPath $joiner
+    $snippet = if ([string]$model.RuntimeMode -eq 'online') {
+        New-TalkSherpaModelConfigSnippet `
+            -ModelSpec $model `
+            -TokensPath $tokens `
+            -EncoderPath $encoder `
+            -DecoderPath $decoder `
+            -JoinerPath $joiner
+    } else {
+        ''
+    }
 
     [pscustomobject]@{
         Valid = $true
         ModelId = $model.Id
         ModelName = $model.ModelName
+        RuntimeMode = $model.RuntimeMode
         ModelFamily = $model.Family
         ModelDir = $resolvedModelDir
         TokensPath = $tokens
         EncoderPath = $encoder
         DecoderPath = $decoder
         JoinerPath = $joiner
+        ModelPath = $modelPath
         Provider = $model.Provider
         NumThreads = $model.NumThreads
         SampleRateHz = $model.SampleRateHz
@@ -279,7 +358,7 @@ function Expand-TalkSherpaModelArchive {
 function Install-TalkSherpaModel {
     [CmdletBinding()]
     param(
-        [string]$ModelId = 'sherpa-onnx-streaming-zipformer-ar_en_id_ja_ru_th_vi_zh-2025-02-10',
+        [string]$ModelId = 'zipformer-zh-en-punct-int8-480ms',
         [string]$DestinationRoot,
         [string]$ArchivePath,
         [switch]$SkipDownload,
@@ -324,8 +403,13 @@ function Install-TalkSherpaModel {
     }
 
     $validation = Test-TalkSherpaModelInstall -ModelId $model.Id -ModelDir $modelDir
-    $snippetPath = Join-Path $validation.ModelDir 'talk-local-daemon.toml.snippet'
-    Set-Content -LiteralPath $snippetPath -Value ($validation.ConfigSnippet + [Environment]::NewLine) -Encoding UTF8
+    $snippetPath = if ([string]::IsNullOrWhiteSpace([string]$validation.ConfigSnippet)) {
+        $null
+    } else {
+        $path = Join-Path $validation.ModelDir 'talk-local-daemon.toml.snippet'
+        Set-Content -LiteralPath $path -Value ($validation.ConfigSnippet + [Environment]::NewLine) -Encoding UTF8
+        $path
+    }
     $validation | Add-Member -NotePropertyName ConfigSnippetPath -NotePropertyValue $snippetPath -Force
 
     if ($PassThru) {

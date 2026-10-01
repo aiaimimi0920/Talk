@@ -25,6 +25,7 @@ base64 = "0.22"
 bzip2 = "0.4"
 clap = { version = "4", features = ["derive"] }
 cpal = "0.17.3"
+crossbeam-queue = "0.3"
 hound = "3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -39,4 +40,5 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+wait-timeout = "0.2"
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

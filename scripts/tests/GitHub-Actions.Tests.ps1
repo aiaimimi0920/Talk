@@ -75,6 +75,12 @@ Describe 'Talk GitHub Actions contracts' {
         $workflow | Should Match 'softprops/action-gh-release@v3'
         $workflow | Should Match '\^V\\d\+\\\.\\d\+\\\.\\d\+\$'
         $workflow | Should Match 'api_key_env'
+        $workflow | Should Match 'TALK_EVENT_NAME:\s*\$\{\{\s*github\.event_name\s*\}\}'
+        $workflow | Should Match 'TALK_REQUESTED_TAG:\s*\$\{\{\s*github\.event\.inputs\.tag\s*\}\}'
+        $workflow | Should Match 'TALK_REF_NAME:\s*\$\{\{\s*github\.ref_name\s*\}\}'
+        $workflow | Should Match '\$tag\s*=\s*\$env:TALK_REQUESTED_TAG'
+        $workflow | Should Match '\$tag\s*=\s*\$env:TALK_REF_NAME'
+        $workflow | Should Not Match '\$tag\s*=\s*"\$\{\{'
     }
 
     It 'never stores provider or GitHub credentials in workflow source' {

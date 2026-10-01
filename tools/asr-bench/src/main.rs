@@ -1,14 +1,21 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use talk_client::{
     final_transcript_from_streaming_asr_events, FrontContext, LocalStreamingAsrServiceClient,
     OpenAiCompatibleTranscriber, StreamingAsrEvent, Transcriber,
 };
 use talk_core::OpenAiTranscriptionTransport;
+use wait_timeout::ChildExt;
+
+const MAX_OFFLINE_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -24,6 +31,10 @@ struct Cli {
     #[arg(long)]
     streaming_endpoint: Option<String>,
     #[arg(long)]
+    offline_command: Option<PathBuf>,
+    #[arg(long = "offline-worker-arg", allow_hyphen_values = true)]
+    offline_worker_args: Vec<String>,
+    #[arg(long)]
     cloud_openai_compatible_endpoint: Option<String>,
     #[arg(long)]
     cloud_openai_compatible_model: Option<String>,
@@ -33,6 +44,8 @@ struct Cli {
     cloud_openai_compatible_api_key_env: String,
     #[arg(long, default_value_t = 80)]
     chunk_ms: u64,
+    #[arg(long, default_value_t = false)]
+    streaming_realtime: bool,
     #[arg(long, default_value_t = 1000)]
     connect_timeout_ms: u64,
     #[arg(long, default_value_t = 1000)]
@@ -53,6 +66,10 @@ struct Cli {
     model_size_mb: Option<u64>,
     #[arg(long)]
     sample_id: Option<String>,
+    #[arg(long)]
+    corpus_manifest_sha256: Option<String>,
+    #[arg(long)]
+    audio_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,6 +87,12 @@ struct AsrBenchReport {
     model_size_mb: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sample_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    corpus_manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    streaming_realtime: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,6 +115,8 @@ struct AsrBenchComparisonCandidate {
     peak_rss_mb: u64,
     model_size_mb: Option<u64>,
     text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    streaming_realtime: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -101,12 +126,15 @@ struct StreamingServiceBenchConfig {
     reference_text: Option<String>,
     output_json: PathBuf,
     chunk_ms: u64,
+    streaming_realtime: bool,
     connect_timeout: Duration,
     ready_timeout: Duration,
     partial_idle_timeout: Duration,
     final_timeout: Duration,
     model_size_mb: Option<u64>,
     sample_id: Option<String>,
+    corpus_manifest_sha256: Option<String>,
+    audio_sha256: Option<String>,
 }
 
 #[derive(Debug)]
@@ -120,6 +148,29 @@ struct CloudOpenAiCompatibleBenchConfig {
     output_json: PathBuf,
     model_size_mb: Option<u64>,
     sample_id: Option<String>,
+    corpus_manifest_sha256: Option<String>,
+    audio_sha256: Option<String>,
+}
+
+#[derive(Debug)]
+struct OfflineCommandBenchConfig {
+    command: PathBuf,
+    worker_args: Vec<String>,
+    audio_wav: PathBuf,
+    reference_text: Option<String>,
+    output_json: PathBuf,
+    model_size_mb: Option<u64>,
+    sample_id: Option<String>,
+    corpus_manifest_sha256: Option<String>,
+    audio_sha256: Option<String>,
+    timeout: Duration,
+}
+
+#[derive(Debug, Deserialize)]
+struct OfflineWorkerOutput {
+    engine: String,
+    model: String,
+    text: String,
 }
 
 struct PreparedStreamingWav {
@@ -139,6 +190,20 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let configured_engine_count = [
+        cli.streaming_endpoint.is_some(),
+        cli.offline_command.is_some(),
+        cli.cloud_openai_compatible_endpoint.is_some(),
+    ]
+    .into_iter()
+    .filter(|configured| *configured)
+    .count();
+    if configured_engine_count > 1 {
+        anyhow::bail!(
+            "configure only one of --streaming-endpoint, --offline-command, or --cloud-openai-compatible-endpoint"
+        );
+    }
+
     if let Some(endpoint) = cli.streaming_endpoint.clone() {
         let audio_wav = cli
             .audio_wav
@@ -150,14 +215,37 @@ async fn main() -> Result<()> {
             reference_text: cli.reference_text.clone(),
             output_json: cli.output_json.clone(),
             chunk_ms: cli.chunk_ms,
+            streaming_realtime: cli.streaming_realtime,
             connect_timeout: Duration::from_millis(cli.connect_timeout_ms),
             ready_timeout: Duration::from_millis(cli.ready_timeout_ms),
             partial_idle_timeout: Duration::from_millis(cli.partial_idle_timeout_ms),
             final_timeout: Duration::from_millis(cli.final_timeout_ms),
             model_size_mb: cli.model_size_mb,
             sample_id: cli.sample_id.clone(),
+            corpus_manifest_sha256: cli.corpus_manifest_sha256.clone(),
+            audio_sha256: cli.audio_sha256.clone(),
         })
         .await?;
+        return Ok(());
+    }
+
+    if let Some(command) = cli.offline_command.clone() {
+        let audio_wav = cli
+            .audio_wav
+            .clone()
+            .context("--audio-wav is required when --offline-command is set")?;
+        run_offline_command_benchmark(OfflineCommandBenchConfig {
+            command,
+            worker_args: cli.offline_worker_args.clone(),
+            audio_wav,
+            reference_text: cli.reference_text.clone(),
+            output_json: cli.output_json.clone(),
+            model_size_mb: cli.model_size_mb,
+            sample_id: cli.sample_id.clone(),
+            corpus_manifest_sha256: cli.corpus_manifest_sha256.clone(),
+            audio_sha256: cli.audio_sha256.clone(),
+            timeout: Duration::from_millis(cli.final_timeout_ms),
+        })?;
         return Ok(());
     }
 
@@ -182,12 +270,161 @@ async fn main() -> Result<()> {
             output_json: cli.output_json.clone(),
             model_size_mb: cli.model_size_mb,
             sample_id: cli.sample_id.clone(),
+            corpus_manifest_sha256: cli.corpus_manifest_sha256.clone(),
+            audio_sha256: cli.audio_sha256.clone(),
         })
         .await?;
         return Ok(());
     }
 
     run_dry_run_benchmark(cli)
+}
+
+fn run_offline_command_benchmark(config: OfflineCommandBenchConfig) -> Result<AsrBenchReport> {
+    if !config.command.is_file() {
+        anyhow::bail!(
+            "--offline-command does not exist or is not a file: {}",
+            config.command.display()
+        );
+    }
+    if config.timeout.is_zero() {
+        anyhow::bail!("--final-timeout-ms must be greater than 0 in offline command mode");
+    }
+    if config
+        .worker_args
+        .iter()
+        .any(|arg| arg == "--offline-wav" || arg.starts_with("--offline-wav="))
+    {
+        anyhow::bail!(
+            "--offline-worker-arg must not set --offline-wav; asr-bench binds it to --audio-wav"
+        );
+    }
+    let audio_duration_ms = wav_duration_ms(&config.audio_wav)?;
+    let audio_sha256 = resolve_audio_sha256(&config.audio_wav, config.audio_sha256.as_deref())?;
+    let started_at = Instant::now();
+    let mut child = Command::new(&config.command)
+        .args(&config.worker_args)
+        .arg("--offline-wav")
+        .arg(&config.audio_wav)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to start offline ASR command {}",
+                config.command.display()
+            )
+        })?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("offline ASR stdout pipe missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("offline ASR stderr pipe missing")?;
+    let stdout_reader = std::thread::spawn(move || read_limited_output(stdout));
+    let stderr_reader = std::thread::spawn(move || read_limited_output(stderr));
+    let status = match child
+        .wait_timeout(config.timeout)
+        .context("failed while waiting for offline ASR command")?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stdout_reader.join();
+            let _ = stderr_reader.join();
+            anyhow::bail!(
+                "offline ASR command {} exceeded --final-timeout-ms ({})",
+                config.command.display(),
+                config.timeout.as_millis()
+            );
+        }
+    };
+    let stdout = join_output_reader(stdout_reader, "stdout")?;
+    let stderr = join_output_reader(stderr_reader, "stderr")?;
+    let final_latency_ms = elapsed_ms(started_at);
+    if !status.success() {
+        anyhow::bail!(
+            "offline ASR command {} failed with status {}: {}",
+            config.command.display(),
+            status,
+            String::from_utf8_lossy(&stderr).trim()
+        );
+    }
+    let worker_output = parse_offline_worker_output(&stdout)?;
+    let engine = format!(
+        "offline_command:{}:{}",
+        worker_output.engine, worker_output.model
+    );
+    validate_engine_name(&engine)?;
+    let cer = config
+        .reference_text
+        .as_deref()
+        .map(|reference| character_error_rate(reference, &worker_output.text))
+        .unwrap_or(0.0);
+    let rtf = if audio_duration_ms == 0 {
+        0.0
+    } else {
+        final_latency_ms as f64 / audio_duration_ms as f64
+    };
+    let report = AsrBenchReport {
+        engine,
+        audio_duration_ms,
+        cold_start_ms: 0,
+        first_partial_ms: final_latency_ms,
+        final_latency_ms,
+        rtf,
+        peak_rss_mb: 0,
+        text: worker_output.text,
+        cer,
+        model_size_mb: config.model_size_mb,
+        sample_id: validate_optional_sample_id(config.sample_id.as_deref())?,
+        corpus_manifest_sha256: validate_optional_sha256(
+            "--corpus-manifest-sha256",
+            config.corpus_manifest_sha256.as_deref(),
+        )?,
+        audio_sha256,
+        streaming_realtime: None,
+    };
+    write_report(&config.output_json, &report)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(report)
+}
+
+fn read_limited_output(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(MAX_OFFLINE_COMMAND_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_OFFLINE_COMMAND_OUTPUT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "offline ASR command output exceeded 1 MiB",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn join_output_reader(
+    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("offline ASR {stream_name} reader panicked"))?
+        .with_context(|| format!("failed to read offline ASR {stream_name}"))
+}
+
+fn parse_offline_worker_output(stdout: &[u8]) -> Result<OfflineWorkerOutput> {
+    let output: OfflineWorkerOutput = serde_json::from_slice(stdout)
+        .context("offline ASR command stdout must be one JSON object")?;
+    validate_nonblank_cli_value("offline worker engine", &output.engine)?;
+    validate_nonblank_cli_value("offline worker model", &output.model)?;
+    validate_nonblank_cli_value("offline worker text", &output.text)?;
+    Ok(output)
 }
 
 fn run_dry_run_benchmark(cli: Cli) -> Result<()> {
@@ -230,6 +467,15 @@ fn run_dry_run_benchmark(cli: Cli) -> Result<()> {
         cer,
         model_size_mb: cli.model_size_mb,
         sample_id,
+        corpus_manifest_sha256: validate_optional_sha256(
+            "--corpus-manifest-sha256",
+            cli.corpus_manifest_sha256.as_deref(),
+        )?,
+        audio_sha256: resolve_optional_audio_sha256(
+            cli.audio_wav.as_deref(),
+            cli.audio_sha256.as_deref(),
+        )?,
+        streaming_realtime: None,
     };
 
     write_report(&cli.output_json, &report)?;
@@ -266,7 +512,12 @@ async fn run_streaming_service_benchmark(
 
     let mut events = Vec::<StreamingAsrEvent>::new();
     let mut first_partial_ms = None::<u64>;
+    let streaming_started_at = Instant::now();
     for (sequence, chunk) in prepared.chunks.iter().enumerate() {
+        if config.streaming_realtime {
+            let target_offset = realtime_chunk_target_offset(config.chunk_ms, sequence);
+            tokio::time::sleep(target_offset.saturating_sub(streaming_started_at.elapsed())).await;
+        }
         client
             .send_audio("asr-bench", sequence as u64, chunk)
             .await?;
@@ -316,6 +567,12 @@ async fn run_streaming_service_benchmark(
         cer,
         model_size_mb: config.model_size_mb,
         sample_id: validate_optional_sample_id(config.sample_id.as_deref())?,
+        corpus_manifest_sha256: validate_optional_sha256(
+            "--corpus-manifest-sha256",
+            config.corpus_manifest_sha256.as_deref(),
+        )?,
+        audio_sha256: resolve_audio_sha256(&config.audio_wav, config.audio_sha256.as_deref())?,
+        streaming_realtime: Some(config.streaming_realtime),
     };
 
     write_report(&config.output_json, &report)?;
@@ -371,6 +628,12 @@ async fn run_cloud_openai_compatible_benchmark(
         cer,
         model_size_mb: config.model_size_mb,
         sample_id: validate_optional_sample_id(config.sample_id.as_deref())?,
+        corpus_manifest_sha256: validate_optional_sha256(
+            "--corpus-manifest-sha256",
+            config.corpus_manifest_sha256.as_deref(),
+        )?,
+        audio_sha256: resolve_audio_sha256(&config.audio_wav, config.audio_sha256.as_deref())?,
+        streaming_realtime: None,
     };
 
     write_report(&config.output_json, &report)?;
@@ -447,6 +710,59 @@ fn validate_optional_sample_id(sample_id: Option<&str>) -> Result<Option<String>
         }
         None => Ok(None),
     }
+}
+
+fn validate_optional_sha256(name: &str, value: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("{name} must be exactly 64 hexadecimal characters");
+    }
+    Ok(Some(value.to_ascii_lowercase()))
+}
+
+fn resolve_audio_sha256(path: &Path, expected: Option<&str>) -> Result<Option<String>> {
+    let actual = sha256_file(path)?;
+    if let Some(expected) = validate_optional_sha256("--audio-sha256", expected)? {
+        if expected != actual {
+            anyhow::bail!(
+                "--audio-sha256 mismatch for {}: expected {}, actual {}",
+                path.display(),
+                expected,
+                actual
+            );
+        }
+    }
+    Ok(Some(actual))
+}
+
+fn resolve_optional_audio_sha256(
+    path: Option<&Path>,
+    expected: Option<&str>,
+) -> Result<Option<String>> {
+    match path {
+        Some(path) => resolve_audio_sha256(path, expected),
+        None if expected.is_some() => anyhow::bail!("--audio-sha256 requires --audio-wav"),
+        None => Ok(None),
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = File::open(path)
+        .with_context(|| format!("failed to open file for SHA-256: {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to hash file {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn wav_duration_ms(path: &Path) -> Result<u64> {
@@ -534,6 +850,10 @@ fn i16_samples_to_le_bytes(samples: &[i16]) -> Vec<u8> {
 
 fn elapsed_ms(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn realtime_chunk_target_offset(chunk_ms: u64, sequence: usize) -> Duration {
+    Duration::from_millis(chunk_ms.saturating_mul(sequence as u64))
 }
 
 fn compare_asr_bench_reports(paths: &[PathBuf]) -> Result<AsrBenchComparisonSummary> {
@@ -660,6 +980,13 @@ fn aggregate_comparison_candidate(
         .last()
         .map(|loaded| loaded.report.text.clone())
         .unwrap_or_default();
+    let streaming_realtime = reports[0].report.streaming_realtime;
+    if reports
+        .iter()
+        .any(|loaded| loaded.report.streaming_realtime != streaming_realtime)
+    {
+        anyhow::bail!("engine {engine} mixes streaming_realtime benchmark modes");
+    }
     let score = asr_bench_score_from_metrics(
         cer,
         first_partial_ms,
@@ -682,6 +1009,7 @@ fn aggregate_comparison_candidate(
         peak_rss_mb,
         model_size_mb,
         text,
+        streaming_realtime,
     })
 }
 
@@ -706,6 +1034,19 @@ fn validate_report_metrics(path: &Path, report: &AsrBenchReport) -> Result<()> {
         validate_optional_sample_id(Some(sample_id))
             .with_context(|| format!("invalid sample_id in {}", path.display()))?;
     }
+    let corpus_manifest_sha256 = validate_optional_sha256(
+        "corpus_manifest_sha256",
+        report.corpus_manifest_sha256.as_deref(),
+    )
+    .with_context(|| format!("invalid corpus provenance in {}", path.display()))?;
+    let audio_sha256 = validate_optional_sha256("audio_sha256", report.audio_sha256.as_deref())
+        .with_context(|| format!("invalid audio provenance in {}", path.display()))?;
+    if corpus_manifest_sha256.is_some() != audio_sha256.is_some() {
+        anyhow::bail!(
+            "benchmark report {} must provide corpus_manifest_sha256 and audio_sha256 together",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -726,10 +1067,7 @@ fn asr_bench_score_from_metrics(
 }
 
 fn validate_comparable_corpus(groups: &BTreeMap<String, Vec<LoadedBenchReport>>) -> Result<()> {
-    if groups.len() <= 1 {
-        return Ok(());
-    }
-
+    validate_comparable_provenance(groups)?;
     let any_sample_id = groups
         .values()
         .flatten()
@@ -764,6 +1102,10 @@ fn validate_comparable_corpus(groups: &BTreeMap<String, Vec<LoadedBenchReport>>)
         return Ok(());
     }
 
+    if groups.len() <= 1 {
+        return Ok(());
+    }
+
     let mut expected_count = None::<usize>;
     for (engine, reports) in groups {
         match expected_count {
@@ -775,6 +1117,79 @@ fn validate_comparable_corpus(groups: &BTreeMap<String, Vec<LoadedBenchReport>>)
             }
             None => expected_count = Some(reports.len()),
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_comparable_provenance(groups: &BTreeMap<String, Vec<LoadedBenchReport>>) -> Result<()> {
+    let any_provenance = groups.values().flatten().any(|loaded| {
+        loaded.report.corpus_manifest_sha256.is_some() || loaded.report.audio_sha256.is_some()
+    });
+    if !any_provenance {
+        return Ok(());
+    }
+
+    let mut expected_manifest_sha256 = None::<String>;
+    let mut audio_sha256_by_sample = BTreeMap::<String, String>::new();
+    let mut engine_sample_pairs = BTreeSet::<(String, String)>::new();
+    for (engine, reports) in groups {
+        for loaded in reports {
+            let sample_id = loaded.report.sample_id.as_deref().with_context(|| {
+                format!(
+                    "benchmark report {} with corpus provenance is missing sample_id",
+                    loaded.source.display()
+                )
+            })?;
+            let manifest_sha256 = loaded
+                .report
+                .corpus_manifest_sha256
+                .as_deref()
+                .with_context(|| {
+                    format!(
+                        "benchmark report {} is missing corpus_manifest_sha256",
+                        loaded.source.display()
+                    )
+                })?
+                .to_ascii_lowercase();
+            let audio_sha256 = loaded
+                .report
+                .audio_sha256
+                .as_deref()
+                .with_context(|| {
+                    format!(
+                        "benchmark report {} is missing audio_sha256",
+                        loaded.source.display()
+                    )
+                })?
+                .to_ascii_lowercase();
+
+            match expected_manifest_sha256.as_deref() {
+                Some(expected) if expected != manifest_sha256 => {
+                    anyhow::bail!(
+                        "all compared reports must use the same corpus_manifest_sha256; report {} has {}, expected {}",
+                        loaded.source.display(),
+                        manifest_sha256,
+                        expected
+                    );
+                }
+                None => expected_manifest_sha256 = Some(manifest_sha256),
+                _ => {}
+            }
+            match audio_sha256_by_sample.get(sample_id) {
+                Some(expected) if expected != &audio_sha256 => {
+                    anyhow::bail!(
+                        "sample_id {sample_id} has conflicting audio_sha256 values: {audio_sha256}, expected {expected}"
+                    );
+                }
+                None => {
+                    audio_sha256_by_sample.insert(sample_id.to_string(), audio_sha256);
+                }
+                _ => {}
+            }
+            if !engine_sample_pairs.insert((engine.clone(), sample_id.to_string())) {
+                anyhow::bail!("engine {engine} has duplicate sample_id {sample_id}");
+            }
         }
     }
     Ok(())
@@ -852,7 +1267,8 @@ fn write_comparison_summary(path: &Path, summary: &AsrBenchComparisonSummary) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        character_error_rate, compare_asr_bench_reports, run_cloud_openai_compatible_benchmark,
+        character_error_rate, compare_asr_bench_reports, parse_offline_worker_output,
+        realtime_chunk_target_offset, resolve_audio_sha256, run_cloud_openai_compatible_benchmark,
         run_dry_run_benchmark, run_streaming_service_benchmark, AsrBenchReport, Cli,
         CloudOpenAiCompatibleBenchConfig, StreamingServiceBenchConfig,
     };
@@ -876,6 +1292,58 @@ mod tests {
     }
 
     #[test]
+    fn realtime_streaming_paces_chunks_against_the_wav_timeline() {
+        assert_eq!(realtime_chunk_target_offset(80, 0), Duration::ZERO);
+        assert_eq!(
+            realtime_chunk_target_offset(80, 3),
+            Duration::from_millis(240)
+        );
+        assert_eq!(
+            realtime_chunk_target_offset(u64::MAX, 2),
+            Duration::from_millis(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn parses_strict_offline_worker_json() {
+        let output = parse_offline_worker_output(
+            r#"{"engine":"sherpa-onnx","model":"offline-zipformer-zh-en","text":"你好呀"}"#
+                .as_bytes(),
+        )
+        .expect("offline worker output");
+
+        assert_eq!(output.engine, "sherpa-onnx");
+        assert_eq!(output.model, "offline-zipformer-zh-en");
+        assert_eq!(output.text, "你好呀");
+        assert!(parse_offline_worker_output(
+            br#"{"engine":"sherpa-onnx","model":"offline-zipformer-zh-en","text":" "}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn audio_sha256_is_computed_and_supplied_mismatch_is_rejected() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-audio-sha256");
+        let audio = temp_dir.join("audio.wav");
+        fs::write(&audio, b"audio-bytes").unwrap();
+
+        let computed = resolve_audio_sha256(&audio, None)
+            .unwrap()
+            .expect("computed audio hash");
+        assert_eq!(computed.len(), 64);
+        assert_eq!(
+            resolve_audio_sha256(&audio, Some(&computed.to_ascii_uppercase())).unwrap(),
+            Some(computed)
+        );
+        assert!(resolve_audio_sha256(&audio, Some(&"0".repeat(64)))
+            .unwrap_err()
+            .to_string()
+            .contains("--audio-sha256 mismatch"));
+
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
     fn compare_reports_selects_lower_cer_then_lower_latency() {
         let temp_dir = unique_temp_dir("talk-asr-bench-compare");
         let fast_wrong = temp_dir.join("fast-wrong.json");
@@ -894,6 +1362,9 @@ mod tests {
                 cer: 0.333,
                 model_size_mb: Some(128),
                 sample_id: Some("huihui-nihaoya".to_string()),
+                corpus_manifest_sha256: None,
+                audio_sha256: None,
+                streaming_realtime: None,
             },
         );
         write_test_report(
@@ -910,6 +1381,9 @@ mod tests {
                 cer: 0.0,
                 model_size_mb: Some(999),
                 sample_id: Some("huihui-nihaoya".to_string()),
+                corpus_manifest_sha256: None,
+                audio_sha256: None,
+                streaming_realtime: None,
             },
         );
 
@@ -988,19 +1462,136 @@ mod tests {
     }
 
     #[test]
+    fn compare_reports_rejects_duplicate_sample_ids_for_one_legacy_engine() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-single-engine-duplicate");
+        let first = temp_dir.join("first.json");
+        let duplicate = temp_dir.join("duplicate.json");
+        write_test_report(
+            &first,
+            test_report("zipformer", "short-search", 0.0, 120, 240, 0.18),
+        );
+        write_test_report(
+            &duplicate,
+            test_report("zipformer", "short-search", 0.1, 140, 260, 0.20),
+        );
+
+        let error = compare_asr_bench_reports(&[first, duplicate]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate sample_id short-search"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compare_reports_rejects_mixed_streaming_pacing_for_one_engine() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-mixed-streaming-pacing");
+        let burst = temp_dir.join("burst.json");
+        let realtime = temp_dir.join("realtime.json");
+        let mut burst_report = test_report("zipformer", "short-search", 0.0, 120, 240, 0.18);
+        burst_report.streaming_realtime = Some(false);
+        let mut realtime_report = test_report("zipformer", "mixed-english", 0.1, 140, 260, 0.20);
+        realtime_report.streaming_realtime = Some(true);
+        write_test_report(&burst, burst_report);
+        write_test_report(&realtime, realtime_report);
+
+        let error = compare_asr_bench_reports(&[burst, realtime]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("mixes streaming_realtime benchmark modes"),
+            "{error:?}"
+        );
+        fs::remove_dir_all(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn compare_reports_rejects_mismatched_corpus_manifest_hashes() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-manifest-hash-mismatch");
+        let zipformer = temp_dir.join("zipformer.json");
+        let paraformer = temp_dir.join("paraformer.json");
+        let mut zipformer_report = test_report("zipformer", "short-search", 0.0, 120, 240, 0.18);
+        zipformer_report.corpus_manifest_sha256 = Some("a".repeat(64));
+        zipformer_report.audio_sha256 = Some("c".repeat(64));
+        let mut paraformer_report = test_report("paraformer", "short-search", 0.0, 120, 240, 0.18);
+        paraformer_report.corpus_manifest_sha256 = Some("b".repeat(64));
+        paraformer_report.audio_sha256 = Some("c".repeat(64));
+        write_test_report(&zipformer, zipformer_report);
+        write_test_report(&paraformer, paraformer_report);
+
+        let error = compare_asr_bench_reports(&[zipformer, paraformer]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("same corpus_manifest_sha256"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compare_reports_rejects_conflicting_audio_hash_for_same_sample() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-audio-hash-mismatch");
+        let zipformer = temp_dir.join("zipformer.json");
+        let paraformer = temp_dir.join("paraformer.json");
+        let mut zipformer_report = test_report("zipformer", "short-search", 0.0, 120, 240, 0.18);
+        zipformer_report.corpus_manifest_sha256 = Some("a".repeat(64));
+        zipformer_report.audio_sha256 = Some("b".repeat(64));
+        let mut paraformer_report = test_report("paraformer", "short-search", 0.0, 120, 240, 0.18);
+        paraformer_report.corpus_manifest_sha256 = Some("a".repeat(64));
+        paraformer_report.audio_sha256 = Some("c".repeat(64));
+        write_test_report(&zipformer, zipformer_report);
+        write_test_report(&paraformer, paraformer_report);
+
+        let error = compare_asr_bench_reports(&[zipformer, paraformer]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("conflicting audio_sha256"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn compare_reports_requires_manifest_and_audio_hash_together() {
+        let temp_dir = unique_temp_dir("talk-asr-bench-incomplete-provenance");
+        let report_path = temp_dir.join("report.json");
+        let mut report = test_report("zipformer", "short-search", 0.0, 120, 240, 0.18);
+        report.corpus_manifest_sha256 = Some("a".repeat(64));
+        write_test_report(&report_path, report);
+
+        let error = compare_asr_bench_reports(&[report_path]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must provide corpus_manifest_sha256 and audio_sha256 together"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn dry_run_benchmark_writes_optional_model_size() {
         let temp_dir = unique_temp_dir("talk-asr-bench-model-size");
         let output_json = temp_dir.join("report.json");
+        let wav_path = temp_dir.join("input.wav");
+        write_test_wav_i16(&wav_path, &[0, 1000, -1000, 0]);
+        let expected_audio_sha256 = resolve_audio_sha256(&wav_path, None)
+            .unwrap()
+            .expect("computed audio hash");
 
         run_dry_run_benchmark(Cli {
             engine: Some("sherpa-onnx-zipformer".to_string()),
-            audio_wav: None,
+            audio_wav: Some(wav_path),
             streaming_endpoint: None,
+            offline_command: None,
+            offline_worker_args: Vec::new(),
             cloud_openai_compatible_endpoint: None,
             cloud_openai_compatible_model: None,
             cloud_openai_compatible_transport: "audio_transcriptions".to_string(),
             cloud_openai_compatible_api_key_env: "TALK_PROVIDER_API_KEY".to_string(),
             chunk_ms: 80,
+            streaming_realtime: false,
             connect_timeout_ms: 1000,
             ready_timeout_ms: 1000,
             partial_idle_timeout_ms: 10,
@@ -1011,6 +1602,8 @@ mod tests {
             compare_reports: Vec::new(),
             model_size_mb: Some(162),
             sample_id: Some("short-search".to_string()),
+            corpus_manifest_sha256: Some("a".repeat(64)),
+            audio_sha256: Some(expected_audio_sha256.to_ascii_uppercase()),
         })
         .unwrap();
 
@@ -1018,6 +1611,8 @@ mod tests {
         let report_json = serde_json::from_str::<Value>(&report_json).unwrap();
         assert_eq!(report_json["model_size_mb"], 162);
         assert_eq!(report_json["sample_id"], "short-search");
+        assert_eq!(report_json["corpus_manifest_sha256"], "a".repeat(64));
+        assert_eq!(report_json["audio_sha256"], expected_audio_sha256);
 
         fs::remove_dir_all(temp_dir).unwrap();
     }
@@ -1061,6 +1656,8 @@ mod tests {
             output_json: output_json.clone(),
             model_size_mb: None,
             sample_id: Some("short-search-001".to_string()),
+            corpus_manifest_sha256: Some("a".repeat(64)),
+            audio_sha256: None,
         })
         .await
         .unwrap();
@@ -1157,12 +1754,15 @@ mod tests {
             reference_text: Some("你好呀".to_string()),
             output_json: output_json.clone(),
             chunk_ms: 20,
+            streaming_realtime: false,
             connect_timeout: Duration::from_secs(1),
             ready_timeout: Duration::from_secs(1),
             partial_idle_timeout: Duration::from_millis(20),
             final_timeout: Duration::from_secs(1),
             model_size_mb: None,
             sample_id: None,
+            corpus_manifest_sha256: None,
+            audio_sha256: None,
         })
         .await
         .unwrap();
@@ -1266,6 +1866,9 @@ mod tests {
             cer,
             model_size_mb: Some(512),
             sample_id: Some(sample_id.to_string()),
+            corpus_manifest_sha256: None,
+            audio_sha256: None,
+            streaming_realtime: None,
         }
     }
 }
