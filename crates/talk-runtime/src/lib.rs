@@ -666,6 +666,29 @@ pub struct LocalStreamingAsrLiveSession {
     final_timeout: Duration,
 }
 
+// Keep capture lifetime separate from transport lifetime. The private seam
+// also lets protocol tests drive a producing source without microphone access.
+trait LivePcmSource {
+    fn stop_capture(&mut self) -> Result<(), talk_core::TalkError>;
+    fn drain_pcm_chunk(
+        &self,
+        cursor: &mut RecordingPcmCursor,
+    ) -> Result<Option<talk_audio::RecordingPcmChunk>, talk_core::TalkError>;
+}
+
+impl LivePcmSource for talk_audio::RecordingSession {
+    fn stop_capture(&mut self) -> Result<(), talk_core::TalkError> {
+        talk_audio::RecordingSession::stop_capture(self)
+    }
+
+    fn drain_pcm_chunk(
+        &self,
+        cursor: &mut RecordingPcmCursor,
+    ) -> Result<Option<talk_audio::RecordingPcmChunk>, talk_core::TalkError> {
+        talk_audio::RecordingSession::drain_pcm_chunk(self, cursor)
+    }
+}
+
 impl LocalStreamingAsrLiveSession {
     pub async fn start(
         config: &TalkConfig,
@@ -715,27 +738,34 @@ impl LocalStreamingAsrLiveSession {
     }
 
     pub async fn stop(
-        mut self,
-        recording: talk_audio::RecordingSession,
+        self,
+        mut recording: talk_audio::RecordingSession,
     ) -> Result<Vec<StreamingAsrEvent>> {
-        let events_result = async {
-            self.send_available_audio(&recording).await?;
-            self.client.stop(&self.session_id).await?;
-            let final_events = self
-                .client
-                .collect_asr_events_until_final(self.final_timeout)
-                .await
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            self.events.extend(final_events);
-            Ok(self.events)
-        }
-        .await;
+        let events_result = self.stop_audio_source(&mut recording).await;
         let cancel_result = recording.cancel();
         match (events_result, cancel_result) {
             (Ok(events), Ok(())) => Ok(events),
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(anyhow::anyhow!(error.to_string())),
         }
+    }
+
+    async fn stop_audio_source(
+        mut self,
+        recording: &mut impl LivePcmSource,
+    ) -> Result<Vec<StreamingAsrEvent>> {
+        // Freeze before the first network await: slow sends must not extend
+        // the recording, and the final drain must see a stable capture tail.
+        recording.stop_capture()?;
+        self.send_available_audio(recording).await?;
+        self.client.stop(&self.session_id).await?;
+        let final_events = self
+            .client
+            .collect_asr_events_until_final(self.final_timeout)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.events.extend(final_events);
+        Ok(self.events)
     }
 
     pub async fn cancel(mut self) -> Result<()> {
@@ -745,10 +775,7 @@ impl LocalStreamingAsrLiveSession {
             .map_err(Into::into)
     }
 
-    async fn send_available_audio(
-        &mut self,
-        recording: &talk_audio::RecordingSession,
-    ) -> Result<usize> {
+    async fn send_available_audio(&mut self, recording: &impl LivePcmSource) -> Result<usize> {
         let mut sent_chunks = 0usize;
         while let Some(chunk) = recording.drain_pcm_chunk(&mut self.cursor)? {
             if chunk.sample_rate_hz != self.sample_rate_hz || chunk.channels != self.channels {
@@ -1388,3 +1415,6 @@ fn insert_method_name(method: InsertMethod) -> &'static str {
         InsertMethod::ClipboardFallback => "clipboard_fallback",
     }
 }
+
+#[cfg(test)]
+mod live_stop_tests;
