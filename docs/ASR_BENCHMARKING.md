@@ -616,3 +616,12 @@ baselines can be compared by:
 4. real-time factor,
 5. memory footprint,
 6. CPU/GPU cost and package size.
+
+## Streaming tail-context regression
+
+The [2026-10-01 paired check](asr-benchmarks/streaming-tail-context-20261001.md)
+records real-model transcripts, normalized CER/WER, bulk and real-time latency,
+public corpus provenance, and a model-backed regression test. The Sherpa worker's
+`--tail-padding-ms` override accepts 0–2000 ms (default 1000) of acoustic zeros
+at Stop. This costs computation, not a wall-clock sleep. Use identical settings
+for comparisons and do not infer end-to-end speed or accuracy from dry-run text.

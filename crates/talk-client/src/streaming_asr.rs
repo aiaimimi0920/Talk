@@ -8,7 +8,7 @@ use std::time::Duration;
 use talk_core::TalkError;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -132,13 +132,18 @@ impl LocalStreamingAsrServiceClient {
                 "local streaming ASR connect timeout must be greater than 0".to_string(),
             ));
         }
-        let connect_result = tokio::time::timeout(connect_timeout, connect_async(endpoint))
-            .await
-            .map_err(|_| {
-                TalkError::Provider(format!(
-                    "timed out connecting to local streaming ASR service at {endpoint}"
-                ))
-            })?;
+        // Small live PCM/control frames should leave immediately instead of
+        // waiting for Nagle's batching and a delayed TCP acknowledgement.
+        let connect_result = tokio::time::timeout(
+            connect_timeout,
+            connect_async_with_config(endpoint, None, true),
+        )
+        .await
+        .map_err(|_| {
+            TalkError::Provider(format!(
+                "timed out connecting to local streaming ASR service at {endpoint}"
+            ))
+        })?;
         let (socket, _) = connect_result.map_err(|error| {
             TalkError::Provider(format!(
                 "failed to connect to local streaming ASR service at {endpoint}: {error}"
@@ -813,4 +818,27 @@ fn shell_command(command_line: &str) -> Command {
     let mut command = Command::new("sh");
     command.arg("-c").arg(command_line);
     command
+}
+
+#[cfg(test)]
+mod latency_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn loopback_streaming_client_disables_tcp_batching() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/asr", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(stream).await.unwrap()
+        });
+        let client = LocalStreamingAsrServiceClient::connect(&endpoint, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let MaybeTlsStream::Plain(stream) = client.socket.get_ref() else {
+            panic!("loopback ws must use a plain TCP stream");
+        };
+        assert!(stream.nodelay().unwrap());
+        server.await.unwrap();
+    }
 }

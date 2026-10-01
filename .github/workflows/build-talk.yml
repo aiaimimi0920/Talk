@@ -26,6 +26,16 @@ jobs:
           components: rustfmt
       - name: Cache Rust build
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - name: Repair incomplete Linux sherpa native cache
+        shell: bash
+        run: |
+          cache_root="$PWD/target/sherpa-onnx-prebuilt"
+          native_dir="$(find "$cache_root" -type f -name libsherpa-onnx-c-api.so -printf '%h\n' -quit 2>/dev/null || true)"
+          if [[ -z "$native_dir" || ! -f "$native_dir/libonnxruntime.so" ]]; then
+            rm -rf -- "$cache_root"
+            cargo clean -p sherpa-onnx-sys
+            echo 'Invalidated incomplete Linux sherpa native cache; Cargo will restore it.'
+          fi
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check all targets

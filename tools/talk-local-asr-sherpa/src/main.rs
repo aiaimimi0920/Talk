@@ -48,6 +48,9 @@ struct Cli {
     sample_rate_hz: u32,
     #[arg(long, default_value = "greedy_search")]
     decoding_method: String,
+    /// Acoustic zero context appended at stop; decoded immediately, without sleeping.
+    #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(0..=2000))]
+    tail_padding_ms: u32,
     #[arg(long, default_value_t = true)]
     enable_endpoint: bool,
     #[arg(long)]
@@ -114,6 +117,7 @@ struct SherpaOnlineConfig {
     num_threads: u32,
     sample_rate_hz: u32,
     decoding_method: String,
+    tail_padding_ms: u32,
     enable_endpoint: bool,
     hotwords_file: Option<PathBuf>,
     rule_fsts: Option<PathBuf>,
@@ -174,6 +178,9 @@ impl SherpaOnlineConfig {
     fn from_cli(cli: &Cli) -> Result<Self> {
         validate_nonblank("--provider", &cli.provider)?;
         validate_nonblank("--decoding-method", &cli.decoding_method)?;
+        if cli.tail_padding_ms > 2000 {
+            anyhow::bail!("--tail-padding-ms must be between 0 and 2000");
+        }
         if cli.num_threads == 0 {
             anyhow::bail!("--num-threads must be greater than 0");
         }
@@ -213,6 +220,7 @@ impl SherpaOnlineConfig {
             num_threads: cli.num_threads,
             sample_rate_hz: cli.sample_rate_hz,
             decoding_method: cli.decoding_method.clone(),
+            tail_padding_ms: cli.tail_padding_ms,
             enable_endpoint: cli.enable_endpoint,
             hotwords_file,
             rule_fsts,
@@ -378,6 +386,7 @@ impl LocalStreamingAsrEngine for SherpaOnlineEngine {
             recognizer: self.recognizer.clone(),
             stream: self.recognizer.create_stream(),
             sample_rate_hz,
+            tail_padding_ms: self.config.tail_padding_ms,
             segment_id: "sherpa-segment-1".to_string(),
             last_text: String::new(),
         }))
@@ -388,15 +397,19 @@ struct SherpaOnlineSession {
     recognizer: Arc<sherpa_onnx::OnlineRecognizer>,
     stream: sherpa_onnx::OnlineStream,
     sample_rate_hz: u32,
+    tail_padding_ms: u32,
     segment_id: String,
     last_text: String,
 }
 
 impl SherpaOnlineSession {
-    fn decode_ready(&mut self) {
+    fn decode_ready(&mut self) -> bool {
+        let mut decoded = false;
         while self.recognizer.is_ready(&self.stream) {
             self.recognizer.decode(&self.stream);
+            decoded = true;
         }
+        decoded
     }
 
     fn current_text(&self) -> Option<String> {
@@ -415,7 +428,12 @@ impl LocalStreamingAsrSession for SherpaOnlineSession {
         }
         self.stream
             .accept_waveform(self.sample_rate_hz as i32, &samples);
-        self.decode_ready();
+        // Audio arrives more often than the model's decoding chunk. Reading
+        // the native result allocates/serializes the whole transcript, which
+        // cannot have changed until a decoding step actually runs.
+        if !self.decode_ready() {
+            return Ok(None);
+        }
 
         let Some(text) = self.current_text() else {
             return Ok(None);
@@ -431,6 +449,16 @@ impl LocalStreamingAsrSession for SherpaOnlineSession {
     }
 
     fn finish(&mut self) -> Result<LocalAsrText> {
+        // Flush the acoustic right context before closing the feature stream.
+        // A full second also flushes the default 480 ms model when speech
+        // ends near a chunk boundary; 300/660 ms still lost final words in
+        // the paired regression corpus. This is computed, never slept.
+        let padding_samples =
+            (u64::from(self.sample_rate_hz) * u64::from(self.tail_padding_ms) / 1000) as usize;
+        if padding_samples > 0 {
+            self.stream
+                .accept_waveform(self.sample_rate_hz as i32, &vec![0.0; padding_samples]);
+        }
         self.stream.input_finished();
         self.decode_ready();
         let text = self
@@ -493,6 +521,8 @@ async fn handle_connection(
     if !peer.ip().is_loopback() {
         anyhow::bail!("refusing non-loopback peer {peer}");
     }
+    // Partials and stop/final control frames must not wait for a TCP batch.
+    stream.set_nodelay(true)?;
     let mut websocket = accept_async(stream).await?;
     let mut active_session = None::<StreamingSession>;
 
@@ -849,6 +879,68 @@ mod tests {
         assert!(error.contains("--provider must not be blank"));
     }
 
+    #[test]
+    fn tail_padding_is_bounded_and_can_be_disabled_for_comparison() {
+        use clap::Parser;
+        let default = Cli::try_parse_from(["talk-local-asr-sherpa"]).unwrap();
+        assert_eq!(default.tail_padding_ms, 1000);
+        for value in ["0", "300", "660", "1000", "2000"] {
+            let cli =
+                Cli::try_parse_from(["talk-local-asr-sherpa", "--tail-padding-ms", value]).unwrap();
+            assert_eq!(cli.tail_padding_ms.to_string(), value);
+        }
+        assert!(
+            Cli::try_parse_from(["talk-local-asr-sherpa", "--tail-padding-ms", "2001"]).is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the pinned model and public corpus; see docs/ASR_BENCHMARKING.md"]
+    fn real_model_preserves_final_words_and_rejects_silence() {
+        let model =
+            PathBuf::from(std::env::var("TALK_ASR_TEST_MODEL_DIR").expect("model directory"));
+        let corpus =
+            PathBuf::from(std::env::var("TALK_ASR_TEST_CORPUS_DIR").expect("corpus directory"));
+        let mut cli = test_cli();
+        cli.mode = DaemonMode::SherpaOnline;
+        cli.tokens = Some(model.join("tokens.txt"));
+        cli.encoder = Some(model.join("encoder.int8.onnx"));
+        cli.decoder = Some(model.join("decoder.onnx"));
+        cli.joiner = Some(model.join("joiner.int8.onnx"));
+        let engine = DaemonConfig::from_cli(cli)
+            .unwrap()
+            .create_engine()
+            .unwrap();
+        let normalize = |text: &str| {
+            text.chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        };
+        for (file, reference) in [
+            ("aishell-BAC009S0724W0121.wav", "广州市房地产中介协会分析"),
+            ("librispeech-1995-1837-0001.wav", "IT WAS THE FIRST GREAT SORROW OF HIS LIFE IT WAS NOT SO MUCH THE LOSS OF THE COTTON ITSELF BUT THE FANTASY THE HOPES THE DREAMS BUILT AROUND IT"),
+        ] {
+            let wave = sherpa_onnx::Wave::read(corpus.join(file).to_str().unwrap()).unwrap();
+            let pcm = wave.samples().iter().flat_map(|sample| ((*sample * 32768.0) as i16).to_le_bytes()).collect::<Vec<_>>();
+            let mut session = engine.start_session(16000, 1, None).unwrap();
+            for chunk in pcm.chunks(1536) {
+                session.accept_pcm_i16_le(chunk).unwrap();
+            }
+            assert_eq!(normalize(&session.finish().unwrap().text), normalize(reference));
+        }
+        for samples in [800, 80000] {
+            let mut session = engine.start_session(16000, 1, None).unwrap();
+            for chunk in vec![0; samples * 2].chunks(1536) {
+                assert!(session.accept_pcm_i16_le(chunk).unwrap().is_none());
+            }
+            assert!(
+                session.finish().is_err(),
+                "silence must not create a transcript"
+            );
+        }
+    }
+
     fn test_cli() -> Cli {
         Cli {
             bind: "127.0.0.1:53171".parse().unwrap(),
@@ -866,6 +958,7 @@ mod tests {
             num_threads: 2,
             sample_rate_hz: 16000,
             decoding_method: "greedy_search".to_string(),
+            tail_padding_ms: 1000,
             enable_endpoint: true,
             hotwords_file: None,
             rule_fsts: None,
