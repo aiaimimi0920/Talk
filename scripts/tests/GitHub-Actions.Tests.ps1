@@ -65,6 +65,17 @@ Describe 'Talk GitHub Actions contracts' {
         $workflow | Should -Match 'Invoke-Pester.*GitHub-Actions\.Tests\.ps1.*-CI'
     }
 
+    It 'repairs missing Linux native dependencies before the cached build' {
+        $workflow = Read-TalkWorkflowText -Path $buildWorkflowPath
+        $linux = ($workflow -split '  build-windows-release:')[0]
+        $linux | Should -Match 'Repair incomplete Linux sherpa native cache'
+        $linux | Should -Match 'libsherpa-onnx-c-api\.so'
+        $linux | Should -Match 'libonnxruntime\.so'
+        $linux | Should -Match 'rm -rf -- "\$cache_root"'
+        $linux | Should -Match 'cargo clean -p sherpa-onnx-sys'
+        $linux.IndexOf('Repair incomplete Linux') | Should -BeLessThan $linux.IndexOf('Check all targets')
+    }
+
     It 'ships the Vx.x.x Windows tag release workflow' {
         Test-Path -LiteralPath $releaseWorkflowPath | Should -Be $true
 
