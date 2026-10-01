@@ -1,0 +1,117 @@
+{
+  "baseline_commit": "6bbca5d31a8d21775101ca749dbcc7fd71d6a61a",
+  "date_utc": "2026-10-01",
+  "candidate_source_sha256": {
+    "crates/talk-core/src/lib.rs": "e70f00a759132d91b8a246c27209a18fc00161818124a8e093f8621c5eb25fac",
+    "crates/talk-core/tests/config_contract.rs": "785afc3f10f5c3e0bc6bb77c5ca949e0e545ecc5a02fa4e5266a27c8a86b560c",
+    "crates/talk-desktop/src/main.rs": "110ebf7ff1938e1ee5ef683468d44961c6681bebc69cdd00d22ac07cd02aba6f",
+    "crates/talk-runtime/src/lib.rs": "d7b177a57b449252478f853e8d172c87440bb96d4aaf705504c7ff97988b90ac",
+    "crates/talk-runtime/src/live_backpressure_tests.rs": "1f30a2897352d3006c549a79c3359fe317d0e72b76243775c49b2208ef45aa88",
+    "crates/talk-runtime/src/live_stop_tests.rs": "064f8a7d628d25ebfaac790da7d51ef8b060ec93df736b9e61f4d772dc00bbc7",
+    "crates/talk-client/tests/backpressure_probe.rs": "7412760f67522a765b212f276f765760564c3fbb93376ab75b35ecbea8e26c2f",
+    "crates/talk-client/src/streaming_asr.rs": "4c08b74f060bfd67201c0410334ed97ba08edee271b7c4208b18e2efef76eb41",
+    "crates/talk-runtime/tests/speculative_runtime_contract.rs": "542b5a4ab15e2a648997e37d0f66b63720f884ab5a5bf01595fbeaeec76c9c8f"
+  },
+  "environment": {
+    "os": "Linux-6.18.44-x86_64-with-glibc2.41",
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "profile": "debug tests",
+    "runtime": "Tokio current-thread per test; test harness runs independent cases concurrently",
+    "scope": "synthetic loopback, shared cloud CPU, no microphone/model/external provider"
+  },
+  "fixture": {
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "pcm_format": "s16le zeros",
+    "ordinary_chunk_bytes": 3200,
+    "peer_requested_tcp_receive_buffer_bytes": 1024,
+    "max_small_chunks": 4096,
+    "large_backlog_bytes": 2097152,
+    "cancel_guard_setup": "at most 4096 small PCM sends; observe a send pending past 100 ms before testing Cancel",
+    "final_window_test": {
+      "controlled_pcm_preparation_ms": 1100,
+      "peer_final_delay_ms": 1500,
+      "phase_budget_ms": 2000,
+      "chunk_bytes": 3200
+    }
+  },
+  "baseline_observations": [
+    "watchdog_expired sequence=371 prior_pcm_bytes=1187200 chunk_bytes=3200 elapsed_ms=501.356"
+  ],
+  "candidate_observations": [
+    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.740",
+    "stalled_stop chunks_drained=372 elapsed_ms=150.940 error=timed out sending final local streaming ASR audio",
+    "stalled_cancel elapsed_ms=100.834 error=timed out cancelling local streaming ASR session",
+    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=461.848",
+    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=100.558 error=timed out pumping local streaming ASR audio",
+    "delayed_pcm_stop_with_full_final_window elapsed_ms=2646.338"
+  ],
+  "negative_control": {
+    "change": "replace live pump timeout with 10 seconds, keep one-second test watchdog",
+    "result": "expected test failure: desktop pump remained blocked past watchdog; exit 101",
+    "restored_and_verified": true
+  },
+  "limitations": [
+    "These are liveness fixtures, not model performance or accuracy benchmarks.",
+    "The raw client probe is unchanged by this live-session patch.",
+    "TCP buffers, shared scheduling and debug serialization affect timing; these are individual observations, not percentile estimates.",
+    "No real Windows microphone/UI session was exercised; exact-platform CI results are recorded separately.",
+    "Async timeouts do not preempt synchronous work; a slow valid peer or scheduler pause can exceed the selected budget."
+  ],
+  "initial_linux_observations": [
+    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.805",
+    "stalled_stop chunks_drained=372 elapsed_ms=151.044 error=timed out sending final local streaming ASR audio",
+    "stalled_cancel elapsed_ms=101.420 error=timed out cancelling local streaming ASR session",
+    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=503.373",
+    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=100.867 error=timed out pumping local streaming ASR audio",
+    "slow_stop_with_full_final_window elapsed_ms=2456.236"
+  ],
+  "initial_test_sha256": "f9654d6ac3924fe5eacd9c6f2b4951daad6f198d0f34f632b43be4f5cc9c2d84",
+  "additional_negative_controls": [
+    {
+      "change": "share one 2 s budget across Stop transfer and final response",
+      "result": "expected final-response timeout test failure at 2.00 s; exit 101"
+    },
+    {
+      "change": "relax Cancel deadline to 10 s",
+      "result": "expected outer 2 s watchdog failure; exit 101"
+    }
+  ],
+  "windows_fixture_correction": {
+    "initial_run": "https://github.com/aiaimimi0920/Talk/actions/runs/36903469075",
+    "job_id": 110508065475,
+    "initial_head": "ebcd55c4a10f066bb193ac0dd79c300795b5b599",
+    "failures": [
+      "Single 4 MiB Cancel setup send completed, so it had not reached observed backpressure.",
+      "Paused-peer transfer was buffered; final-response test timed out instead of proving separate phase budgets."
+    ],
+    "changes": [
+      "Use bounded small sends until backpressure is observed.",
+      "Control PCM-preparation time inside the transfer phase and start the peer reading before Stop."
+    ],
+    "production_files_changed": false,
+    "corrected_ci": {
+      "run": "https://github.com/aiaimimi0920/Talk/actions/runs/36904595411",
+      "head": "80b4322560d89b45d5d0d0cd7b89801acf8ee02e",
+      "windows_job_id": 110511845895,
+      "conclusion": "success"
+    }
+  },
+  "portable_fixture_observations": [
+    "healthy_pumps count=2 chunk_bytes=3200 elapsed_ms=4.720",
+    "stalled_stop chunks_drained=372 elapsed_ms=151.518 error=timed out sending final local streaming ASR audio",
+    "stalled_cancel elapsed_ms=101.487 error=timed out cancelling local streaming ASR session",
+    "slow_valid_pump chunk_bytes=2097152 elapsed_ms=505.632",
+    "stalled_pump chunks_drained=372 chunk_bytes=3200 elapsed_ms=101.546 error=timed out pumping local streaming ASR audio",
+    "delayed_pcm_stop_with_full_final_window elapsed_ms=2645.997"
+  ],
+  "idle_budget_contract": {
+    "failed_linux_run": "https://github.com/aiaimimi0920/Talk/actions/runs/36904595411",
+    "job_id": 110511846078,
+    "failure": "existing integration fixture requested a 100 ms idle wait within the new default 100 ms total budget",
+    "correction": "explicit 1000 ms pump budget for that 100 ms idle integration fixture; runtime logic unchanged",
+    "production_caller_idle_ms": 1,
+    "default_pump_budget_ms": 100,
+    "regression": "quiet peer with 500 ms idle and 100 ms total returns terminal timeout"
+  }
+}

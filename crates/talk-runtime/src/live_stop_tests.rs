@@ -134,12 +134,14 @@ async fn session_and_peer(
         .unwrap();
     (
         LocalStreamingAsrLiveSession {
-            client,
+            client: Some(client),
+            terminal_error: None,
             cursor: RecordingPcmCursor::default(),
             events: vec![StreamingAsrEvent::partial("segment", "existing")],
             session_id: "stop-test".to_string(),
             sample_rate_hz: 16_000,
             channels: 1,
+            pump_timeout: Duration::from_millis(100),
             final_timeout: if matches!(reply, Reply::Timeout) {
                 Duration::from_millis(200)
             } else {

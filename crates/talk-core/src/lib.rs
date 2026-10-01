@@ -272,6 +272,12 @@ impl TalkConfig {
                         .to_string(),
                 );
             }
+            if service.pump_timeout_ms == 0 {
+                problems.push(
+                    "speculative.streaming_service.pump_timeout_ms must be greater than 0"
+                        .to_string(),
+                );
+            }
             if service.final_timeout_ms == 0 {
                 problems.push(
                     "speculative.streaming_service.final_timeout_ms must be greater than 0"
@@ -981,6 +987,8 @@ pub struct SpeculativeStreamingServiceConfig {
     pub connect_timeout_ms: u64,
     #[serde(default = "default_speculative_streaming_service_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
+    #[serde(default = "default_speculative_streaming_service_pump_timeout_ms")]
+    pub pump_timeout_ms: u64,
     #[serde(default = "default_speculative_streaming_service_final_timeout_ms")]
     pub final_timeout_ms: u64,
     #[serde(default)]
@@ -995,6 +1003,7 @@ impl Default for SpeculativeStreamingServiceConfig {
             channels: default_speculative_streaming_service_channels(),
             connect_timeout_ms: default_speculative_streaming_service_connect_timeout_ms(),
             idle_timeout_ms: default_speculative_streaming_service_idle_timeout_ms(),
+            pump_timeout_ms: default_speculative_streaming_service_pump_timeout_ms(),
             final_timeout_ms: default_speculative_streaming_service_final_timeout_ms(),
             local_daemon: None,
         }
@@ -1129,6 +1138,10 @@ fn default_speculative_streaming_service_connect_timeout_ms() -> u64 {
 
 fn default_speculative_streaming_service_idle_timeout_ms() -> u64 {
     3_000
+}
+
+fn default_speculative_streaming_service_pump_timeout_ms() -> u64 {
+    100
 }
 
 fn default_speculative_streaming_service_final_timeout_ms() -> u64 {

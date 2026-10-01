@@ -657,13 +657,15 @@ pub async fn run_local_streaming_asr_service_from_recording(
 }
 
 pub struct LocalStreamingAsrLiveSession {
-    client: LocalStreamingAsrServiceClient,
+    client: Option<LocalStreamingAsrServiceClient>,
+    terminal_error: Option<String>,
     cursor: RecordingPcmCursor,
     events: Vec<StreamingAsrEvent>,
     session_id: String,
     sample_rate_hz: u32,
     channels: u16,
     final_timeout: Duration,
+    pump_timeout: Duration,
 }
 
 // Keep capture lifetime separate from transport lifetime. The private seam
@@ -712,29 +714,80 @@ impl LocalStreamingAsrLiveSession {
             .await?;
 
         Ok(Self {
-            client,
+            client: Some(client),
+            terminal_error: None,
             cursor: RecordingPcmCursor::default(),
             events: Vec::new(),
             session_id: session_id.to_string(),
             sample_rate_hz: service.sample_rate_hz,
             channels: service.channels,
             final_timeout: Duration::from_millis(service.final_timeout_ms),
+            pump_timeout: Duration::from_millis(service.pump_timeout_ms),
         })
     }
 
+    /// Sends one current PCM snapshot and collects events until receive-idle.
+    /// `event_idle_timeout` is part of the configured `pump_timeout_ms` total
+    /// budget, not an additional allowance. Keep it shorter than that budget
+    /// and leave room for PCM preparation, sending, and initial responses.
+    /// Exceeding the total budget, any other error, or cancellation permanently
+    /// closes this session; callers must stop capture instead of retrying it.
     pub async fn pump_available_audio(
         &mut self,
         recording: &talk_audio::RecordingSession,
         event_idle_timeout: Duration,
     ) -> Result<Vec<StreamingAsrEvent>> {
-        self.send_available_audio(recording).await?;
-        let events = self
-            .client
-            .collect_available_asr_events_until_idle(event_idle_timeout)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        self.events.extend(events.iter().cloned());
-        Ok(events)
+        self.pump_audio_source(recording, event_idle_timeout).await
+    }
+
+    async fn pump_audio_source(
+        &mut self,
+        recording: &impl LivePcmSource,
+        event_idle_timeout: Duration,
+    ) -> Result<Vec<StreamingAsrEvent>> {
+        // Own the socket across awaits. Cancellation or a failed send may leave
+        // an unknown prefix on the wire; dropping it makes this session terminal.
+        // Never retry that PCM cursor or replay on a replacement connection.
+        let mut client = self.take_client()?;
+        self.terminal_error = Some("local streaming ASR live pump was interrupted".to_string());
+        let result = tokio::time::timeout(self.pump_timeout, async {
+            // A native drain contains all PCM available at that instant. Leave
+            // newly captured PCM for the next timer tick instead of chasing it.
+            self.send_available_audio(&mut client, recording, 1).await?;
+            client
+                .collect_available_asr_events_until_idle(event_idle_timeout)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "timed out pumping local streaming ASR audio"
+            ))
+        });
+        match result {
+            Ok(events) => {
+                self.events.extend(events.iter().cloned());
+                self.client = Some(client);
+                self.terminal_error = None;
+                Ok(events)
+            }
+            Err(error) => {
+                self.terminal_error = Some(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    fn take_client(&mut self) -> Result<LocalStreamingAsrServiceClient> {
+        self.client.take().ok_or_else(|| {
+            anyhow::anyhow!(
+                "local streaming ASR session cannot resume after failure: {}",
+                self.terminal_error
+                    .as_deref()
+                    .unwrap_or("connection unavailable")
+            )
+        })
     }
 
     pub async fn stop(
@@ -757,27 +810,47 @@ impl LocalStreamingAsrLiveSession {
         // Freeze before the first network await: slow sends must not extend
         // the recording, and the final drain must see a stable capture tail.
         recording.stop_capture()?;
-        self.send_available_audio(recording).await?;
-        self.client.stop(&self.session_id).await?;
-        let final_events = self
-            .client
+        let mut client = self.take_client()?;
+        // Bound the final transfer separately so backpressure cannot prevent
+        // the existing full final-response budget from starting.
+        tokio::time::timeout(self.final_timeout, async {
+            self.send_available_audio(&mut client, recording, usize::MAX)
+                .await?;
+            client
+                .stop(&self.session_id)
+                .await
+                .map_err(anyhow::Error::from)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out sending final local streaming ASR audio"))??;
+        let final_events = client
             .collect_asr_events_until_final(self.final_timeout)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            .await?;
         self.events.extend(final_events);
         Ok(self.events)
     }
 
     pub async fn cancel(mut self) -> Result<()> {
-        self.client
-            .cancel(&self.session_id)
+        let Some(mut client) = self.client.take() else {
+            return Ok(());
+        };
+        tokio::time::timeout(self.pump_timeout, client.cancel(&self.session_id))
             .await
+            .map_err(|_| anyhow::anyhow!("timed out cancelling local streaming ASR session"))?
             .map_err(Into::into)
     }
 
-    async fn send_available_audio(&mut self, recording: &impl LivePcmSource) -> Result<usize> {
+    async fn send_available_audio(
+        &mut self,
+        client: &mut LocalStreamingAsrServiceClient,
+        recording: &impl LivePcmSource,
+        max_chunks: usize,
+    ) -> Result<usize> {
         let mut sent_chunks = 0usize;
-        while let Some(chunk) = recording.drain_pcm_chunk(&mut self.cursor)? {
+        while sent_chunks < max_chunks {
+            let Some(chunk) = recording.drain_pcm_chunk(&mut self.cursor)? else {
+                break;
+            };
             if chunk.sample_rate_hz != self.sample_rate_hz || chunk.channels != self.channels {
                 anyhow::bail!(
                     "recording PCM chunk format {} Hz / {} channels does not match streaming_service {} Hz / {} channels",
@@ -787,7 +860,7 @@ impl LocalStreamingAsrLiveSession {
                     self.channels
                 );
             }
-            self.client
+            client
                 .send_audio(&self.session_id, chunk.sequence, &chunk.bytes)
                 .await?;
             sent_chunks = sent_chunks.saturating_add(1);
@@ -1418,3 +1491,6 @@ fn insert_method_name(method: InsertMethod) -> &'static str {
 
 #[cfg(test)]
 mod live_stop_tests;
+
+#[cfg(test)]
+mod live_backpressure_tests;

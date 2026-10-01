@@ -194,6 +194,7 @@ final_timeout_ms = 7000
     assert_eq!(service.channels, 1);
     assert_eq!(service.connect_timeout_ms, 1_000);
     assert_eq!(service.idle_timeout_ms, 3_000);
+    assert_eq!(service.pump_timeout_ms, 100);
     assert_eq!(service.final_timeout_ms, 7_000);
 }
 
@@ -369,6 +370,7 @@ cloud_correction = "disabled"
     assert_eq!(service.channels, 1);
     assert_eq!(service.connect_timeout_ms, 1_000);
     assert_eq!(service.idle_timeout_ms, 3_000);
+    assert_eq!(service.pump_timeout_ms, 100);
     assert_eq!(service.final_timeout_ms, 7_000);
 }
 
@@ -453,6 +455,7 @@ sample_rate_hz = 16000
 channels = 1
 connect_timeout_ms = 0
 idle_timeout_ms = 0
+pump_timeout_ms = 0
 final_timeout_ms = 0
 "#,
     );
@@ -467,6 +470,10 @@ final_timeout_ms = 0
     );
     assert!(
         message.contains("speculative.streaming_service.idle_timeout_ms must be greater than 0"),
+        "error={error}"
+    );
+    assert!(
+        message.contains("speculative.streaming_service.pump_timeout_ms must be greater than 0"),
         "error={error}"
     );
     assert!(
@@ -2164,4 +2171,18 @@ fn parses_desktop_streaming_service_speculative_example_config() {
     assert_eq!(service.endpoint, "ws://127.0.0.1:53171/asr");
     assert_eq!(service.sample_rate_hz, 16_000);
     assert_eq!(service.channels, 1);
+}
+
+#[test]
+fn streaming_service_live_pump_budget_can_be_configured() {
+    let raw = speculative_streaming_service_config_with("pump_timeout_ms = 250");
+    let config = TalkConfig::from_toml_str(&raw).unwrap();
+    assert_eq!(
+        config
+            .speculative
+            .streaming_service
+            .unwrap()
+            .pump_timeout_ms,
+        250
+    );
 }

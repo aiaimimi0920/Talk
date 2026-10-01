@@ -656,6 +656,7 @@ sample_rate_hz = 16000
 channels = 1
 connect_timeout_ms = 1000
 idle_timeout_ms = 1000
+pump_timeout_ms = 1000
 final_timeout_ms = 1000
 "#
     ))
@@ -675,6 +676,8 @@ final_timeout_ms = 1000
         LocalStreamingAsrLiveSession::start(&config, "live-streaming-runtime-session", Some("zh"))
             .await
             .unwrap();
+    // This fixture waits 100 ms for receive-idle, so its total pump budget
+    // explicitly leaves room for the send and initial partial response too.
     let partial_events = live_session
         .pump_available_audio(&recording, Duration::from_millis(100))
         .await

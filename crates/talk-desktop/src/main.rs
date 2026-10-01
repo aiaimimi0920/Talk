@@ -4581,6 +4581,14 @@ mod windows_app {
                             }
                             Err(error) => {
                                 eprintln!("Talk local streaming ASR live pump failed: {error:#}");
+                                let generation = active.generation;
+                                // End this failed session before the idle path can
+                                // promote an old partial into an inserted segment.
+                                // Keep the terminal streaming session so Stop cannot
+                                // fall back to replaying the full recording.
+                                drop(shared);
+                                request_stop_recording(hwnd, generation);
+                                return Err(error);
                             }
                         }
                     }

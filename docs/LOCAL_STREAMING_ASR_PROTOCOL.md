@@ -138,8 +138,31 @@ sample_rate_hz = 16000
 channels = 1
 connect_timeout_ms = 1000
 idle_timeout_ms = 3000
+pump_timeout_ms = 100
 final_timeout_ms = 7000
 ```
+
+`pump_timeout_ms` is a positive total budget for one live desktop pump, including
+one current PCM snapshot, its send, and event collection. It defaults to 100 ms:
+roughly two 48 ms HUD refresh intervals. It does not wait for recognition to
+finish; a healthy pump normally returns when no event arrives for 1 ms. Increase
+the budget for a slower local transport or large catch-up snapshots, accepting a
+longer possible UI pause. A stalled peer or a scheduler pause beyond the budget
+can fail the session. This is bounded synchronous work, not a background pump or
+a hard real-time guarantee: synchronous PCM conversion/serialization and OS
+scheduling may overshoot an async deadline.
+
+A failed or interrupted live pump closes its connection permanently. The desktop
+stops capture and reports the failure; it does not replay ambiguously sent PCM or
+promote a saved partial transcript after that failure. Audio already delivered or
+text already inserted before failure cannot be recalled.
+
+After capture stops, `final_timeout_ms` separately bounds the final PCM/Stop-send
+phase and the subsequent final-response phase. The recognizer keeps its full
+existing response window; total network waiting can therefore reach twice this
+value. Live Cancel uses `pump_timeout_ms` and always drops its connection when it
+returns. These bounds apply to the live session; the separate batch helper and
+low-level client send API retain their existing behavior.
 
 `local_asr = "external_command"` remains supported as a batch fallback. The
 streaming service path is the target path for Typeless/OpenLess-like live
