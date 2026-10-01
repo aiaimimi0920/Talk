@@ -4,8 +4,9 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 #[cfg(windows)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 pub use talk_core::NativeReadinessStatus;
 use talk_core::{AudioBackendMode, TalkError};
@@ -253,6 +254,7 @@ pub fn capture_audio(request: &AudioCaptureRequest) -> Result<AudioArtifact, Tal
 }
 
 pub fn play_wav(request: &AudioPlaybackRequest) -> Result<(), TalkError> {
+    validate_playback_audio_path(&request.audio_path)?;
     play_wav_impl(request)
 }
 
@@ -1259,6 +1261,12 @@ impl NativeWindowsRecording {
         ))
     }
 
+    fn finish_probe(&mut self) -> Result<AudioSignalProbe, TalkError> {
+        Err(native_windows_audio_error(
+            "native_windows audio backend is only available on Windows",
+        ))
+    }
+
     fn cancel(&mut self) -> Result<(), TalkError> {
         Err(native_windows_audio_error(
             "native_windows audio backend is only available on Windows",
@@ -1329,7 +1337,6 @@ fn probe_native_windows_audio_readiness_impl(
 
 #[cfg(windows)]
 fn play_wav_impl(request: &AudioPlaybackRequest) -> Result<(), TalkError> {
-    validate_playback_audio_path(&request.audio_path)?;
     let source = read_playback_wav_buffer(&request.audio_path)?;
     let host = cpal::default_host();
     let (device, device_name) =

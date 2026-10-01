@@ -300,3 +300,139 @@ Write-Output '{"type":"final","segment_id":"seg-1","text":"你好。"}'
         ]
     );
 }
+
+// A service can remain connected and send keepalives or partial hypotheses
+// forever. Neither is evidence that the awaited message/final result arrived.
+async fn client_with_repeating_message(
+    message: tokio_tungstenite::tungstenite::Message,
+) -> (LocalStreamingAsrServiceClient, tokio::task::JoinHandle<()>) {
+    use futures_util::SinkExt;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/asr", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        loop {
+            if socket.send(message.clone()).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let client = LocalStreamingAsrServiceClient::connect(&endpoint, Duration::from_secs(2))
+        .await
+        .unwrap();
+    (client, server)
+}
+
+#[tokio::test]
+async fn local_streaming_receive_timeout_is_not_reset_by_keepalives() {
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    for message in [
+        Message::Ping(Vec::new().into()),
+        Message::Pong(Vec::new().into()),
+    ] {
+        let (mut client, server) = client_with_repeating_message(message).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.try_next_server_message(Duration::from_millis(100)),
+        )
+        .await;
+        server.abort();
+        assert!(result
+            .expect("keepalives must not extend the receive deadline")
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn local_streaming_final_timeout_is_not_reset_by_partial_results() {
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (mut client, server) = client_with_repeating_message(Message::Text(
+        r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"你好"}"#.into(),
+    ))
+    .await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.collect_asr_events_until_final(Duration::from_millis(100)),
+    )
+    .await;
+    server.abort();
+    let error = result
+        .expect("partial results must not extend the final deadline")
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+}
+
+#[tokio::test]
+async fn local_streaming_client_can_receive_after_a_timed_out_operation() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    for wait_for_final in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/asr", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let first = if wait_for_final {
+                Message::Text(
+                    r#"{"type":"partial","session_id":"session-1","segment_id":"seg-1","text":"你好"}"#.into(),
+                )
+            } else {
+                Message::Ping(Vec::new().into())
+            };
+            socket.send(first).await.unwrap();
+            // Wait for the client's next operation rather than racing a wall-clock delay.
+            // A Pong from the interrupted receive may precede the Stop message.
+            loop {
+                let message = socket.next().await.unwrap().unwrap();
+                if let Message::Text(text) = message {
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&text).unwrap()["type"],
+                        "stop"
+                    );
+                    break;
+                }
+            }
+            socket.send(Message::Text(
+                r#"{"type":"final","session_id":"session-1","segment_id":"seg-1","text":"你好。"}"#.into(),
+            )).await.unwrap();
+        });
+        let mut client = LocalStreamingAsrServiceClient::connect(&endpoint, Duration::from_secs(2))
+            .await
+            .unwrap();
+        if wait_for_final {
+            let error = client
+                .collect_asr_events_until_final(Duration::from_millis(50))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("timed out"), "{error}");
+        } else {
+            assert!(client
+                .try_next_server_message(Duration::from_millis(50))
+                .await
+                .unwrap()
+                .is_none());
+        }
+        client.stop("session-1").await.unwrap();
+        let message = client
+            .next_server_message(Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(
+            matches!(message, LocalStreamingAsrServerMessage::Final { text, .. } if text == "你好。")
+        );
+        server.await.unwrap();
+    }
+}

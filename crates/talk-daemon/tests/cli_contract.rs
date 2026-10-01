@@ -814,7 +814,7 @@ fn http_request(
     body: Option<&str>,
     bearer: Option<&str>,
 ) -> String {
-    let mut stream = TcpStream::connect((host, port)).expect("connect talk server");
+    let mut stream = TcpStream::connect(format!("{host}:{port}")).expect("connect talk server");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set client timeout");
@@ -843,7 +843,7 @@ fn http_request_with_raw_authorization(
     body: &str,
     authorization: &str,
 ) -> String {
-    let mut stream = TcpStream::connect((host, port)).expect("connect talk server");
+    let mut stream = TcpStream::connect(format!("{host}:{port}")).expect("connect talk server");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set client timeout");
@@ -868,7 +868,7 @@ fn http_request_with_declared_content_length(
     content_length: usize,
     bearer: Option<&str>,
 ) -> String {
-    let mut stream = TcpStream::connect((host, port)).expect("connect talk server");
+    let mut stream = TcpStream::connect(format!("{host}:{port}")).expect("connect talk server");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set client timeout");
@@ -894,7 +894,7 @@ fn raw_http_request(host: &str, port: u16, request: &str) -> String {
 }
 
 fn raw_http_request_bytes(host: &str, port: u16, request: &[u8]) -> String {
-    let mut stream = TcpStream::connect((host, port)).expect("connect talk server");
+    let mut stream = TcpStream::connect(format!("{host}:{port}")).expect("connect talk server");
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set client timeout");

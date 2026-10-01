@@ -212,17 +212,26 @@ impl LocalStreamingAsrServiceClient {
                 "local streaming ASR final timeout must be greater than 0".to_string(),
             ));
         }
-        let mut events = Vec::new();
-        loop {
-            let message = self.next_server_message(final_timeout).await?;
-            if let Some(event) = local_streaming_server_message_to_asr_event(message)? {
-                let is_final = event.is_final();
-                events.push(event);
-                if is_final {
-                    return Ok(events);
+        // The budget covers the whole operation, not each partial hypothesis.
+        tokio::time::timeout(final_timeout, async {
+            let mut events = Vec::new();
+            loop {
+                let message = self.next_server_message(final_timeout).await?;
+                if let Some(event) = local_streaming_server_message_to_asr_event(message)? {
+                    let is_final = event.is_final();
+                    events.push(event);
+                    if is_final {
+                        return Ok(events);
+                    }
                 }
             }
-        }
+        })
+        .await
+        .map_err(|_| {
+            TalkError::Provider(
+                "timed out waiting for local streaming ASR final result".to_string(),
+            )
+        })?
     }
 
     pub async fn collect_available_asr_events_until_idle(
@@ -270,11 +279,18 @@ impl LocalStreamingAsrServiceClient {
                 "local streaming ASR receive timeout must be greater than 0".to_string(),
             ));
         }
+        // Keepalives and their replies consume the same receive budget.
+        match tokio::time::timeout(receive_timeout, self.receive_server_message()).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn receive_server_message(
+        &mut self,
+    ) -> Result<LocalStreamingAsrServerMessage, TalkError> {
         loop {
-            let next = match tokio::time::timeout(receive_timeout, self.socket.next()).await {
-                Ok(next) => next,
-                Err(_) => return Ok(None),
-            };
+            let next = self.socket.next().await;
             let Some(message) = next else {
                 return Err(TalkError::Provider(
                     "local streaming ASR service closed the connection".to_string(),
@@ -287,7 +303,7 @@ impl LocalStreamingAsrServiceClient {
             })?;
             match message {
                 Message::Text(text) => {
-                    return parse_local_streaming_asr_server_message(&text).map(Some);
+                    return parse_local_streaming_asr_server_message(&text);
                 }
                 Message::Binary(bytes) => {
                     let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
@@ -295,7 +311,7 @@ impl LocalStreamingAsrServiceClient {
                             "local streaming ASR binary message must be UTF-8 JSON: {error}"
                         ))
                     })?;
-                    return parse_local_streaming_asr_server_message(&text).map(Some);
+                    return parse_local_streaming_asr_server_message(&text);
                 }
                 Message::Ping(payload) => {
                     self.socket
