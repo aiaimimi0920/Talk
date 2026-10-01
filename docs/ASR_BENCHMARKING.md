@@ -625,3 +625,11 @@ public corpus provenance, and a model-backed regression test. The Sherpa worker'
 `--tail-padding-ms` override accepts 0–2000 ms (default 1000) of acoustic zeros
 at Stop. This costs computation, not a wall-clock sleep. Use identical settings
 for comparisons and do not infer end-to-end speed or accuracy from dry-run text.
+
+## Capture-reader contention
+
+The [2026-10-01 reader-lock check](asr-benchmarks/capture-reader-contention-20261001.md)
+reproduces callback sample loss under a busy capture mutex and measures the
+bounded UI snapshot approach. It reports shorter critical sections and extra
+copy work explicitly; it does not measure or claim model accuracy or end-to-end
+recognition speed.
