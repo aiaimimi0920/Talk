@@ -505,3 +505,33 @@ async fn cancel_deadline_drops_a_live_client_with_a_blocked_write() {
     let received = received_after_close(resume, peer).await;
     assert_only_unique_audio(&received, interrupted_sequence + 1);
 }
+
+#[tokio::test]
+async fn quiet_peer_idle_wait_cannot_extend_the_total_pump_budget() {
+    let (mut session, resume, peer) =
+        stalled_peer(Duration::from_millis(100), Duration::from_secs(1)).await;
+    let mut source = BacklogSource::new(1, 3200);
+    resume.send(()).unwrap();
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        session.pump_audio_source(&source, Duration::from_millis(500)),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.to_string().contains("timed out pumping"));
+    assert!(session.client.is_none());
+    assert!(session
+        .stop_audio_source(&mut source)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("cannot resume"));
+    assert!(!source.capturing.get());
+    let received = tokio::time::timeout(Duration::from_secs(2), peer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["type"], "audio");
+}

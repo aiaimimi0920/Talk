@@ -726,6 +726,12 @@ impl LocalStreamingAsrLiveSession {
         })
     }
 
+    /// Sends one current PCM snapshot and collects events until receive-idle.
+    /// `event_idle_timeout` is part of the configured `pump_timeout_ms` total
+    /// budget, not an additional allowance. Keep it shorter than that budget
+    /// and leave room for PCM preparation, sending, and initial responses.
+    /// Exceeding the total budget, any other error, or cancellation permanently
+    /// closes this session; callers must stop capture instead of retrying it.
     pub async fn pump_available_audio(
         &mut self,
         recording: &talk_audio::RecordingSession,

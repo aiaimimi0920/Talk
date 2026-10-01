@@ -37,12 +37,12 @@ not latency percentiles or real recognition speed/accuracy measurements.
 
 | Case | Budget | Observed outcome |
 | --- | --- | --- |
-| Stalled live pump, 3,200-byte chunks | 100 ms | Terminal error in 101.546 ms, at the 372nd drained chunk |
-| Stalled final PCM drain | 150 ms transfer budget | Error in 151.518 ms; capture stayed stopped |
-| Cancel with an existing blocked write | 100 ms | Error in 101.487 ms and connection dropped |
-| Two healthy small live pumps | 100 ms each | Both succeeded in 4.720 ms total |
-| Slow valid peer with 2 MiB accumulated PCM | 2 s configured pump budget | Succeeded in 505.632 ms |
-| Controlled 1.1 s PCM preparation plus 1.5 s final-response delay | Separate 2 s transfer and 2 s response budgets | Succeeded in 2645.997 ms total |
+| Stalled live pump, 3,200-byte chunks | 100 ms | Terminal error in 100.558 ms, at the 372nd drained chunk |
+| Stalled final PCM drain | 150 ms transfer budget | Error in 150.940 ms; capture stayed stopped |
+| Cancel with an existing blocked write | 100 ms | Error in 100.834 ms and connection dropped |
+| Two healthy small live pumps | 100 ms each | Both succeeded in 4.740 ms total |
+| Slow valid peer with 2 MiB accumulated PCM | 2 s configured pump budget | Succeeded in 461.848 ms |
+| Controlled 1.1 s PCM preparation plus 1.5 s final-response delay | Separate 2 s transfer and 2 s response budgets | Succeeded in 2646.338 ms total |
 
 The last case uses a test-only synchronous delay before producing its first PCM
 chunk; it checks that the existing full final-response window is preserved.
@@ -71,6 +71,15 @@ time from OS buffers. Production code is unchanged. Sharing one 2 s Stop budget
 makes this revised test fail at 2.00 s; relaxing Cancel's deadline makes its 2 s
 watchdog fail. Both controls were restored before the passing full test run.
 The JSON retains the initial observations and the revised source hash.
+The corrected Windows job passed all tests and package validation on
+`80b4322560d89b45d5d0d0cd7b89801acf8ee02e`.
+
+The same run found an existing Linux integration fixture asking for a 100 ms
+receive-idle wait within the new 100 ms total pump budget. It now configures a
+1 s pump budget for that deliberately long wait. The actual desktop caller uses
+1 ms. A quiet-peer regression confirms that a 500 ms idle request cannot extend
+a 100 ms total budget: it fails terminally. The public API documents this
+relationship; runtime logic is unchanged.
 
 ## Reproduce locally
 
