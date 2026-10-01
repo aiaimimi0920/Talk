@@ -1,0 +1,1346 @@
+{
+  "date": "2026-10-01",
+  "baseline_commit": "a0c49c7046ff2751a3bca6e8d470f1a8e20823c5",
+  "candidate": "e9b088902285787729ea9d12d34e9255dedebaf8",
+  "scope": "Local streaming ASR transport and finalization only; no model/provider change.",
+  "model_archive_sha256": "fa5f63d618e5a01526e275a358bb7772e403f84808a4769fba52cffd8160bf74",
+  "sherpa_version": "1.13.4",
+  "model_metadata": {
+    "onnx.infer": "onnxruntime.quant",
+    "model_type": "zipformer2",
+    "version": "1",
+    "model_author": "k2-fsa",
+    "comment": "streaming zipformer2",
+    "decode_chunk_len": "48",
+    "T": "61",
+    "num_encoder_layers": "2,2,4,5,4,2",
+    "encoder_dims": "192,256,512,768,512,256",
+    "cnn_module_kernels": "31,31,15,15,15,31",
+    "left_context_len": "256,128,64,32,64,128",
+    "query_head_dims": "32,32,32,32,32,32",
+    "value_head_dims": "12,12,12,12,12,12",
+    "num_heads": "4,4,4,8,4,4"
+  },
+  "num_threads": 2,
+  "provider": "cpu",
+  "decoding": "greedy_search",
+  "chunk_ms": 80,
+  "partial_idle_timeout_ms": 10,
+  "repetitions": 2,
+  "timing_mode": "as-fast-as-possible existing asr-bench, including its per-chunk idle polling, warm shared model, debug Rust/native prebuilt optimized inference; not microphone latency",
+  "normalization": "Unicode lowercase; drop punctuation, collapse whitespace; CER excludes spaces; English WER uses whitespace words. Existing raw case-sensitive CER is retained under cer.",
+  "limitations": [
+    "10 original utterances, only one Mandarin sample and two English speakers; not a representative speech accuracy estimate.",
+    "One additional derived tail-trimmed Mandarin stress sample is excluded from original-corpus totals.",
+    "Originals and derived sample reused identically for both variants.",
+    "Baseline batch precedes candidate batch; shared cloud CPU and two repetitions limit timing interpretation.",
+    "No Windows microphone hardware measured; no overall speedup established.",
+    "Silence/noise controls retain existing empty-transcript connection-close behavior.",
+    "Model-backed validation covers only the pinned Zipformer; Paraformer and other optional model effects are unmeasured."
+  ],
+  "summary": {
+    "baseline": {
+      "character_errors": 63,
+      "reference_characters": 944,
+      "english_word_errors": 22,
+      "english_reference_words": 213,
+      "mean_sample_median_first_partial_ms": 268.15,
+      "mean_sample_median_final_latency_ms": 1521.25
+    },
+    "candidate": {
+      "character_errors": 14,
+      "reference_characters": 944,
+      "english_word_errors": 10,
+      "english_reference_words": 213,
+      "mean_sample_median_first_partial_ms": 292.65,
+      "mean_sample_median_final_latency_ms": 1605.25
+    }
+  },
+  "samples": [
+    {
+      "sample": {
+        "id": "aishell-BAC009S0724W0121",
+        "file": "aishell-BAC009S0724W0121.wav",
+        "reference": "广州市房地产中介协会分析",
+        "duration_ms": 4281.0,
+        "sha256": "2f9fc9c912bb71c85fb286cb88b599c81efb8f727c727a5ea8f6d1c89c55ac13",
+        "tail_trimmed_ms": 0.0
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4281,
+              "cold_start_ms": 33,
+              "first_partial_ms": 369,
+              "final_latency_ms": 782,
+              "rtf": 0.18266760102779725,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会",
+              "cer": 0.16666666666666666,
+              "sample_id": "aishell-BAC009S0724W0121",
+              "normalized_character_errors": 2,
+              "reference_characters": 12,
+              "normalized_cer": 0.16666666666666666
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4281,
+              "cold_start_ms": 2,
+              "first_partial_ms": 291,
+              "final_latency_ms": 674,
+              "rtf": 0.15743985050221912,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会",
+              "cer": 0.16666666666666666,
+              "sample_id": "aishell-BAC009S0724W0121",
+              "normalized_character_errors": 2,
+              "reference_characters": 12,
+              "normalized_cer": 0.16666666666666666
+            }
+          ],
+          "median_first_partial_ms": 330.0,
+          "median_final_latency_ms": 728.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4281,
+              "cold_start_ms": 5,
+              "first_partial_ms": 324,
+              "final_latency_ms": 782,
+              "rtf": 0.18266760102779725,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会分析",
+              "cer": 0.0,
+              "sample_id": "aishell-BAC009S0724W0121",
+              "normalized_character_errors": 0,
+              "reference_characters": 12,
+              "normalized_cer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4281,
+              "cold_start_ms": 4,
+              "first_partial_ms": 666,
+              "final_latency_ms": 1053,
+              "rtf": 0.24597056762438682,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会分析",
+              "cer": 0.0,
+              "sample_id": "aishell-BAC009S0724W0121",
+              "normalized_character_errors": 0,
+              "reference_characters": 12,
+              "normalized_cer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 495.0,
+          "median_final_latency_ms": 917.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "aishell-BAC009S0724W0121-trimmed",
+        "file": "aishell-BAC009S0724W0121-trimmed.wav",
+        "reference": "广州市房地产中介协会分析",
+        "duration_ms": 3714.375,
+        "sha256": "a53bd2b6562437ccf2aff15e6ef173e6a824e5b24a0b0b10ee288b9937b203c0",
+        "tail_trimmed_ms": 566.625
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 3715,
+              "cold_start_ms": 16,
+              "first_partial_ms": 304,
+              "final_latency_ms": 625,
+              "rtf": 0.16823687752355315,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协",
+              "cer": 0.25,
+              "sample_id": "aishell-BAC009S0724W0121-trimmed",
+              "normalized_character_errors": 3,
+              "reference_characters": 12,
+              "normalized_cer": 0.25
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 3715,
+              "cold_start_ms": 3,
+              "first_partial_ms": 296,
+              "final_latency_ms": 615,
+              "rtf": 0.1655450874831763,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协",
+              "cer": 0.25,
+              "sample_id": "aishell-BAC009S0724W0121-trimmed",
+              "normalized_character_errors": 3,
+              "reference_characters": 12,
+              "normalized_cer": 0.25
+            }
+          ],
+          "median_first_partial_ms": 300.0,
+          "median_final_latency_ms": 620.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 3715,
+              "cold_start_ms": 6,
+              "first_partial_ms": 307,
+              "final_latency_ms": 717,
+              "rtf": 0.1930013458950202,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会分析",
+              "cer": 0.0,
+              "sample_id": "aishell-BAC009S0724W0121-trimmed",
+              "normalized_character_errors": 0,
+              "reference_characters": 12,
+              "normalized_cer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 3715,
+              "cold_start_ms": 7,
+              "first_partial_ms": 490,
+              "final_latency_ms": 880,
+              "rtf": 0.23687752355316286,
+              "peak_rss_mb": 0,
+              "text": "广州市房地产中介协会分析",
+              "cer": 0.0,
+              "sample_id": "aishell-BAC009S0724W0121-trimmed",
+              "normalized_character_errors": 0,
+              "reference_characters": 12,
+              "normalized_cer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 398.5,
+          "median_final_latency_ms": 798.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1995-1837-0001",
+        "file": "librispeech-1995-1837-0001.wav",
+        "reference": "IT WAS THE FIRST GREAT SORROW OF HIS LIFE IT WAS NOT SO MUCH THE LOSS OF THE COTTON ITSELF BUT THE FANTASY THE HOPES THE DREAMS BUILT AROUND IT",
+        "duration_ms": 8730.0,
+        "sha256": "a4d977939c2f673b370e7dd5840118947a8ae95f6d62d3a88f32b40c0631aaee",
+        "tail_trimmed_ms": 0.0
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 8730,
+              "cold_start_ms": 3,
+              "first_partial_ms": 215,
+              "final_latency_ms": 1390,
+              "rtf": 0.15922107674684993,
+              "peak_rss_mb": 0,
+              "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams",
+              "cer": 0.8111888111888111,
+              "sample_id": "librispeech-1995-1837-0001",
+              "normalized_character_errors": 13,
+              "reference_characters": 114,
+              "normalized_cer": 0.11403508771929824,
+              "normalized_word_errors": 3,
+              "reference_words": 30,
+              "normalized_wer": 0.1
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 8730,
+              "cold_start_ms": 3,
+              "first_partial_ms": 208,
+              "final_latency_ms": 1382,
+              "rtf": 0.15830469644902634,
+              "peak_rss_mb": 0,
+              "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams",
+              "cer": 0.8111888111888111,
+              "sample_id": "librispeech-1995-1837-0001",
+              "normalized_character_errors": 13,
+              "reference_characters": 114,
+              "normalized_cer": 0.11403508771929824,
+              "normalized_word_errors": 3,
+              "reference_words": 30,
+              "normalized_wer": 0.1
+            }
+          ],
+          "median_first_partial_ms": 211.5,
+          "median_final_latency_ms": 1386.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 8730,
+              "cold_start_ms": 2,
+              "first_partial_ms": 210,
+              "final_latency_ms": 1497,
+              "rtf": 0.17147766323024055,
+              "peak_rss_mb": 0,
+              "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams built around it",
+              "cer": 0.8041958041958042,
+              "sample_id": "librispeech-1995-1837-0001",
+              "normalized_character_errors": 0,
+              "reference_characters": 114,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 30,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 8730,
+              "cold_start_ms": 4,
+              "first_partial_ms": 214,
+              "final_latency_ms": 1516,
+              "rtf": 0.17365406643757159,
+              "peak_rss_mb": 0,
+              "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams built around it",
+              "cer": 0.8041958041958042,
+              "sample_id": "librispeech-1995-1837-0001",
+              "normalized_character_errors": 0,
+              "reference_characters": 114,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 30,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 212.0,
+          "median_final_latency_ms": 1506.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0000",
+        "file": "librispeech-1272-128104-0000.wav",
+        "reference": "MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL",
+        "duration_ms": 5855.0,
+        "sha256": "799f78ed4beb4de7ceae3a809262d4ce242394342ccd1d58cef7d49dbc2def46"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5855,
+              "cold_start_ms": 2,
+              "first_partial_ms": 225,
+              "final_latency_ms": 928,
+              "rtf": 0.15849701110162254,
+              "peak_rss_mb": 0,
+              "text": "mister Quilter is the apostle of the middle classes, and we are glad to welcome his",
+              "cer": 0.8314606741573034,
+              "sample_id": "librispeech-1272-128104-0000",
+              "normalized_character_errors": 6,
+              "reference_characters": 73,
+              "normalized_cer": 0.0821917808219178,
+              "normalized_word_errors": 1,
+              "reference_words": 17,
+              "normalized_wer": 0.058823529411764705
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5855,
+              "cold_start_ms": 3,
+              "first_partial_ms": 228,
+              "final_latency_ms": 941,
+              "rtf": 0.16071733561058923,
+              "peak_rss_mb": 0,
+              "text": "mister Quilter is the apostle of the middle classes, and we are glad to welcome his",
+              "cer": 0.8314606741573034,
+              "sample_id": "librispeech-1272-128104-0000",
+              "normalized_character_errors": 6,
+              "reference_characters": 73,
+              "normalized_cer": 0.0821917808219178,
+              "normalized_word_errors": 1,
+              "reference_words": 17,
+              "normalized_wer": 0.058823529411764705
+            }
+          ],
+          "median_first_partial_ms": 226.5,
+          "median_final_latency_ms": 934.5
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5855,
+              "cold_start_ms": 3,
+              "first_partial_ms": 246,
+              "final_latency_ms": 1114,
+              "rtf": 0.19026473099914604,
+              "peak_rss_mb": 0,
+              "text": "mister Quilter is the apostle of the middle classes, and we are glad to welcome his gospel",
+              "cer": 0.8202247191011236,
+              "sample_id": "librispeech-1272-128104-0000",
+              "normalized_character_errors": 0,
+              "reference_characters": 73,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 17,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5855,
+              "cold_start_ms": 5,
+              "first_partial_ms": 205,
+              "final_latency_ms": 1101,
+              "rtf": 0.18804440649017934,
+              "peak_rss_mb": 0,
+              "text": "mister Quilter is the apostle of the middle classes, and we are glad to welcome his gospel",
+              "cer": 0.8202247191011236,
+              "sample_id": "librispeech-1272-128104-0000",
+              "normalized_character_errors": 0,
+              "reference_characters": 73,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 17,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 225.5,
+          "median_final_latency_ms": 1107.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0001",
+        "file": "librispeech-1272-128104-0001.wav",
+        "reference": "NOR IS MISTER QUILTER'S MANNER LESS INTERESTING THAN HIS MATTER",
+        "duration_ms": 4815.0,
+        "sha256": "473b1bb573e8f7cdcd639c6e318036236190107b66bfe6892286121a92d464c1"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4815,
+              "cold_start_ms": 6,
+              "first_partial_ms": 305,
+              "final_latency_ms": 836,
+              "rtf": 0.17362409138110071,
+              "peak_rss_mb": 0,
+              "text": "Nor is mister Quilter's manner less interesting than his",
+              "cer": 0.8253968253968254,
+              "sample_id": "librispeech-1272-128104-0001",
+              "normalized_character_errors": 6,
+              "reference_characters": 53,
+              "normalized_cer": 0.11320754716981132,
+              "normalized_word_errors": 1,
+              "reference_words": 10,
+              "normalized_wer": 0.1
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4815,
+              "cold_start_ms": 3,
+              "first_partial_ms": 306,
+              "final_latency_ms": 786,
+              "rtf": 0.1632398753894081,
+              "peak_rss_mb": 0,
+              "text": "Nor is mister Quilter's manner less interesting than his",
+              "cer": 0.8253968253968254,
+              "sample_id": "librispeech-1272-128104-0001",
+              "normalized_character_errors": 6,
+              "reference_characters": 53,
+              "normalized_cer": 0.11320754716981132,
+              "normalized_word_errors": 1,
+              "reference_words": 10,
+              "normalized_wer": 0.1
+            }
+          ],
+          "median_first_partial_ms": 305.5,
+          "median_final_latency_ms": 811.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4815,
+              "cold_start_ms": 6,
+              "first_partial_ms": 302,
+              "final_latency_ms": 893,
+              "rtf": 0.18546209761163032,
+              "peak_rss_mb": 0,
+              "text": "Nor is mister Quilter's manner less interesting than his matter",
+              "cer": 0.8095238095238095,
+              "sample_id": "librispeech-1272-128104-0001",
+              "normalized_character_errors": 0,
+              "reference_characters": 53,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 10,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 4815,
+              "cold_start_ms": 4,
+              "first_partial_ms": 291,
+              "final_latency_ms": 887,
+              "rtf": 0.1842159916926272,
+              "peak_rss_mb": 0,
+              "text": "Nor is mister Quilter's manner less interesting than his matter",
+              "cer": 0.8095238095238095,
+              "sample_id": "librispeech-1272-128104-0001",
+              "normalized_character_errors": 0,
+              "reference_characters": 53,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 10,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 296.5,
+          "median_final_latency_ms": 890.0
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0002",
+        "file": "librispeech-1272-128104-0002.wav",
+        "reference": "HE TELLS US THAT AT THIS FESTIVE SEASON OF THE YEAR WITH CHRISTMAS AND ROAST BEEF LOOMING BEFORE US SIMILES DRAWN FROM EATING AND ITS RESULTS OCCUR MOST READILY TO THE MIND",
+        "duration_ms": 12485.0,
+        "sha256": "5f4d8f7331acffc3d2efbe0f764b9eb3447911dc17f9843e38e1083eb1685b9c"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 12485,
+              "cold_start_ms": 2,
+              "first_partial_ms": 285,
+              "final_latency_ms": 2042,
+              "rtf": 0.16355626752102523,
+              "peak_rss_mb": 0,
+              "text": "He tells us that at this festive season of the year, with Christmas and roast beef looming before us, similes drawn from eating and its results occur most readily to the",
+              "cer": 0.8255813953488372,
+              "sample_id": "librispeech-1272-128104-0002",
+              "normalized_character_errors": 4,
+              "reference_characters": 141,
+              "normalized_cer": 0.028368794326241134,
+              "normalized_word_errors": 1,
+              "reference_words": 32,
+              "normalized_wer": 0.03125
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 12485,
+              "cold_start_ms": 3,
+              "first_partial_ms": 287,
+              "final_latency_ms": 2105,
+              "rtf": 0.16860232278734483,
+              "peak_rss_mb": 0,
+              "text": "He tells us that at this festive season of the year, with Christmas and roast beef looming before us, similes drawn from eating and its results occur most readily to the",
+              "cer": 0.8255813953488372,
+              "sample_id": "librispeech-1272-128104-0002",
+              "normalized_character_errors": 4,
+              "reference_characters": 141,
+              "normalized_cer": 0.028368794326241134,
+              "normalized_word_errors": 1,
+              "reference_words": 32,
+              "normalized_wer": 0.03125
+            }
+          ],
+          "median_first_partial_ms": 286.0,
+          "median_final_latency_ms": 2073.5
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 12485,
+              "cold_start_ms": 6,
+              "first_partial_ms": 297,
+              "final_latency_ms": 2078,
+              "rtf": 0.16643972767320786,
+              "peak_rss_mb": 0,
+              "text": "He tells us that at this festive season of the year, with Christmas and roast beef looming before us, similes drawn from eating and its results occur most readily to the mind",
+              "cer": 0.8197674418604651,
+              "sample_id": "librispeech-1272-128104-0002",
+              "normalized_character_errors": 0,
+              "reference_characters": 141,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 32,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 12485,
+              "cold_start_ms": 2,
+              "first_partial_ms": 303,
+              "final_latency_ms": 2086,
+              "rtf": 0.1670804965959151,
+              "peak_rss_mb": 0,
+              "text": "He tells us that at this festive season of the year, with Christmas and roast beef looming before us, similes drawn from eating and its results occur most readily to the mind",
+              "cer": 0.8197674418604651,
+              "sample_id": "librispeech-1272-128104-0002",
+              "normalized_character_errors": 0,
+              "reference_characters": 141,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 32,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 300.0,
+          "median_final_latency_ms": 2082.0
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0003",
+        "file": "librispeech-1272-128104-0003.wav",
+        "reference": "HE HAS GRAVE DOUBTS WHETHER SIR FREDERICK LEIGHTON'S WORK IS REALLY GREEK AFTER ALL AND CAN DISCOVER IN IT BUT LITTLE OF ROCKY ITHACA",
+        "duration_ms": 9900.0,
+        "sha256": "fc23353b884061a5c5784b0cf6b5c539680c50cfae993882822ebdd4a06ddf8c"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9900,
+              "cold_start_ms": 3,
+              "first_partial_ms": 289,
+              "final_latency_ms": 1597,
+              "rtf": 0.16131313131313132,
+              "peak_rss_mb": 0,
+              "text": "He has grave doubts whether Sir Frederick Layton's work is really Greek after all, and can discover in it but little of rocky Itha",
+              "cer": 0.7819548872180451,
+              "sample_id": "librispeech-1272-128104-0003",
+              "normalized_character_errors": 6,
+              "reference_characters": 109,
+              "normalized_cer": 0.05504587155963303,
+              "normalized_word_errors": 2,
+              "reference_words": 24,
+              "normalized_wer": 0.08333333333333333
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9900,
+              "cold_start_ms": 2,
+              "first_partial_ms": 298,
+              "final_latency_ms": 1996,
+              "rtf": 0.2016161616161616,
+              "peak_rss_mb": 0,
+              "text": "He has grave doubts whether Sir Frederick Layton's work is really Greek after all, and can discover in it but little of rocky Itha",
+              "cer": 0.7819548872180451,
+              "sample_id": "librispeech-1272-128104-0003",
+              "normalized_character_errors": 6,
+              "reference_characters": 109,
+              "normalized_cer": 0.05504587155963303,
+              "normalized_word_errors": 2,
+              "reference_words": 24,
+              "normalized_wer": 0.08333333333333333
+            }
+          ],
+          "median_first_partial_ms": 293.5,
+          "median_final_latency_ms": 1796.5
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9900,
+              "cold_start_ms": 7,
+              "first_partial_ms": 302,
+              "final_latency_ms": 1689,
+              "rtf": 0.1706060606060606,
+              "peak_rss_mb": 0,
+              "text": "He has grave doubts whether Sir Frederick Layton's work is really Greek after all, and can discover in it but little of rocky Ithaca",
+              "cer": 0.7819548872180451,
+              "sample_id": "librispeech-1272-128104-0003",
+              "normalized_character_errors": 4,
+              "reference_characters": 109,
+              "normalized_cer": 0.03669724770642202,
+              "normalized_word_errors": 1,
+              "reference_words": 24,
+              "normalized_wer": 0.041666666666666664
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9900,
+              "cold_start_ms": 5,
+              "first_partial_ms": 300,
+              "final_latency_ms": 1666,
+              "rtf": 0.16828282828282828,
+              "peak_rss_mb": 0,
+              "text": "He has grave doubts whether Sir Frederick Layton's work is really Greek after all, and can discover in it but little of rocky Ithaca",
+              "cer": 0.7819548872180451,
+              "sample_id": "librispeech-1272-128104-0003",
+              "normalized_character_errors": 4,
+              "reference_characters": 109,
+              "normalized_cer": 0.03669724770642202,
+              "normalized_word_errors": 1,
+              "reference_words": 24,
+              "normalized_wer": 0.041666666666666664
+            }
+          ],
+          "median_first_partial_ms": 301.0,
+          "median_final_latency_ms": 1677.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0004",
+        "file": "librispeech-1272-128104-0004.wav",
+        "reference": "LINNELL'S PICTURES ARE A SORT OF UP GUARDS AND AT EM PAINTINGS AND MASON'S EXQUISITE IDYLLS ARE AS NATIONAL AS A JINGO POEM MISTER BIRKET FOSTER'S LANDSCAPES SMILE AT ONE MUCH IN THE SAME WAY THAT MISTER CARKER USED TO FLASH HIS TEETH AND MISTER JOHN COLLIER GIVES HIS SITTER A CHEERFUL SLAP ON THE BACK BEFORE HE SAYS LIKE A SHAMPOOER IN A TURKISH BATH NEXT MAN",
+        "duration_ms": 29400.0,
+        "sha256": "4798e34d9a323ed835ae6055172236f8965dd5ccf146c25758711023ecc8b2e6"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 29400,
+              "cold_start_ms": 5,
+              "first_partial_ms": 276,
+              "final_latency_ms": 4691,
+              "rtf": 0.1595578231292517,
+              "peak_rss_mb": 0,
+              "text": "Linill's pictures are a sort of upguards an Adam paintings and Mason's exquisite idles are as national as a jingo poem. mister Burkett Foster's landscapes smile at one much in the same way that mister Carker used to flash his teeth and mister John Collier gives his sitter a cheerful slap on the back before he says like a shampooer in a Turkish bath, next",
+              "cer": 0.7983425414364641,
+              "sample_id": "librispeech-1272-128104-0004",
+              "normalized_character_errors": 12,
+              "reference_characters": 292,
+              "normalized_cer": 0.0410958904109589,
+              "normalized_word_errors": 9,
+              "reference_words": 68,
+              "normalized_wer": 0.1323529411764706
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 29400,
+              "cold_start_ms": 3,
+              "first_partial_ms": 309,
+              "final_latency_ms": 4618,
+              "rtf": 0.15707482993197278,
+              "peak_rss_mb": 0,
+              "text": "Linill's pictures are a sort of upguards an Adam paintings and Mason's exquisite idles are as national as a jingo poem. mister Burkett Foster's landscapes smile at one much in the same way that mister Carker used to flash his teeth and mister John Collier gives his sitter a cheerful slap on the back before he says like a shampooer in a Turkish bath, next",
+              "cer": 0.7983425414364641,
+              "sample_id": "librispeech-1272-128104-0004",
+              "normalized_character_errors": 12,
+              "reference_characters": 292,
+              "normalized_cer": 0.0410958904109589,
+              "normalized_word_errors": 9,
+              "reference_words": 68,
+              "normalized_wer": 0.1323529411764706
+            }
+          ],
+          "median_first_partial_ms": 292.5,
+          "median_final_latency_ms": 4654.5
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 29400,
+              "cold_start_ms": 2,
+              "first_partial_ms": 309,
+              "final_latency_ms": 4765,
+              "rtf": 0.16207482993197278,
+              "peak_rss_mb": 0,
+              "text": "Linill's pictures are a sort of upguards an Adam paintings and Mason's exquisite idles are as national as a jingo poem. mister Burkett Foster's landscapes smile at one much in the same way that mister Carker used to flash his teeth and mister John Collier gives his sitter a cheerful slap on the back before he says like a shampooer in a Turkish bath, next man",
+              "cer": 0.7955801104972375,
+              "sample_id": "librispeech-1272-128104-0004",
+              "normalized_character_errors": 9,
+              "reference_characters": 292,
+              "normalized_cer": 0.030821917808219176,
+              "normalized_word_errors": 8,
+              "reference_words": 68,
+              "normalized_wer": 0.11764705882352941
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 29400,
+              "cold_start_ms": 2,
+              "first_partial_ms": 288,
+              "final_latency_ms": 4751,
+              "rtf": 0.16159863945578232,
+              "peak_rss_mb": 0,
+              "text": "Linill's pictures are a sort of upguards an Adam paintings and Mason's exquisite idles are as national as a jingo poem. mister Burkett Foster's landscapes smile at one much in the same way that mister Carker used to flash his teeth and mister John Collier gives his sitter a cheerful slap on the back before he says like a shampooer in a Turkish bath, next man",
+              "cer": 0.7955801104972375,
+              "sample_id": "librispeech-1272-128104-0004",
+              "normalized_character_errors": 9,
+              "reference_characters": 292,
+              "normalized_cer": 0.030821917808219176,
+              "normalized_word_errors": 8,
+              "reference_words": 68,
+              "normalized_wer": 0.11764705882352941
+            }
+          ],
+          "median_first_partial_ms": 298.5,
+          "median_final_latency_ms": 4758.0
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0005",
+        "file": "librispeech-1272-128104-0005.wav",
+        "reference": "IT IS OBVIOUSLY UNNECESSARY FOR US TO POINT OUT HOW LUMINOUS THESE CRITICISMS ARE HOW DELICATE IN EXPRESSION",
+        "duration_ms": 9010.0,
+        "sha256": "abd89d9a5108f87f03d03875272e1f3f18bef61ea4c271a0ec5bbc3a5bfc223a"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9010,
+              "cold_start_ms": 5,
+              "first_partial_ms": 237,
+              "final_latency_ms": 1579,
+              "rtf": 0.17524972253052165,
+              "peak_rss_mb": 0,
+              "text": "It is obviously unnecessary for us to point out how luminous these criticisms are, how delicate an exp",
+              "cer": 0.8425925925925926,
+              "sample_id": "librispeech-1272-128104-0005",
+              "normalized_character_errors": 8,
+              "reference_characters": 91,
+              "normalized_cer": 0.08791208791208792,
+              "normalized_word_errors": 2,
+              "reference_words": 18,
+              "normalized_wer": 0.1111111111111111
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9010,
+              "cold_start_ms": 3,
+              "first_partial_ms": 220,
+              "final_latency_ms": 1467,
+              "rtf": 0.16281908990011099,
+              "peak_rss_mb": 0,
+              "text": "It is obviously unnecessary for us to point out how luminous these criticisms are, how delicate an exp",
+              "cer": 0.8425925925925926,
+              "sample_id": "librispeech-1272-128104-0005",
+              "normalized_character_errors": 8,
+              "reference_characters": 91,
+              "normalized_cer": 0.08791208791208792,
+              "normalized_word_errors": 2,
+              "reference_words": 18,
+              "normalized_wer": 0.1111111111111111
+            }
+          ],
+          "median_first_partial_ms": 228.5,
+          "median_final_latency_ms": 1523.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9010,
+              "cold_start_ms": 3,
+              "first_partial_ms": 219,
+              "final_latency_ms": 1554,
+              "rtf": 0.17247502774694784,
+              "peak_rss_mb": 0,
+              "text": "It is obviously unnecessary for us to point out how luminous these criticisms are, how delicate an expression",
+              "cer": 0.8425925925925926,
+              "sample_id": "librispeech-1272-128104-0005",
+              "normalized_character_errors": 1,
+              "reference_characters": 91,
+              "normalized_cer": 0.01098901098901099,
+              "normalized_word_errors": 1,
+              "reference_words": 18,
+              "normalized_wer": 0.05555555555555555
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 9010,
+              "cold_start_ms": 5,
+              "first_partial_ms": 224,
+              "final_latency_ms": 1618,
+              "rtf": 0.17957824639289677,
+              "peak_rss_mb": 0,
+              "text": "It is obviously unnecessary for us to point out how luminous these criticisms are, how delicate an expression",
+              "cer": 0.8425925925925926,
+              "sample_id": "librispeech-1272-128104-0005",
+              "normalized_character_errors": 1,
+              "reference_characters": 91,
+              "normalized_cer": 0.01098901098901099,
+              "normalized_word_errors": 1,
+              "reference_words": 18,
+              "normalized_wer": 0.05555555555555555
+            }
+          ],
+          "median_first_partial_ms": 221.5,
+          "median_final_latency_ms": 1586.0
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0012",
+        "file": "librispeech-1272-128104-0012.wav",
+        "reference": "ONLY UNFORTUNATELY HIS OWN WORK NEVER DOES GET GOOD",
+        "duration_ms": 5380.0,
+        "sha256": "a89a64858c6f8d899dc6661d59a126cfe32b0cc2dadb7a1e9f4f6090a95e39cc"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5380,
+              "cold_start_ms": 2,
+              "first_partial_ms": 297,
+              "final_latency_ms": 965,
+              "rtf": 0.17936802973977695,
+              "peak_rss_mb": 0,
+              "text": "Only unfortunately, his own work never does get",
+              "cer": 0.8627450980392157,
+              "sample_id": "librispeech-1272-128104-0012",
+              "normalized_character_errors": 4,
+              "reference_characters": 43,
+              "normalized_cer": 0.09302325581395349,
+              "normalized_word_errors": 1,
+              "reference_words": 9,
+              "normalized_wer": 0.1111111111111111
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5380,
+              "cold_start_ms": 2,
+              "first_partial_ms": 297,
+              "final_latency_ms": 834,
+              "rtf": 0.1550185873605948,
+              "peak_rss_mb": 0,
+              "text": "Only unfortunately, his own work never does get",
+              "cer": 0.8627450980392157,
+              "sample_id": "librispeech-1272-128104-0012",
+              "normalized_character_errors": 4,
+              "reference_characters": 43,
+              "normalized_cer": 0.09302325581395349,
+              "normalized_word_errors": 1,
+              "reference_words": 9,
+              "normalized_wer": 0.1111111111111111
+            }
+          ],
+          "median_first_partial_ms": 297.0,
+          "median_final_latency_ms": 899.5
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5380,
+              "cold_start_ms": 5,
+              "first_partial_ms": 293,
+              "final_latency_ms": 1039,
+              "rtf": 0.19312267657992566,
+              "peak_rss_mb": 0,
+              "text": "Only unfortunately, his own work never does get good",
+              "cer": 0.8431372549019608,
+              "sample_id": "librispeech-1272-128104-0012",
+              "normalized_character_errors": 0,
+              "reference_characters": 43,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 9,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 5380,
+              "cold_start_ms": 4,
+              "first_partial_ms": 307,
+              "final_latency_ms": 1000,
+              "rtf": 0.18587360594795538,
+              "peak_rss_mb": 0,
+              "text": "Only unfortunately, his own work never does get good",
+              "cer": 0.8431372549019608,
+              "sample_id": "librispeech-1272-128104-0012",
+              "normalized_character_errors": 0,
+              "reference_characters": 43,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 9,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 300.0,
+          "median_final_latency_ms": 1019.5
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "librispeech-1272-128104-0014",
+        "file": "librispeech-1272-128104-0014.wav",
+        "reference": "BY HARRY QUILTER M A",
+        "duration_ms": 2245.0,
+        "sha256": "b664cff5f3c9da7e2f3e37b3e0c1940aaf2db490fb68402f7e8afed8d75cceb1"
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 2245,
+              "cold_start_ms": 2,
+              "first_partial_ms": 213,
+              "final_latency_ms": 405,
+              "rtf": 0.18040089086859687,
+              "peak_rss_mb": 0,
+              "text": "by Harry Quilter,",
+              "cer": 0.8,
+              "sample_id": "librispeech-1272-128104-0014",
+              "normalized_character_errors": 2,
+              "reference_characters": 16,
+              "normalized_cer": 0.125,
+              "normalized_word_errors": 2,
+              "reference_words": 5,
+              "normalized_wer": 0.4
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 2245,
+              "cold_start_ms": 2,
+              "first_partial_ms": 208,
+              "final_latency_ms": 407,
+              "rtf": 0.18129175946547885,
+              "peak_rss_mb": 0,
+              "text": "by Harry Quilter,",
+              "cer": 0.8,
+              "sample_id": "librispeech-1272-128104-0014",
+              "normalized_character_errors": 2,
+              "reference_characters": 16,
+              "normalized_cer": 0.125,
+              "normalized_word_errors": 2,
+              "reference_words": 5,
+              "normalized_wer": 0.4
+            }
+          ],
+          "median_first_partial_ms": 210.5,
+          "median_final_latency_ms": 406.0
+        },
+        "candidate": {
+          "trials": [
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 2245,
+              "cold_start_ms": 3,
+              "first_partial_ms": 338,
+              "final_latency_ms": 524,
+              "rtf": 0.2334075723830735,
+              "peak_rss_mb": 0,
+              "text": "by Harry Quilter, M A",
+              "cer": 0.65,
+              "sample_id": "librispeech-1272-128104-0014",
+              "normalized_character_errors": 0,
+              "reference_characters": 16,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 5,
+              "normalized_wer": 0.0
+            },
+            {
+              "engine": "streaming_service:sherpa-onnx:zipformer-zh-en-punct-int8-480ms",
+              "audio_duration_ms": 2245,
+              "cold_start_ms": 11,
+              "first_partial_ms": 215,
+              "final_latency_ms": 492,
+              "rtf": 0.21915367483296214,
+              "peak_rss_mb": 0,
+              "text": "by Harry Quilter, M A",
+              "cer": 0.65,
+              "sample_id": "librispeech-1272-128104-0014",
+              "normalized_character_errors": 0,
+              "reference_characters": 16,
+              "normalized_cer": 0.0,
+              "normalized_word_errors": 0,
+              "reference_words": 5,
+              "normalized_wer": 0.0
+            }
+          ],
+          "median_first_partial_ms": 276.5,
+          "median_final_latency_ms": 508.0
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "silence-short",
+        "file": "silence-short.wav",
+        "reference": "",
+        "duration_ms": 50.0,
+        "sha256": "9a2bb97bf4897b1e5b2594a43f579bad4f084e6a7654dba1517a2ed330cf9e7d",
+        "control": true
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "sample_id": "silence-short",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "silence-short",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        },
+        "candidate": {
+          "trials": [
+            {
+              "sample_id": "silence-short",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "silence-short",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "silence-long",
+        "file": "silence-long.wav",
+        "reference": "",
+        "duration_ms": 5000.0,
+        "sha256": "262d1f34f300560a4c82ba8127ddea9e1d72946f187fdbd3e8f70ee096077aec",
+        "control": true
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "sample_id": "silence-long",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "silence-long",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        },
+        "candidate": {
+          "trials": [
+            {
+              "sample_id": "silence-long",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "silence-long",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "sample": {
+        "id": "noise",
+        "file": "noise.wav",
+        "reference": "",
+        "duration_ms": 2000.0,
+        "sha256": "caf0e3381284644906d8f14d2ffff88f9ee93c890317fd0dce4d7cb09773810e",
+        "control": true
+      },
+      "results": {
+        "baseline": {
+          "trials": [
+            {
+              "sample_id": "noise",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "noise",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        },
+        "candidate": {
+          "trials": [
+            {
+              "sample_id": "noise",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            },
+            {
+              "sample_id": "noise",
+              "error": "Error: provider error: failed to read local streaming ASR service message: WebSocket protocol error: Connection reset without closing handshake\n",
+              "returncode": 1
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "realtime_probe": {
+    "baseline": [
+      {
+        "variant": "baseline",
+        "sample_id": "aishell-BAC009S0724W0121",
+        "repeat": 0,
+        "first_partial_ms": 1706.0993279883405,
+        "stop_to_final_ms": 524.0695779939415,
+        "final_latency_ms": 4805.609303992242,
+        "text": "广州市房地产中介协会"
+      },
+      {
+        "variant": "baseline",
+        "sample_id": "aishell-BAC009S0724W0121",
+        "repeat": 1,
+        "first_partial_ms": 1736.8366330047138,
+        "stop_to_final_ms": 0.4635719960788265,
+        "final_latency_ms": 4283.174220006913,
+        "text": "广州市房地产中介协会"
+      },
+      {
+        "variant": "baseline",
+        "sample_id": "aishell-BAC009S0724W0121-trimmed",
+        "repeat": 0,
+        "first_partial_ms": 1682.6870960067026,
+        "stop_to_final_ms": 0.8218259899877012,
+        "final_latency_ms": 3717.1161139995093,
+        "text": "广州市房地产中介协"
+      },
+      {
+        "variant": "baseline",
+        "sample_id": "aishell-BAC009S0724W0121-trimmed",
+        "repeat": 1,
+        "first_partial_ms": 1707.4373470095452,
+        "stop_to_final_ms": 1.7902480030898005,
+        "final_latency_ms": 3717.164950008737,
+        "text": "广州市房地产中介协"
+      },
+      {
+        "variant": "baseline",
+        "sample_id": "librispeech-1995-1837-0001",
+        "repeat": 0,
+        "first_partial_ms": 1249.744141008705,
+        "stop_to_final_ms": 1.193453004816547,
+        "final_latency_ms": 8731.90432600677,
+        "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams"
+      },
+      {
+        "variant": "baseline",
+        "sample_id": "librispeech-1995-1837-0001",
+        "repeat": 1,
+        "first_partial_ms": 1237.9953269992257,
+        "stop_to_final_ms": 2.603098997497,
+        "final_latency_ms": 8733.762654999737,
+        "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams"
+      }
+    ],
+    "nodelay1000": [
+      {
+        "variant": "nodelay1000",
+        "sample_id": "aishell-BAC009S0724W0121",
+        "repeat": 0,
+        "first_partial_ms": 1813.0531140050152,
+        "stop_to_final_ms": 104.07582699554041,
+        "final_latency_ms": 4385.546721998253,
+        "text": "广州市房地产中介协会分析"
+      },
+      {
+        "variant": "nodelay1000",
+        "sample_id": "aishell-BAC009S0724W0121",
+        "repeat": 1,
+        "first_partial_ms": 1785.887284000637,
+        "stop_to_final_ms": 128.11665500339586,
+        "final_latency_ms": 4411.126488004811,
+        "text": "广州市房地产中介协会分析"
+      },
+      {
+        "variant": "nodelay1000",
+        "sample_id": "aishell-BAC009S0724W0121-trimmed",
+        "repeat": 0,
+        "first_partial_ms": 1678.3074249979109,
+        "stop_to_final_ms": 138.78736000333447,
+        "final_latency_ms": 3855.432552009006,
+        "text": "广州市房地产中介协会分析"
+      },
+      {
+        "variant": "nodelay1000",
+        "sample_id": "aishell-BAC009S0724W0121-trimmed",
+        "repeat": 1,
+        "first_partial_ms": 1690.2572590042837,
+        "stop_to_final_ms": 139.8054029996274,
+        "final_latency_ms": 3856.633673000033,
+        "text": "广州市房地产中介协会分析"
+      },
+      {
+        "variant": "nodelay1000",
+        "sample_id": "librispeech-1995-1837-0001",
+        "repeat": 0,
+        "first_partial_ms": 1256.2240440020105,
+        "stop_to_final_ms": 131.70938499388285,
+        "final_latency_ms": 8863.176066995948,
+        "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams built around it"
+      },
+      {
+        "variant": "nodelay1000",
+        "sample_id": "librispeech-1995-1837-0001",
+        "repeat": 1,
+        "first_partial_ms": 1222.695730990381,
+        "stop_to_final_ms": 117.78856499586254,
+        "final_latency_ms": 8852.542718988843,
+        "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams built around it"
+      }
+    ]
+  },
+  "realtime_probe_code_note": "nodelay1000 uses the same 1000 ms tail and TCP_NODELAY as candidate commit, before redundant result-polling skip and CLI override/test additions. This is separate from the fully patched bulk candidate.",
+  "reproduction_script": {
+    "path": "scripts/benchmark_streaming_latency.py",
+    "sha256": "a329a0ec4922348d9bc9037962ea4514aa1158b3be8f37d452a0788b93df2d7b",
+    "validation_results": [
+      {
+        "variant": "final-script-validation",
+        "sample_id": "aishell-BAC009S0724W0121",
+        "repeat": 0,
+        "audio_sha256": "2f9fc9c912bb71c85fb286cb88b599c81efb8f727c727a5ea8f6d1c89c55ac13",
+        "first_partial_ms": 1682.9201679938706,
+        "stop_to_final_ms": 96.46651100774761,
+        "final_latency_ms": 4378.010535001522,
+        "text": "广州市房地产中介协会分析"
+      },
+      {
+        "variant": "final-script-validation",
+        "sample_id": "librispeech-1995-1837-0001",
+        "repeat": 0,
+        "audio_sha256": "a4d977939c2f673b370e7dd5840118947a8ae95f6d62d3a88f32b40c0631aaee",
+        "first_partial_ms": 1208.7080989876995,
+        "stop_to_final_ms": 107.09266799676698,
+        "final_latency_ms": 8837.894047988812,
+        "text": "It was the first great sorrow of his life. It was not so much the loss of the cotton itself but the fantasy, the hopes, the dreams built around it"
+      }
+    ]
+  }
+}
