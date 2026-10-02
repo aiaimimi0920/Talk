@@ -1,0 +1,69 @@
+{
+  "baseline_commit": "7a35ae7be5c86fb245f8e7f1cac53e7a9bc42367",
+  "date_utc": "2026-10-01",
+  "candidate_source_sha256": {
+    "crates/talk-runtime/src/lib.rs": "1aad5c9023c13e4589dd3e1a85facc0e36dbcb5f0a1055ce34a415e36c2df8dd",
+    "crates/talk-runtime/src/batch_streaming_tests.rs": "09e13db3bfb68604f5e6337f48a040162ccc36c017222ef6c3680ece6ba88b7d",
+    "crates/talk-runtime/tests/batch_backpressure_probe.rs": "d27f9359566b97cc4aa53b2dc7de5827fa7fd2eb0356052a173e09c19b27e6bd"
+  },
+  "baseline_runtime_sha256": "d7b177a57b449252478f853e8d172c87440bb96d4aaf705504c7ff97988b90ac",
+  "scope": "public batch library API; ordinary desktop/CLI reachability not established and source invariant excludes the defensive desktop branch",
+  "environment": {
+    "platform": "Linux x86_64 shared cloud CPU",
+    "rust": "1.95.0",
+    "profile": "debug tests",
+    "capture": "synthetic PCM zeros, no microphone/model/provider"
+  },
+  "paired_public_probe": {
+    "same_fixture_sha256": "d27f9359566b97cc4aa53b2dc7de5827fa7fd2eb0356052a173e09c19b27e6bd",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "pcm_bytes": 2880000,
+    "duration_seconds": 90,
+    "peer_requested_receive_buffer_bytes": 1024,
+    "final_timeout_ms": 100,
+    "outer_watchdog_ms": 750,
+    "baseline": [
+      "batch_probe pcm_bytes=2880000 final_budget_ms=100 outer_watchdog_expired=true elapsed_ms=751.939",
+      "outcome=outer_watchdog"
+    ],
+    "candidate": [
+      "batch_probe pcm_bytes=2880000 final_budget_ms=100 outer_watchdog_expired=false elapsed_ms=165.370",
+      "outcome=operation_error error=timed out sending batch local streaming ASR audio"
+    ]
+  },
+  "focused_observations": [
+    "batch_transfer_timeout drained_chunks=372 elapsed_ms=153.050 error=timed out sending batch local streaming ASR audio",
+    "public_batch_pcm_bytes=2880000 elapsed_ms=182.671 error=timed out sending batch local streaming ASR audio",
+    "batch_separate_final_budget elapsed_ms=2643.662"
+  ],
+  "negative_controls": [
+    {
+      "change": "relax batch transfer deadline to 10 s",
+      "result": "2 s watchdog fails; exit 101"
+    },
+    {
+      "change": "share one 2 s transfer/final-response budget",
+      "result": "delayed final-response test fails at 2.01 s; exit 101"
+    }
+  ],
+  "validation": {
+    "workspace_tests_passed": 498,
+    "workspace_tests_ignored": 4,
+    "format_check": "passed",
+    "all_target_check": "passed",
+    "clippy": "passed with existing warnings"
+  },
+  "limitations": [
+    "No recognition accuracy or model-latency measurement.",
+    "Async deadlines do not preempt synchronous PCM conversion/serialization or OS scheduling.",
+    "Reported call timing includes connection and Ready work; it is not exact transfer time.",
+    "OS buffering may let a single large frame complete, so the public cross-platform test accepts transfer or final-response timeout.",
+    "Startup connect/Ready behavior, raw client sends, and direct benchmark sends are unchanged."
+  ],
+  "measurement_dates_utc": [
+    "2026-10-01",
+    "2026-10-02"
+  ],
+  "cancellation_fixture": "wait for first PCM drain notification before starting cancellation timer; require both drained and remaining PCM"
+}

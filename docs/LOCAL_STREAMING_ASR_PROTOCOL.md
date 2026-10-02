@@ -161,8 +161,12 @@ After capture stops, `final_timeout_ms` separately bounds the final PCM/Stop-sen
 phase and the subsequent final-response phase. The recognizer keeps its full
 existing response window; total network waiting can therefore reach twice this
 value. Live Cancel uses `pump_timeout_ms` and always drops its connection when it
-returns. These bounds apply to the live session; the separate batch helper and
-low-level client send API retain their existing behavior.
+returns. The buffered-recording library helper also separately bounds its
+post-Ready PCM/Stop transfer and final response using `final_timeout_ms`. Its
+caller still owns capture lifetime and should stop capture before calling it.
+This hardens the public batch API: the normal desktop route already owns a live
+session, so its defensive missing-session fallback is not an established user
+path. Low-level client sends and the benchmark CLI retain their existing behavior.
 
 `local_asr = "external_command"` remains supported as a batch fallback. The
 streaming service path is the target path for Typeless/OpenLess-like live

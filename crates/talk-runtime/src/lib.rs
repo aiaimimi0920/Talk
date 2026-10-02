@@ -605,10 +605,24 @@ where
     })
 }
 
+/// Transcribes buffered PCM through the local streaming service.
+/// The caller owns capture lifetime and should stop capture before calling.
+/// Final PCM/Stop transmission and the final response each receive the full
+/// configured `final_timeout_ms` budget. A failure drops this connection and
+/// returns an error without retrying audio or returning partial-only success.
 pub async fn run_local_streaming_asr_service_from_recording(
     config: &TalkConfig,
     session_id: &str,
     recording: &talk_audio::RecordingSession,
+    language: Option<&str>,
+) -> Result<Vec<StreamingAsrEvent>> {
+    run_local_streaming_asr_service_from_source(config, session_id, recording, language).await
+}
+
+async fn run_local_streaming_asr_service_from_source(
+    config: &TalkConfig,
+    session_id: &str,
+    recording: &impl LivePcmSource,
     language: Option<&str>,
 ) -> Result<Vec<StreamingAsrEvent>> {
     let service = local_streaming_service_config(config)?;
@@ -628,30 +642,37 @@ pub async fn run_local_streaming_asr_service_from_recording(
         )
         .await?;
 
-    let mut cursor = RecordingPcmCursor::default();
-    let mut sent_chunks = 0usize;
-    while let Some(chunk) = recording.drain_pcm_chunk(&mut cursor)? {
-        if chunk.sample_rate_hz != service.sample_rate_hz || chunk.channels != service.channels {
-            anyhow::bail!(
-                "recording PCM chunk format {} Hz / {} channels does not match streaming_service {} Hz / {} channels",
-                chunk.sample_rate_hz,
-                chunk.channels,
-                service.sample_rate_hz,
-                service.channels
-            );
+    let final_timeout = Duration::from_millis(service.final_timeout_ms);
+    // Sending buffered PCM can block before final-result collection starts.
+    // Keep the response's full budget separate, matching live-session Stop.
+    tokio::time::timeout(final_timeout, async {
+        let mut cursor = RecordingPcmCursor::default();
+        let mut sent_chunks = 0usize;
+        while let Some(chunk) = recording.drain_pcm_chunk(&mut cursor)? {
+            if chunk.sample_rate_hz != service.sample_rate_hz || chunk.channels != service.channels {
+                anyhow::bail!(
+                    "recording PCM chunk format {} Hz / {} channels does not match streaming_service {} Hz / {} channels",
+                    chunk.sample_rate_hz,
+                    chunk.channels,
+                    service.sample_rate_hz,
+                    service.channels
+                );
+            }
+            client
+                .send_audio(session_id, chunk.sequence, &chunk.bytes)
+                .await?;
+            sent_chunks = sent_chunks.saturating_add(1);
         }
-        client
-            .send_audio(session_id, chunk.sequence, &chunk.bytes)
-            .await?;
-        sent_chunks = sent_chunks.saturating_add(1);
-    }
-    if sent_chunks == 0 {
-        anyhow::bail!("recording produced no PCM chunks for streaming_service local ASR");
-    }
+        if sent_chunks == 0 {
+            anyhow::bail!("recording produced no PCM chunks for streaming_service local ASR");
+        }
 
-    client.stop(session_id).await?;
+        client.stop(session_id).await.map_err(anyhow::Error::from)
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out sending batch local streaming ASR audio"))??;
     client
-        .collect_asr_events_until_final(Duration::from_millis(service.final_timeout_ms))
+        .collect_asr_events_until_final(final_timeout)
         .await
         .map_err(Into::into)
 }
@@ -1494,3 +1515,6 @@ mod live_stop_tests;
 
 #[cfg(test)]
 mod live_backpressure_tests;
+
+#[cfg(test)]
+mod batch_streaming_tests;
