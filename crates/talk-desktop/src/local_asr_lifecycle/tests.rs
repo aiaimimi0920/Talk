@@ -1,3 +1,5 @@
+mod aliases;
+
 use super::{
     apply_worker_transition, choose_worker_transition, OwnedWorkerState, WorkerTransition,
 };
@@ -66,9 +68,7 @@ impl Fixture {
     }
 
     fn matches(&self, current: &DesktopLocalAsrDaemonLaunchPlan, config: &TalkConfig) -> bool {
-        let service = self.config.speculative.streaming_service.as_ref().unwrap();
         let owned = OwnedWorkerState {
-            endpoint: &service.endpoint,
             plan: current,
             running: true,
         };
@@ -199,7 +199,6 @@ fn reload_config_waits_until_recording_and_processing_finish() {
 #[test]
 fn external_takeovers_never_resolve_packaged_files_or_launch_a_competitor() {
     let fixture = Fixture::new();
-    let plan = fixture.plan(&fixture.config).unwrap();
     let target = "ws://127.0.0.1:53171/asr";
     for (name, endpoint, running) in [
         ("unowned", None, false),
@@ -211,9 +210,18 @@ fn external_takeovers_never_resolve_packaged_files_or_launch_a_competitor() {
         ),
     ] {
         let events = RefCell::new(Vec::new());
-        let state = endpoint.map(|endpoint| OwnedWorkerState {
-            endpoint,
-            plan: &plan,
+        let mut owned_config = fixture.config.clone();
+        if let Some(endpoint) = endpoint {
+            owned_config
+                .speculative
+                .streaming_service
+                .as_mut()
+                .unwrap()
+                .endpoint = endpoint.into();
+        }
+        let owned_plan = fixture.plan(&owned_config).unwrap();
+        let state = endpoint.map(|_| OwnedWorkerState {
+            plan: &owned_plan,
             running,
         });
         let mut owned = endpoint.map(|_| "owned process");
@@ -273,7 +281,6 @@ fn live_worker_replacement_waits_for_stop_before_launch() {
     let replacement = fixture.plan(&changed).unwrap();
     let target = "ws://127.0.0.1:53171/asr";
     let state = OwnedWorkerState {
-        endpoint: target,
         plan: &plan,
         running: true,
     };
@@ -314,7 +321,6 @@ fn unchanged_live_worker_stays_warm_without_probing_or_stopping() {
     let plan = fixture.plan(&fixture.config).unwrap();
     let target = "ws://127.0.0.1:53171/asr";
     let state = OwnedWorkerState {
-        endpoint: target,
         plan: &plan,
         running: true,
     };
@@ -364,7 +370,6 @@ fn dead_owned_worker_restarts_when_no_external_listener_exists() {
     let plan = fixture.plan(&fixture.config).unwrap();
     let target = "ws://127.0.0.1:53171/asr";
     let state = OwnedWorkerState {
-        endpoint: target,
         plan: &plan,
         running: false,
     };
@@ -406,7 +411,6 @@ fn resolution_failure_does_not_return_a_destructive_transition() {
     let plan = fixture.plan(&fixture.config).unwrap();
     let target = "ws://127.0.0.1:53171/asr";
     let state = OwnedWorkerState {
-        endpoint: target,
         plan: &plan,
         running: true,
     };

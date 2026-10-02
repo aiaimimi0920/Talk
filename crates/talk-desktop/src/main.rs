@@ -320,7 +320,6 @@ mod windows_app {
     }
 
     struct ManagedLocalAsrDaemon {
-        endpoint: String,
         launch_plan: talk_desktop::DesktopLocalAsrDaemonLaunchPlan,
         child: std::process::Child,
     }
@@ -1982,7 +1981,6 @@ mod windows_app {
             .local_asr_daemon
             .as_ref()
             .map(|daemon| OwnedWorkerState {
-                endpoint: &daemon.endpoint,
                 plan: &daemon.launch_plan,
                 running: owned_running,
             });
@@ -2047,7 +2045,6 @@ mod windows_app {
         loop {
             if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
                 return Ok(ManagedLocalAsrDaemon {
-                    endpoint: endpoint.to_string(),
                     launch_plan: plan,
                     child,
                 });

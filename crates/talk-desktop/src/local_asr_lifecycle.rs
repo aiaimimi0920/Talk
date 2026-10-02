@@ -1,7 +1,7 @@
-use talk_desktop::DesktopLocalAsrDaemonLaunchPlan;
+use std::net::SocketAddr;
+use talk_desktop::{desktop_local_asr_daemon_bind_from_endpoint, DesktopLocalAsrDaemonLaunchPlan};
 
 pub(crate) struct OwnedWorkerState<'a> {
-    pub endpoint: &'a str,
     pub plan: &'a DesktopLocalAsrDaemonLaunchPlan,
     pub running: bool,
 }
@@ -19,8 +19,17 @@ pub(crate) fn choose_worker_transition<E>(
     probe_endpoint: impl FnOnce() -> bool,
     resolve_plan: impl FnOnce() -> Result<Option<DesktopLocalAsrDaemonLaunchPlan>, E>,
 ) -> Result<WorkerTransition, E> {
-    let live_at_endpoint =
-        owned.filter(|worker| worker.running && worker.endpoint == requested_endpoint);
+    let requested_bind = desktop_local_asr_daemon_bind_from_endpoint(requested_endpoint)
+        .ok()
+        .flatten()
+        .and_then(|bind| bind.parse::<SocketAddr>().ok());
+    // Compare the actual listener, not the URI spelling: localhost, IPv6
+    // aliases, and WebSocket paths can still reach our own live child.
+    let live_at_endpoint = owned.filter(|worker| {
+        worker.running
+            && requested_bind
+                .is_some_and(|bind| worker.plan.bind.parse::<SocketAddr>().ok() == Some(bind))
+    });
     // A dead owned child or a different endpoint can now be served by an
     // external process. Do not require packaged files to connect to it.
     if live_at_endpoint.is_none() && probe_endpoint() {

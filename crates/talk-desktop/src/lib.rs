@@ -4300,8 +4300,8 @@ pub fn desktop_local_asr_daemon_bind_from_endpoint(
             return Err(format!("{subject} host must be loopback"));
         }
         match address {
-            std::net::IpAddr::V4(_) => host.to_string(),
-            std::net::IpAddr::V6(_) => format!("[{host}]"),
+            std::net::IpAddr::V4(address) => address.to_string(),
+            std::net::IpAddr::V6(address) => format!("[{address}]"),
         }
     };
 
