@@ -1729,6 +1729,10 @@ dir = ".runtime/talk/logs"
     );
     assert_eq!(config.provider.chat_model.as_deref(), Some("gpt-4o-mini"));
     assert_eq!(
+        config.provider.transcription_correction_enable_thinking,
+        None
+    );
+    assert_eq!(
         config.provider.api_key_env.as_deref(),
         Some("TALK_PROVIDER_API_KEY")
     );
@@ -1736,6 +1740,65 @@ dir = ".runtime/talk/logs"
         config.provider.transcription_transport,
         OpenAiTranscriptionTransport::AudioTranscriptions
     );
+}
+
+#[test]
+fn transcription_correction_thinking_config_is_optional_and_round_trips_both_values() {
+    let raw = read_example_config("once-qwen-audio-input-safe-config.toml");
+    for setting in [None, Some(false), Some(true)] {
+        let configured_raw = match setting {
+            Some(value) => raw.replace(
+                "[provider]",
+                &format!("[provider]\ntranscription_correction_enable_thinking = {value}"),
+            ),
+            None => raw.clone(),
+        };
+        let config = TalkConfig::from_toml_str(&configured_raw).expect("valid thinking config");
+        assert_eq!(
+            config.provider.transcription_correction_enable_thinking,
+            setting
+        );
+
+        let serialized = toml::to_string(&config).expect("serialize thinking config");
+        assert_eq!(
+            serialized.contains("transcription_correction_enable_thinking"),
+            setting.is_some(),
+            "unset option must stay absent from saved config"
+        );
+        let restored = TalkConfig::from_toml_str(&serialized).expect("reload thinking config");
+        assert_eq!(
+            restored.provider.transcription_correction_enable_thinking,
+            setting
+        );
+    }
+}
+
+#[test]
+fn transcription_correction_thinking_config_rejects_non_boolean_values() {
+    let raw = read_example_config("once-qwen-audio-input-safe-config.toml");
+    for value in ["\"false\"", "0", "[]"] {
+        let raw = raw.replace(
+            "[provider]",
+            &format!("[provider]\ntranscription_correction_enable_thinking = {value}"),
+        );
+        assert!(TalkConfig::from_toml_str(&raw).is_err(), "value={value}");
+    }
+}
+
+#[test]
+fn qwen_and_openai_examples_leave_transcription_correction_thinking_unset() {
+    for name in [
+        "once-qwen-audio-input-safe-config.toml",
+        "desktop-qwen-audio-input-live-config.toml",
+        "desktop-openai-compatible-safe-config.toml",
+        "desktop-openai-compatible-live-config.toml",
+    ] {
+        let config = TalkConfig::from_toml_str(&read_example_config(name)).expect("valid example");
+        assert_eq!(
+            config.provider.transcription_correction_enable_thinking, None,
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -8,16 +8,24 @@ The benchmark harness lives at `tools/asr-bench` and writes a stable JSON report
   Streaming service mode writes `streaming_service:<engine>:<model>` so
   multiple sherpa-onnx models remain distinguishable in comparison reports.
 - `audio_duration_ms`: duration of the input WAV if provided.
-- `cold_start_ms`: engine/model initialization time.
+- `cold_start_ms`: in current streaming-service reports, connection/Ready time
+  only; the already-running worker's model initialization is excluded.
 - `first_partial_ms`: time from start to first visible partial text.
 - `final_latency_ms`: time from start to final local ASR text.
 - `rtf`: real-time factor, computed as `final_latency_ms / audio_duration_ms`.
-- `peak_rss_mb`: peak resident memory in MB.
+- `peak_rss_mb`: currently a zero placeholder in `asr-bench`, not a measurement.
 - `model_size_mb`: optional extracted/package model size in MB when known.
 - `sample_id`: optional corpus sample identifier. Use the same `sample_id`
   for the same utterance across all candidate engines.
 - `text`: final recognized text.
 - `cer`: character error rate against an optional reference transcript.
+
+For measured worker CPU time, peak RSS, process-cold startup, paced Stop-to-final
+latency and language-specific CER/WER, use the separate
+[resource baseline and reproduction guide](asr-benchmarks/asr-resources-20261002.md).
+It includes 85 checksum-pinned public utterances and preserves per-clip
+regressions. Its bulk timing uses a concurrent receiver without this older
+harness's per-chunk idle poll; do not compare those latencies as a product speedup.
 
 Current dry-run mode validates the schema and release plumbing before large model binaries are added:
 

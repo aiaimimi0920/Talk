@@ -922,6 +922,10 @@ pub struct ProviderConfig {
     pub transcription_model: Option<String>,
     #[serde(default)]
     pub chat_model: Option<String>,
+    /// Provider-specific thinking control for transcription correction only.
+    /// Unset preserves the provider's default and omits the request field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription_correction_enable_thinking: Option<bool>,
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]

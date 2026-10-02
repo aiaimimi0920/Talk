@@ -372,6 +372,7 @@ pub struct OpenAiCompatibleTextProcessor {
     endpoint: String,
     model: String,
     api_key: Option<String>,
+    transcription_correction_enable_thinking: Option<bool>,
     client: reqwest::Client,
 }
 
@@ -385,8 +386,20 @@ impl OpenAiCompatibleTextProcessor {
             endpoint: endpoint.into(),
             model: model.into(),
             api_key,
+            transcription_correction_enable_thinking: None,
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Opt in to the provider-specific `enable_thinking` request field for
+    /// Transcribe/Dictate correction. The caller must verify provider/model
+    /// support; other modes omit it, and `None` restores the default omission.
+    pub fn with_transcription_correction_enable_thinking(
+        mut self,
+        enable_thinking: Option<bool>,
+    ) -> Self {
+        self.transcription_correction_enable_thinking = enable_thinking;
+        self
     }
 }
 
@@ -394,6 +407,8 @@ impl OpenAiCompatibleTextProcessor {
 struct OpenAiChatCompletionsRequest {
     model: String,
     messages: Vec<OpenAiChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -459,6 +474,12 @@ impl TextProcessor for OpenAiCompatibleTextProcessor {
         let request = OpenAiChatCompletionsRequest {
             model: self.model.clone(),
             messages: build_openai_processing_messages(transcript, mode, context)?,
+            enable_thinking: match mode {
+                VoiceMode::Transcribe | VoiceMode::Dictate => {
+                    self.transcription_correction_enable_thinking
+                }
+                _ => None,
+            },
         };
         let request_builder = self.client.post(&self.endpoint).json(&request);
         let request_builder = with_optional_bearer_auth(request_builder, self.api_key.as_deref());

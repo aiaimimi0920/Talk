@@ -1,0 +1,1095 @@
+[
+  {
+    "id": "aishell-BAC009S0724W0121",
+    "file": "aishell-BAC009S0724W0121.wav",
+    "reference": "广州市房地产中介协会分析",
+    "language": "zh",
+    "sha256": "2f9fc9c912bb71c85fb286cb88b599c81efb8f727c727a5ea8f6d1c89c55ac13",
+    "duration_ms": 4281.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/wenet-e2e/wenet/d17059667d6afe0680d19b3a4948ab825ef25105/test/resources/aishell-BAC009S0724W0121.wav",
+      "sha256": "2f9fc9c912bb71c85fb286cb88b599c81efb8f727c727a5ea8f6d1c89c55ac13"
+    }
+  },
+  {
+    "id": "librispeech-1995-1837-0001",
+    "file": "librispeech-1995-1837-0001.wav",
+    "reference": "IT WAS THE FIRST GREAT SORROW OF HIS LIFE IT WAS NOT SO MUCH THE LOSS OF THE COTTON ITSELF BUT THE FANTASY THE HOPES THE DREAMS BUILT AROUND IT",
+    "language": "en",
+    "sha256": "a4d977939c2f673b370e7dd5840118947a8ae95f6d62d3a88f32b40c0631aaee",
+    "duration_ms": 8730.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/wenet-e2e/wenet/d17059667d6afe0680d19b3a4948ab825ef25105/test/resources/librispeech-1995-1837-0001.wav",
+      "sha256": "a4d977939c2f673b370e7dd5840118947a8ae95f6d62d3a88f32b40c0631aaee"
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0000",
+    "file": "librispeech-1272-128104-0000.wav",
+    "reference": "MISTER QUILTER IS THE APOSTLE OF THE MIDDLE CLASSES AND WE ARE GLAD TO WELCOME HIS GOSPEL",
+    "language": "en",
+    "sha256": "799f78ed4beb4de7ceae3a809262d4ce242394342ccd1d58cef7d49dbc2def46",
+    "duration_ms": 5855.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 0
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0001",
+    "file": "librispeech-1272-128104-0001.wav",
+    "reference": "NOR IS MISTER QUILTER'S MANNER LESS INTERESTING THAN HIS MATTER",
+    "language": "en",
+    "sha256": "473b1bb573e8f7cdcd639c6e318036236190107b66bfe6892286121a92d464c1",
+    "duration_ms": 4815.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 1
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0002",
+    "file": "librispeech-1272-128104-0002.wav",
+    "reference": "HE TELLS US THAT AT THIS FESTIVE SEASON OF THE YEAR WITH CHRISTMAS AND ROAST BEEF LOOMING BEFORE US SIMILES DRAWN FROM EATING AND ITS RESULTS OCCUR MOST READILY TO THE MIND",
+    "language": "en",
+    "sha256": "5f4d8f7331acffc3d2efbe0f764b9eb3447911dc17f9843e38e1083eb1685b9c",
+    "duration_ms": 12485.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 2
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0003",
+    "file": "librispeech-1272-128104-0003.wav",
+    "reference": "HE HAS GRAVE DOUBTS WHETHER SIR FREDERICK LEIGHTON'S WORK IS REALLY GREEK AFTER ALL AND CAN DISCOVER IN IT BUT LITTLE OF ROCKY ITHACA",
+    "language": "en",
+    "sha256": "fc23353b884061a5c5784b0cf6b5c539680c50cfae993882822ebdd4a06ddf8c",
+    "duration_ms": 9900.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 3
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0004",
+    "file": "librispeech-1272-128104-0004.wav",
+    "reference": "LINNELL'S PICTURES ARE A SORT OF UP GUARDS AND AT EM PAINTINGS AND MASON'S EXQUISITE IDYLLS ARE AS NATIONAL AS A JINGO POEM MISTER BIRKET FOSTER'S LANDSCAPES SMILE AT ONE MUCH IN THE SAME WAY THAT MISTER CARKER USED TO FLASH HIS TEETH AND MISTER JOHN COLLIER GIVES HIS SITTER A CHEERFUL SLAP ON THE BACK BEFORE HE SAYS LIKE A SHAMPOOER IN A TURKISH BATH NEXT MAN",
+    "language": "en",
+    "sha256": "4798e34d9a323ed835ae6055172236f8965dd5ccf146c25758711023ecc8b2e6",
+    "duration_ms": 29400.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 4
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0005",
+    "file": "librispeech-1272-128104-0005.wav",
+    "reference": "IT IS OBVIOUSLY UNNECESSARY FOR US TO POINT OUT HOW LUMINOUS THESE CRITICISMS ARE HOW DELICATE IN EXPRESSION",
+    "language": "en",
+    "sha256": "abd89d9a5108f87f03d03875272e1f3f18bef61ea4c271a0ec5bbc3a5bfc223a",
+    "duration_ms": 9010.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 5
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0006",
+    "file": "librispeech-1272-128104-0006.wav",
+    "reference": "ON THE GENERAL PRINCIPLES OF ART MISTER QUILTER WRITES WITH EQUAL LUCIDITY",
+    "language": "en",
+    "sha256": "acbc588a1ba63290a48aeb9b37c815475627ba58a815ff095042fa61729fe3a0",
+    "duration_ms": 5640.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 6
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0007",
+    "file": "librispeech-1272-128104-0007.wav",
+    "reference": "PAINTING HE TELLS US IS OF A DIFFERENT QUALITY TO MATHEMATICS AND FINISH IN ART IS ADDING MORE FACT",
+    "language": "en",
+    "sha256": "66ea55755fe31a7af9bb121ad33fd2037dbc8e2fc66d4cfb3f50cb8fa1e63561",
+    "duration_ms": 9240.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 7
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0008",
+    "file": "librispeech-1272-128104-0008.wav",
+    "reference": "AS FOR ETCHINGS THEY ARE OF TWO KINDS BRITISH AND FOREIGN",
+    "language": "en",
+    "sha256": "9514dcfa2f52cd7540c686c555213ca539b7ec8913b93913d14bfed151bdb72e",
+    "duration_ms": 5120.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 8
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0009",
+    "file": "librispeech-1272-128104-0009.wav",
+    "reference": "HE LAMENTS MOST BITTERLY THE DIVORCE THAT HAS BEEN MADE BETWEEN DECORATIVE ART AND WHAT WE USUALLY CALL PICTURES MAKES THE CUSTOMARY APPEAL TO THE LAST JUDGMENT AND REMINDS US THAT IN THE GREAT DAYS OF ART MICHAEL ANGELO WAS THE FURNISHING UPHOLSTERER",
+    "language": "en",
+    "sha256": "f91fae94e75d6e831eede05bff930beab5300cfc484a806ea196df2d6f219e19",
+    "duration_ms": 18290.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 9
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0010",
+    "file": "librispeech-1272-128104-0010.wav",
+    "reference": "NEAR THE FIRE AND THE ORNAMENTS FRED BROUGHT HOME FROM INDIA ON THE MANTEL BOARD",
+    "language": "en",
+    "sha256": "f656fbff06c64a890bda6e03f259257ad62d37f4804d2d3b46801d8ec8a0ee8d",
+    "duration_ms": 5600.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 10
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0011",
+    "file": "librispeech-1272-128104-0011.wav",
+    "reference": "IN FACT HE IS QUITE SEVERE ON MISTER RUSKIN FOR NOT RECOGNISING THAT A PICTURE SHOULD DENOTE THE FRAILTY OF MAN AND REMARKS WITH PLEASING COURTESY AND FELICITOUS GRACE THAT MANY PHASES OF FEELING",
+    "language": "en",
+    "sha256": "71bdb47d0bd378adab517958ddd96b4567e676a3d9b0f3787b36c35449124b81",
+    "duration_ms": 15115.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 11
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0012",
+    "file": "librispeech-1272-128104-0012.wav",
+    "reference": "ONLY UNFORTUNATELY HIS OWN WORK NEVER DOES GET GOOD",
+    "language": "en",
+    "sha256": "a89a64858c6f8d899dc6661d59a126cfe32b0cc2dadb7a1e9f4f6090a95e39cc",
+    "duration_ms": 5380.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 12
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0013",
+    "file": "librispeech-1272-128104-0013.wav",
+    "reference": "MISTER QUILTER HAS MISSED HIS CHANCE FOR HE HAS FAILED EVEN TO MAKE HIMSELF THE TUPPER OF PAINTING",
+    "language": "en",
+    "sha256": "61713e92f641a903dbe93f2db0f8a10710b9b441d0d3ea7164cad0ee3e00f405",
+    "duration_ms": 7100.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 13
+    }
+  },
+  {
+    "id": "librispeech-1272-128104-0014",
+    "file": "librispeech-1272-128104-0014.wav",
+    "reference": "BY HARRY QUILTER M A",
+    "language": "en",
+    "sha256": "b664cff5f3c9da7e2f3e37b3e0c1940aaf2db490fb68402f7e8afed8d75cceb1",
+    "duration_ms": 2245.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 14
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0000",
+    "file": "librispeech-1272-135031-0000.wav",
+    "reference": "BECAUSE YOU WERE SLEEPING INSTEAD OF CONQUERING THE LOVELY ROSE PRINCESS HAS BECOME A FIDDLE WITHOUT A BOW WHILE POOR SHAGGY SITS THERE A COOING DOVE",
+    "language": "en",
+    "sha256": "d1e0294eba40bd907d1aa493f296c4bfd78f5b9bc9f81a9b2b396046a5fed2e2",
+    "duration_ms": 10885.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 15
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0001",
+    "file": "librispeech-1272-135031-0001.wav",
+    "reference": "HE HAS GONE AND GONE FOR GOOD ANSWERED POLYCHROME WHO HAD MANAGED TO SQUEEZE INTO THE ROOM BESIDE THE DRAGON AND HAD WITNESSED THE OCCURRENCES WITH MUCH INTEREST",
+    "language": "en",
+    "sha256": "f7b291643bbd4c319830bf6cb12bcc8511c8b52af2842cc7d33bde571aa3e1d6",
+    "duration_ms": 11130.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 16
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0002",
+    "file": "librispeech-1272-135031-0002.wav",
+    "reference": "I HAVE REMAINED A PRISONER ONLY BECAUSE I WISHED TO BE ONE AND WITH THIS HE STEPPED FORWARD AND BURST THE STOUT CHAINS AS EASILY AS IF THEY HAD BEEN THREADS",
+    "language": "en",
+    "sha256": "60128c0970ce9304219eea64a7bf0f6e0b9c9ad09a2710aeebe162687977f8e3",
+    "duration_ms": 11475.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 17
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0003",
+    "file": "librispeech-1272-135031-0003.wav",
+    "reference": "THE LITTLE GIRL HAD BEEN ASLEEP BUT SHE HEARD THE RAPS AND OPENED THE DOOR",
+    "language": "en",
+    "sha256": "97d4e34f22051bbb0d356a9edfb520c7ea97680a711d27f1588097fe01882fd0",
+    "duration_ms": 4755.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 18
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0004",
+    "file": "librispeech-1272-135031-0004.wav",
+    "reference": "THE KING HAS FLED IN DISGRACE AND YOUR FRIENDS ARE ASKING FOR YOU",
+    "language": "en",
+    "sha256": "f178932ba2b1c850182b15ee8a74132edb9ffa30112682d7b38c55e194045f7d",
+    "duration_ms": 4225.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 19
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0005",
+    "file": "librispeech-1272-135031-0005.wav",
+    "reference": "I BEGGED RUGGEDO LONG AGO TO SEND HIM AWAY BUT HE WOULD NOT DO SO",
+    "language": "en",
+    "sha256": "66c19badf25f61516313b43999052b7631d1e8a8b2ee3a57cef20cb7f813021a",
+    "duration_ms": 4625.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 20
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0006",
+    "file": "librispeech-1272-135031-0006.wav",
+    "reference": "I ALSO OFFERED TO HELP YOUR BROTHER TO ESCAPE BUT HE WOULD NOT GO",
+    "language": "en",
+    "sha256": "c8fb7623ba9230c658833581f9e2fcdbbcea3a10738ad21066205a0bf40bfc5f",
+    "duration_ms": 4090.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 21
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0007",
+    "file": "librispeech-1272-135031-0007.wav",
+    "reference": "HE EATS AND SLEEPS VERY STEADILY REPLIED THE NEW KING",
+    "language": "en",
+    "sha256": "be046b1ca20292a992dca5f69ddc4d9f295c2512b05b6caf4181190f7c28571c",
+    "duration_ms": 4055.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 22
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0008",
+    "file": "librispeech-1272-135031-0008.wav",
+    "reference": "I HOPE HE DOESN'T WORK TOO HARD SAID SHAGGY",
+    "language": "en",
+    "sha256": "5d9983f61b0aaba008a793f922309056d2325d25162ec48c4cae72a7295bc13b",
+    "duration_ms": 3670.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 23
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0009",
+    "file": "librispeech-1272-135031-0009.wav",
+    "reference": "HE DOESN'T WORK AT ALL",
+    "language": "en",
+    "sha256": "11d6953d2a8ba28594088deee728160db098904fc3a539fafb49293ae3182af0",
+    "duration_ms": 1910.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 24
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0010",
+    "file": "librispeech-1272-135031-0010.wav",
+    "reference": "IN FACT THERE IS NOTHING HE CAN DO IN THESE DOMINIONS AS WELL AS OUR NOMES WHOSE NUMBERS ARE SO GREAT THAT IT WORRIES US TO KEEP THEM ALL BUSY",
+    "language": "en",
+    "sha256": "8cb7d3b0dbeff35186f810c9ef675bd4529455f21f47f4d20e71274054c528d3",
+    "duration_ms": 8995.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 25
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0011",
+    "file": "librispeech-1272-135031-0011.wav",
+    "reference": "NOT EXACTLY RETURNED KALIKO",
+    "language": "en",
+    "sha256": "824bd0b7c14c6af394fa0fcb7d79a0aa6e41419833dc070d53046d0e6685b1ff",
+    "duration_ms": 3180.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 26
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0012",
+    "file": "librispeech-1272-135031-0012.wav",
+    "reference": "WHERE IS MY BROTHER NOW",
+    "language": "en",
+    "sha256": "1816a4ffaad7968769724e7be1aa12bd47b5f6d320d183a449f7063a638a859a",
+    "duration_ms": 2040.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 27
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0013",
+    "file": "librispeech-1272-135031-0013.wav",
+    "reference": "INQUIRED SHAGGY IN THE METAL FOREST",
+    "language": "en",
+    "sha256": "1297682dd3faeb7c9e3c936eb707aaeb6c344c20ce468d4c752002035955a543",
+    "duration_ms": 3700.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 28
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0014",
+    "file": "librispeech-1272-135031-0014.wav",
+    "reference": "WHERE IS THAT",
+    "language": "en",
+    "sha256": "3f2d957a489d4ef52b7005e7291a49b8dc16260909228b9604d895fc8e642f2d",
+    "duration_ms": 1740.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 29
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0015",
+    "file": "librispeech-1272-135031-0015.wav",
+    "reference": "THE METAL FOREST IS IN THE GREAT DOMED CAVERN THE LARGEST IN ALL OUR DOMINIONS REPLIED KALIKO",
+    "language": "en",
+    "sha256": "0292f762769a555c7f5b529ed6d1c1805a4a5644d8898e2e3cd04fccb6da0f20",
+    "duration_ms": 7375.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 30
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0016",
+    "file": "librispeech-1272-135031-0016.wav",
+    "reference": "KALIKO HESITATED",
+    "language": "en",
+    "sha256": "20377fb00d282c4636bbfbb133235c46758a7e65584ccacc1e1e6629093fc219",
+    "duration_ms": 2280.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 31
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0017",
+    "file": "librispeech-1272-135031-0017.wav",
+    "reference": "HOWEVER IF WE LOOK SHARP WE MAY BE ABLE TO DISCOVER ONE OF THESE SECRET WAYS",
+    "language": "en",
+    "sha256": "540631c98a3da933f8d34fb60cee39af541c1f0809694818e0994adc4c43c43a",
+    "duration_ms": 6860.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 32
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0018",
+    "file": "librispeech-1272-135031-0018.wav",
+    "reference": "OH NO I'M QUITE SURE HE DIDN'T",
+    "language": "en",
+    "sha256": "43f9d0d754b72676c8066a2e5652d5cf951f4b97dbfbca87a4320e650de09f0d",
+    "duration_ms": 2444.9375,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 33
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0019",
+    "file": "librispeech-1272-135031-0019.wav",
+    "reference": "THAT'S FUNNY REMARKED BETSY THOUGHTFULLY",
+    "language": "en",
+    "sha256": "47e6515ad138c9221753f3663e20a627c62ce2aa473751b7c5dd23d21400857e",
+    "duration_ms": 3525.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 34
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0020",
+    "file": "librispeech-1272-135031-0020.wav",
+    "reference": "I DON'T BELIEVE ANN KNEW ANY MAGIC OR SHE'D HAVE WORKED IT BEFORE",
+    "language": "en",
+    "sha256": "48ded90d750e6d86af39f17730126efdc7dc2d9d8c7f10af10638b3f7d2d0e9c",
+    "duration_ms": 4650.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 35
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0021",
+    "file": "librispeech-1272-135031-0021.wav",
+    "reference": "I DO NOT KNOW CONFESSED SHAGGY",
+    "language": "en",
+    "sha256": "f07b05ad50ee2542e0b41da54ac47887ce83f0fa2312b52f4ee7a57223421800",
+    "duration_ms": 2595.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 36
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0022",
+    "file": "librispeech-1272-135031-0022.wav",
+    "reference": "TRUE AGREED KALIKO",
+    "language": "en",
+    "sha256": "1c1c5bc936c7ad5e09481db5d7c0f432ec5c7b1d9166ff778a7485c29b0e7552",
+    "duration_ms": 2695.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 37
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0023",
+    "file": "librispeech-1272-135031-0023.wav",
+    "reference": "KALIKO WENT TO THE BIG GONG AND POUNDED ON IT JUST AS RUGGEDO USED TO DO BUT NO ONE ANSWERED THE SUMMONS",
+    "language": "en",
+    "sha256": "01588e098b21a8e2f61a488c72fdd3620724e0c4b71129b0ba6078afa9eda4c8",
+    "duration_ms": 7520.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 38
+    }
+  },
+  {
+    "id": "librispeech-1272-135031-0024",
+    "file": "librispeech-1272-135031-0024.wav",
+    "reference": "HAVING RETURNED TO THE ROYAL CAVERN KALIKO FIRST POUNDED THE GONG AND THEN SAT IN THE THRONE WEARING RUGGEDO'S DISCARDED RUBY CROWN AND HOLDING IN HIS HAND THE SCEPTRE WHICH RUGGEDO HAD SO OFTEN THROWN AT HIS HEAD",
+    "language": "en",
+    "sha256": "cde8e39408c5ede394eb122cf95a2a5d0d24da1c5ca01336af5341c3526cde43",
+    "duration_ms": 14470.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 39
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0000",
+    "file": "librispeech-1272-141231-0000.wav",
+    "reference": "A MAN SAID TO THE UNIVERSE SIR I EXIST",
+    "language": "en",
+    "sha256": "7c205d4d1e9446847b15425be3180b139455ed18cc221461127e69792813bcac",
+    "duration_ms": 4650.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 40
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0001",
+    "file": "librispeech-1272-141231-0001.wav",
+    "reference": "SWEAT COVERED BRION'S BODY TRICKLING INTO THE TIGHT LOINCLOTH THAT WAS THE ONLY GARMENT HE WORE",
+    "language": "en",
+    "sha256": "832a6319c3c02569e404b9c91e820af543572bd6714931db124c8cd40bf5160d",
+    "duration_ms": 6535.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 41
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0002",
+    "file": "librispeech-1272-141231-0002.wav",
+    "reference": "THE CUT ON HIS CHEST STILL DRIPPING BLOOD THE ACHE OF HIS OVERSTRAINED EYES EVEN THE SOARING ARENA AROUND HIM WITH THE THOUSANDS OF SPECTATORS WERE TRIVIALITIES NOT WORTH THINKING ABOUT",
+    "language": "en",
+    "sha256": "88df13096bc40a18968891623efdb6ce08a58df7db24008e4fd9b6a017c62bf4",
+    "duration_ms": 13335.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 42
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0003",
+    "file": "librispeech-1272-141231-0003.wav",
+    "reference": "HIS INSTANT OF PANIC WAS FOLLOWED BY A SMALL SHARP BLOW HIGH ON HIS CHEST",
+    "language": "en",
+    "sha256": "b16ad8caf71e3fa7233e303caa273ad8e655edd431b137446a51c9e064c81269",
+    "duration_ms": 5420.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 43
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0004",
+    "file": "librispeech-1272-141231-0004.wav",
+    "reference": "ONE MINUTE A VOICE SAID AND THE TIME BUZZER SOUNDED",
+    "language": "en",
+    "sha256": "9ead8c47b0e8f785f43cc3b4cfc2ca4bb5a2838501385862e2adaa348341d5c6",
+    "duration_ms": 5090.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 44
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0005",
+    "file": "librispeech-1272-141231-0005.wav",
+    "reference": "A MINUTE IS NOT A VERY LARGE MEASURE OF TIME AND HIS BODY NEEDED EVERY FRACTION OF IT",
+    "language": "en",
+    "sha256": "f14a898eb7ac833f5becdd01a4f128a5754a9ff86160c323ac46c0b1599ae8cf",
+    "duration_ms": 5810.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 45
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0006",
+    "file": "librispeech-1272-141231-0006.wav",
+    "reference": "THE BUZZER'S WHIRR TRIGGERED HIS MUSCLES INTO COMPLETE RELAXATION",
+    "language": "en",
+    "sha256": "67b89253e6607a0a1ee53f5db5517922621c3bf524f5270a1dfe6890a61161e8",
+    "duration_ms": 4930.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 46
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0007",
+    "file": "librispeech-1272-141231-0007.wav",
+    "reference": "ONLY HIS HEART AND LUNGS WORKED ON AT A STRONG MEASURED RATE",
+    "language": "en",
+    "sha256": "8705c9bda6d723362d9e4e8f80aa261e34ca1aab74f5205ddf357c3ab9c3090c",
+    "duration_ms": 4735.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 47
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0008",
+    "file": "librispeech-1272-141231-0008.wav",
+    "reference": "HE WAS IN REVERIE SLIDING ALONG THE BORDERS OF CONSCIOUSNESS",
+    "language": "en",
+    "sha256": "c6af31f1c30c6b835cc763f6161bb395c36d3959eccfcf5dab8faebef7fac993",
+    "duration_ms": 4595.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 48
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0009",
+    "file": "librispeech-1272-141231-0009.wav",
+    "reference": "THE CONTESTANTS IN THE TWENTIES NEEDED UNDISTURBED REST THEREFORE NIGHTS IN THE DORMITORIES WERE AS QUIET AS DEATH",
+    "language": "en",
+    "sha256": "36909417c38ab5a05f65663fcb90273c559a35b82f5ed26e19b4d58fbd5d2bcb",
+    "duration_ms": 8620.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 49
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0010",
+    "file": "librispeech-1272-141231-0010.wav",
+    "reference": "PARTICULARLY SO ON THIS LAST NIGHT WHEN ONLY TWO OF THE LITTLE CUBICLES WERE OCCUPIED THE THOUSANDS OF OTHERS STANDING WITH DARK EMPTY DOORS",
+    "language": "en",
+    "sha256": "f90875d5dc061dd45eef7549244494e8b024465f432c382ece4963c631cbfadd",
+    "duration_ms": 10760.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 50
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0011",
+    "file": "librispeech-1272-141231-0011.wav",
+    "reference": "THE OTHER VOICE SNAPPED WITH A HARSH URGENCY CLEARLY USED TO COMMAND",
+    "language": "en",
+    "sha256": "5fe345e051f4ee7a00c6e9291a3ab9d6352ad802b3ec76e566dc39f236f9eb0d",
+    "duration_ms": 5015.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 51
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0012",
+    "file": "librispeech-1272-141231-0012.wav",
+    "reference": "I'M HERE BECAUSE THE MATTER IS OF UTMOST IMPORTANCE AND BRANDD IS THE ONE I MUST SEE NOW STAND ASIDE",
+    "language": "en",
+    "sha256": "f62b01de78e084ede6e5de6480f79cb783b3fc77827833795d5004d7711b7051",
+    "duration_ms": 7740.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 52
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0013",
+    "file": "librispeech-1272-141231-0013.wav",
+    "reference": "THE TWENTIES",
+    "language": "en",
+    "sha256": "c667674a25acacf6a120ec4234dfdb95015f3711d6f713946fa48da76068a6f6",
+    "duration_ms": 1639.9375,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 53
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0014",
+    "file": "librispeech-1272-141231-0014.wav",
+    "reference": "HE MUST HAVE DRAWN HIS GUN BECAUSE THE INTRUDER SAID QUICKLY PUT THAT AWAY YOU'RE BEING A FOOL OUT",
+    "language": "en",
+    "sha256": "7d2b6c7f117bd0b3822d30a13ba796e1b4111c928569a9709327b393167d442b",
+    "duration_ms": 7305.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 54
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0015",
+    "file": "librispeech-1272-141231-0015.wav",
+    "reference": "THERE WAS SILENCE THEN AND STILL WONDERING BRION WAS ONCE MORE ASLEEP",
+    "language": "en",
+    "sha256": "0d7d320363b26b50799090b0c76364c2081e1ab3d7bc288a7d85f2afc2de762c",
+    "duration_ms": 5680.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 55
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0016",
+    "file": "librispeech-1272-141231-0016.wav",
+    "reference": "TEN SECONDS",
+    "language": "en",
+    "sha256": "1a75673943ef4b7ed38985fe1355b00683c89fd69cf32207ad913f900247a313",
+    "duration_ms": 1850.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 56
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0017",
+    "file": "librispeech-1272-141231-0017.wav",
+    "reference": "HE ASKED THE HANDLER WHO WAS KNEADING HIS ACHING MUSCLES",
+    "language": "en",
+    "sha256": "eeb8c9b35a5e02400ff48c21403923f5a0b0d0a60306a101e7c27791cd5a869e",
+    "duration_ms": 3735.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 57
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0018",
+    "file": "librispeech-1272-141231-0018.wav",
+    "reference": "A RED HAIRED MOUNTAIN OF A MAN WITH AN APPARENTLY INEXHAUSTIBLE STORE OF ENERGY",
+    "language": "en",
+    "sha256": "919dbd0116500e82713f83d1b80b803df9f0dafb94aa8cb676db53d2efa73f98",
+    "duration_ms": 6000.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 58
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0019",
+    "file": "librispeech-1272-141231-0019.wav",
+    "reference": "THERE COULD BE LITTLE ART IN THIS LAST AND FINAL ROUND OF FENCING",
+    "language": "en",
+    "sha256": "f19cfd5a58ac84ac762689499d9d0e2e24634c1a5816dcd22a68d9c9ed968db8",
+    "duration_ms": 4700.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 59
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0020",
+    "file": "librispeech-1272-141231-0020.wav",
+    "reference": "JUST THRUST AND PARRY AND VICTORY TO THE STRONGER",
+    "language": "en",
+    "sha256": "272794eb23ef53aa7848a30391956a1b169e5ef423441e9e2b6a4d1b1e18a3e5",
+    "duration_ms": 4320.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 60
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0021",
+    "file": "librispeech-1272-141231-0021.wav",
+    "reference": "EVERY MAN WHO ENTERED THE TWENTIES HAD HIS OWN TRAINING TRICKS",
+    "language": "en",
+    "sha256": "4fda601e1d8ed809d128c0fde40df65dc7595694574e023b0d906d1ed1283d40",
+    "duration_ms": 4650.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 61
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0022",
+    "file": "librispeech-1272-141231-0022.wav",
+    "reference": "THERE APPEARED TO BE AN IMMEDIATE ASSOCIATION WITH THE DEATH TRAUMA AS IF THE TWO WERE INEXTRICABLY LINKED INTO ONE",
+    "language": "en",
+    "sha256": "44367a22506ceb74c0689e2222f642248b60b162e4610841a6794ee150949c6d",
+    "duration_ms": 8350.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 62
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0023",
+    "file": "librispeech-1272-141231-0023.wav",
+    "reference": "THE STRENGTH THAT ENABLES SOMEONE IN A TRANCE TO HOLD HIS BODY STIFF AND UNSUPPORTED EXCEPT AT TWO POINTS THE HEAD AND HEELS",
+    "language": "en",
+    "sha256": "8a87cc385a32a9d43ca793f3724ac7b7a22f7dca03fe7880d03827a1f9ea5e89",
+    "duration_ms": 8660.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 63
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0024",
+    "file": "librispeech-1272-141231-0024.wav",
+    "reference": "THIS IS PHYSICALLY IMPOSSIBLE WHEN CONSCIOUS",
+    "language": "en",
+    "sha256": "7438e49d7ec883b8a9f50173e887ce662d67c49186c53647a79bc13ee5b7db0e",
+    "duration_ms": 3640.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 64
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0025",
+    "file": "librispeech-1272-141231-0025.wav",
+    "reference": "OTHERS HAD DIED BEFORE DURING THE TWENTIES AND DEATH DURING THE LAST ROUND WAS IN SOME WAYS EASIER THAN DEFEAT",
+    "language": "en",
+    "sha256": "661715442514552155fa494bcb7bda1af3b11f1699e38191b2257370c4b1c788",
+    "duration_ms": 8725.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 65
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0026",
+    "file": "librispeech-1272-141231-0026.wav",
+    "reference": "BREATHING DEEPLY BRION SOFTLY SPOKE THE AUTO HYPNOTIC PHRASES THAT TRIGGERED THE PROCESS",
+    "language": "en",
+    "sha256": "4a2ddfdfd71a7d3acbb0e520a9d5c6f0f55bc6bff814ffe147ae9175a98fb625",
+    "duration_ms": 6635.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 66
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0027",
+    "file": "librispeech-1272-141231-0027.wav",
+    "reference": "WHEN THE BUZZER SOUNDED HE PULLED HIS FOIL FROM HIS SECOND'S STARTLED GRASP AND RAN FORWARD",
+    "language": "en",
+    "sha256": "9f43668e78db67ae1f4458f61ab4e163c9b246379003996ff76e17aa11ddc36a",
+    "duration_ms": 6570.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 67
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0028",
+    "file": "librispeech-1272-141231-0028.wav",
+    "reference": "IROLG LOOKED AMAZED AT THE SUDDEN FURY OF THE ATTACK THEN SMILED",
+    "language": "en",
+    "sha256": "4831c4c31b0b4b53feddbed1be9dfa8246e523342bb68048b078bf0c8f29fcce",
+    "duration_ms": 5650.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 68
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0029",
+    "file": "librispeech-1272-141231-0029.wav",
+    "reference": "HE THOUGHT IT WAS A LAST BURST OF ENERGY HE KNEW HOW CLOSE THEY BOTH WERE TO EXHAUSTION",
+    "language": "en",
+    "sha256": "753918968277f15e4a92f02b8745526c7cedf51b09c97174381b0be07d65e51a",
+    "duration_ms": 6880.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 69
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0030",
+    "file": "librispeech-1272-141231-0030.wav",
+    "reference": "BRION SAW SOMETHING CLOSE TO PANIC ON HIS OPPONENT'S FACE WHEN THE MAN FINALLY RECOGNIZED HIS ERROR",
+    "language": "en",
+    "sha256": "d977095474b119378acfed8ad799ec411ba61e47ba1e144e914d265c7a20f532",
+    "duration_ms": 7130.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 70
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0031",
+    "file": "librispeech-1272-141231-0031.wav",
+    "reference": "A WAVE OF DESPAIR ROLLED OUT FROM IROLG BRION SENSED IT AND KNEW THE FIFTH POINT WAS HIS",
+    "language": "en",
+    "sha256": "89a61aad65f13005c0e1337bcfb07359fe69cb2162e8579df09a9576ce2fcd21",
+    "duration_ms": 7115.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 71
+    }
+  },
+  {
+    "id": "librispeech-1272-141231-0032",
+    "file": "librispeech-1272-141231-0032.wav",
+    "reference": "THEN THE POWERFUL TWIST THAT THRUST IT ASIDE IN AND UNDER THE GUARD",
+    "language": "en",
+    "sha256": "202a6c1b07f83831254a24be988dd86c9e512674a00554e410c2370671657a3b",
+    "duration_ms": 4480.0,
+    "download": {
+      "url": "https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy/resolve/5be91486e11a2d616f4ec5db8d3fd248585ac07a/clean/validation-00000-of-00001.parquet",
+      "sha256": "4e69a06fa5edc90921e5e7e39a7084881f8b3ed9c805c574f4f39c6fde27c603",
+      "parquet_row": 72
+    }
+  },
+  {
+    "id": "aishell-fixture-0",
+    "file": "aishell-fixture-0.wav",
+    "reference": "我国的经济处在爬坡过坎的重要关口",
+    "language": "zh",
+    "sha256": "c5c563b8c81be45fffbf5639254acbd497915b956fd2513af62a41f23dc8b47f",
+    "duration_ms": 4157.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_0.wav",
+      "sha256": "c5c563b8c81be45fffbf5639254acbd497915b956fd2513af62a41f23dc8b47f"
+    }
+  },
+  {
+    "id": "aishell-fixture-1",
+    "file": "aishell-fixture-1.wav",
+    "reference": "完善土地承包经营权流转市场",
+    "language": "zh",
+    "sha256": "2e4b2fb92ba8f874de5537ee892550b67f7522afd065d8b002f5fb9168fe118d",
+    "duration_ms": 3200.9375,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_1.wav",
+      "sha256": "2e4b2fb92ba8f874de5537ee892550b67f7522afd065d8b002f5fb9168fe118d"
+    }
+  },
+  {
+    "id": "aishell-fixture-2",
+    "file": "aishell-fixture-2.wav",
+    "reference": "延长各类设施使用年限",
+    "language": "zh",
+    "sha256": "aba468021d7c169108f1f39aed81e22ea394b8c51b55b9b80d3942942ca8d30f",
+    "duration_ms": 3680.0625,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_2.wav",
+      "sha256": "aba468021d7c169108f1f39aed81e22ea394b8c51b55b9b80d3942942ca8d30f"
+    }
+  },
+  {
+    "id": "aishell-fixture-3",
+    "file": "aishell-fixture-3.wav",
+    "reference": "苹果此举是为了节约用电量",
+    "language": "zh",
+    "sha256": "2b9f454c704dc50d2aaf1eaec1d49a32df0993e3ceb11637796038078adc9418",
+    "duration_ms": 5078.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_3.wav",
+      "sha256": "2b9f454c704dc50d2aaf1eaec1d49a32df0993e3ceb11637796038078adc9418"
+    }
+  },
+  {
+    "id": "aishell-fixture-4",
+    "file": "aishell-fixture-4.wav",
+    "reference": "让他们也可以有机会参与体育运动",
+    "language": "zh",
+    "sha256": "fd539508173ec598313529019c427fa9d3dd82a518f6090417b84f6ebc4670d0",
+    "duration_ms": 4082.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_4.wav",
+      "sha256": "fd539508173ec598313529019c427fa9d3dd82a518f6090417b84f6ebc4670d0"
+    }
+  },
+  {
+    "id": "aishell-fixture-5",
+    "file": "aishell-fixture-5.wav",
+    "reference": "陈妍希穿着粉色上衣",
+    "language": "zh",
+    "sha256": "dd255975cb991ecb489423890bb146a14567e70da4389aa4aefc3b3fc9dc78f3",
+    "duration_ms": 3431.875,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_5.wav",
+      "sha256": "dd255975cb991ecb489423890bb146a14567e70da4389aa4aefc3b3fc9dc78f3"
+    }
+  },
+  {
+    "id": "aishell-fixture-6",
+    "file": "aishell-fixture-6.wav",
+    "reference": "说起自己的伴侣大侠",
+    "language": "zh",
+    "sha256": "4f04923881dc1cb39a987d7b00824bc7ba034b027d3e719c5262e79ee925da3a",
+    "duration_ms": 3249.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_6.wav",
+      "sha256": "4f04923881dc1cb39a987d7b00824bc7ba034b027d3e719c5262e79ee925da3a"
+    }
+  },
+  {
+    "id": "aishell-fixture-7",
+    "file": "aishell-fixture-7.wav",
+    "reference": "每日经济新闻记者注意到",
+    "language": "zh",
+    "sha256": "b9f32fc99e637169a883f5c03ef4a9298f2d519faeb1823d98e87d02b2a82a19",
+    "duration_ms": 3509.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_7.wav",
+      "sha256": "b9f32fc99e637169a883f5c03ef4a9298f2d519faeb1823d98e87d02b2a82a19"
+    }
+  },
+  {
+    "id": "aishell-fixture-8",
+    "file": "aishell-fixture-8.wav",
+    "reference": "这是今年五月份以来库存环比增幅最小的一次",
+    "language": "zh",
+    "sha256": "7b2b94b88eddd286e8319db7e1167afb70e3db970655a2589f8f1657b38e58e8",
+    "duration_ms": 6928.0,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_8.wav",
+      "sha256": "7b2b94b88eddd286e8319db7e1167afb70e3db970655a2589f8f1657b38e58e8"
+    }
+  },
+  {
+    "id": "aishell-fixture-9",
+    "file": "aishell-fixture-9.wav",
+    "reference": "一个人的精神生命就将走向衰老",
+    "language": "zh",
+    "sha256": "2adf8b454a196df6be81b5dd425f222601bc875e22d20ec01693a64f9d7327af",
+    "duration_ms": 3965.8125,
+    "download": {
+      "url": "https://raw.githubusercontent.com/foamliu/Speech-Transformer/cf917db8c219e837e9392177a5d385c9f2b60b0d/audios/audio_9.wav",
+      "sha256": "2adf8b454a196df6be81b5dd425f222601bc875e22d20ec01693a64f9d7327af"
+    }
+  }
+]
