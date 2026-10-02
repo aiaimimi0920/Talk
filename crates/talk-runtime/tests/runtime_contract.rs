@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use talk_client::FrontContext;
 use talk_core::{
-    ClipboardBackendMode, OutputMode, ProviderKind, SessionStatus, TalkConfig, VoiceEvent,
-    VoiceMode, VoiceSession,
+    ClipboardBackendMode, OpenAiTranscriptionTransport, OutputMode, ProviderKind, SessionStatus,
+    TalkConfig, VoiceEvent, VoiceMode, VoiceSession,
 };
 use talk_insert::{InsertMethod, InsertOutcome};
 use talk_runtime::{
@@ -91,6 +91,188 @@ fn spawn_provider_request_detector() -> (String, thread::JoinHandle<bool>) {
         false
     });
     (endpoint, handle)
+}
+
+async fn spawn_openai_body_capture(
+    path: &str,
+    response_body: &str,
+) -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback provider");
+    let endpoint = format!("http://{}{path}", listener.local_addr().unwrap());
+    let response_body = response_body.to_string();
+    let handle = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(5), async move {
+            let (mut stream, _) = listener.accept().await.expect("accept provider request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let header_end = loop {
+                let count = stream.read(&mut buffer).await.expect("read request headers");
+                assert!(count > 0, "connection closed before request headers");
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let content_length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .expect("content length header")
+                .1
+                .trim()
+                .parse::<usize>()
+                .expect("content length number");
+            while bytes.len() < header_end + content_length {
+                let count = stream.read(&mut buffer).await.expect("read request body");
+                assert!(count > 0, "connection closed before request body");
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.expect("respond to provider request");
+            String::from_utf8(bytes[header_end..header_end + content_length].to_vec())
+                .expect("request body UTF-8")
+        })
+        .await
+        .expect("provider request must finish within five seconds")
+    });
+    (endpoint, handle)
+}
+
+#[tokio::test]
+async fn runtime_correction_thinking_follows_smart_resolution_and_config_defaults() {
+    for setting in [None, Some(false), Some(true)] {
+        for mode_override in [None, Some(VoiceMode::Smart)] {
+            for (transcript, is_correction, prompt_fragment) in [
+                ("今天我们讨论项目进度", true, "light corrections"),
+                ("打开记事本", false, "voice assistant"),
+                ("生成一篇描述春天的散文", false, "generation instruction"),
+                ("请把这段话润色成正式公文", false, "polished formal"),
+            ] {
+                let (endpoint, request) = spawn_openai_body_capture(
+                    "/v1/chat/completions",
+                    r#"{"choices":[{"message":{"content":"processed text"}}]}"#,
+                )
+                .await;
+                let mut config = config_with_mock_provider("smart-correction-thinking");
+                config.voice_mode = VoiceMode::Smart;
+                config.provider.kind = ProviderKind::OpenAiCompatible;
+                config.provider.chat_completions_endpoint = Some(endpoint);
+                config.provider.chat_model = Some("qwen3.7-plus".to_string());
+                config.provider.api_key = Some("local-test-key".to_string());
+                config.provider.transcription_correction_enable_thinking = setting;
+
+                let output = process_voice_transcript_text(
+                    &config,
+                    transcript.to_string(),
+                    mode_override,
+                    FrontContext::default(),
+                )
+                .await
+                .expect("process resolved Smart transcript");
+                assert_eq!(output, "processed text");
+                let body: serde_json::Value =
+                    serde_json::from_str(&request.await.expect("provider task joins"))
+                        .expect("request JSON");
+                let expected = if is_correction {
+                    setting.map(serde_json::Value::Bool)
+                } else {
+                    None
+                };
+                assert_eq!(
+                    body.get("enable_thinking"),
+                    expected.as_ref(),
+                    "{transcript}, {setting:?}, {mode_override:?}"
+                );
+                assert!(body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains(prompt_fragment));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn runtime_correction_thinking_never_leaks_into_either_asr_transport() {
+    for setting in [false, true] {
+        for transport in [
+            OpenAiTranscriptionTransport::AudioTranscriptions,
+            OpenAiTranscriptionTransport::ChatCompletionsAudioInput,
+        ] {
+            let name = format!("correction-thinking-asr-{transport:?}-{setting}");
+            let mut config = config_with_mock_provider(&name);
+            let (audio_endpoint, audio_request) = spawn_openai_body_capture(
+                "/v1/audio/transcriptions",
+                r#"{"text":"local transcript","choices":[{"message":{"content":"local transcript"}}]}"#,
+            ).await;
+            let (chat_endpoint, chat_request) = spawn_openai_body_capture(
+                "/v1/chat/completions",
+                r#"{"choices":[{"message":{"content":"corrected transcript"}}]}"#,
+            )
+            .await;
+            config.provider.kind = ProviderKind::OpenAiCompatible;
+            config.provider.audio_transcriptions_endpoint = Some(audio_endpoint);
+            config.provider.chat_completions_endpoint = Some(chat_endpoint);
+            config.provider.transcription_model = Some("test-asr-model".to_string());
+            config.provider.chat_model = Some("qwen3.7-plus".to_string());
+            config.provider.api_key = Some("local-test-key".to_string());
+            config.provider.transcription_transport = transport;
+            config.provider.transcription_correction_enable_thinking = Some(setting);
+
+            std::fs::create_dir_all(&config.audio.temp_dir).expect("create test audio dir");
+            let audio_path = config.audio.temp_dir.join("sample.wav");
+            std::fs::write(&audio_path, b"fake wav bytes").expect("write test audio");
+            let mut session = VoiceSession::new(&name);
+            session.apply(VoiceEvent::TriggerStart).unwrap();
+            session.apply(VoiceEvent::TriggerStop).unwrap();
+            let report = run_voice_session_from_audio_artifact_with_insert_hooks(
+                &config,
+                session,
+                vec!["trigger_start", "trigger_stop"],
+                audio_path,
+                None,
+                Some(VoiceMode::Smart),
+                FrontContext::default(),
+                |_| RuntimeInsertDirective::DryRunOnly,
+                || {},
+                |_| {},
+            )
+            .await
+            .expect("transcribe and correct using loopback providers");
+            assert_eq!(report.session.status(), SessionStatus::Completed);
+            assert_eq!(report.smart_routed_mode, Some(VoiceMode::Transcribe));
+            let audio_body = audio_request.await.expect("audio provider task joins");
+            assert!(!audio_body.contains("enable_thinking"), "{transport:?}");
+            match transport {
+                OpenAiTranscriptionTransport::AudioTranscriptions => {
+                    assert!(audio_body.contains("name=\"file\""));
+                    assert!(audio_body.contains("test-asr-model"));
+                }
+                OpenAiTranscriptionTransport::ChatCompletionsAudioInput => {
+                    let body: serde_json::Value =
+                        serde_json::from_str(&audio_body).expect("audio JSON");
+                    assert_eq!(body["model"], "test-asr-model");
+                    assert_eq!(body["messages"][0]["content"][0]["type"], "input_audio");
+                }
+            }
+            let chat_body: serde_json::Value =
+                serde_json::from_str(&chat_request.await.expect("chat provider task joins"))
+                    .expect("chat JSON");
+            assert_eq!(chat_body["enable_thinking"], setting);
+            assert_eq!(
+                chat_body["messages"][1]["content"],
+                "Transcript:\nlocal transcript"
+            );
+        }
+    }
 }
 
 #[test]

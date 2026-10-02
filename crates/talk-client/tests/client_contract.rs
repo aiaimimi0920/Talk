@@ -715,6 +715,7 @@ async fn openai_compatible_transcriber_uploads_audio_multipart_with_model_and_be
     assert!(request.body.contains("name=\"file\""));
     assert!(request.body.contains("filename=\"sample.wav\""));
     assert!(request.body.contains("fake wav bytes"));
+    assert!(!request.body.contains("enable_thinking"));
 }
 
 #[tokio::test]
@@ -756,6 +757,7 @@ async fn openai_compatible_transcriber_can_use_chat_completions_audio_input_tran
         .headers
         .contains("authorization: Bearer talk-test-key"));
     assert_eq!(request_json["model"], "qwen3-asr-flash");
+    assert!(request_json.get("enable_thinking").is_none());
     assert_eq!(messages[0]["role"], "user");
     assert_eq!(content[0]["type"], "input_audio");
     assert!(
@@ -970,6 +972,79 @@ async fn openai_compatible_text_processor_posts_chat_completions_and_extracts_fi
                 .expect("user content")
                 .contains("turn this into an answer")
     }));
+}
+
+#[tokio::test]
+async fn openai_correction_thinking_is_explicit_and_scoped_in_http_requests() {
+    for setting in [None, Some(false), Some(true)] {
+        for mode in [
+            VoiceMode::Transcribe,
+            VoiceMode::Dictate,
+            VoiceMode::Document,
+            VoiceMode::Polish,
+            VoiceMode::Command,
+            VoiceMode::Generate,
+            VoiceMode::Translate,
+            VoiceMode::Smart,
+        ] {
+            let (endpoint, handle) = spawn_openai_chat_response(
+                r#"{"choices":[{"message":{"content":"corrected text"}}]}"#,
+            );
+            let processor = OpenAiCompatibleTextProcessor::new(endpoint, "qwen3.7-plus", None);
+            // Exercise the original constructor without a builder for the unset case.
+            let processor = match setting {
+                None => processor,
+                Some(_) => processor.with_transcription_correction_enable_thinking(setting),
+            };
+            let output = processor
+                .process("dictated text".to_string(), mode, FrontContext::default())
+                .await
+                .expect("text processing should succeed");
+            assert_eq!(output, "corrected text");
+
+            let request = handle.join().expect("provider thread joins");
+            let body: serde_json::Value =
+                serde_json::from_str(&request.body).expect("request JSON");
+            let expected = match mode {
+                VoiceMode::Transcribe | VoiceMode::Dictate => setting.map(serde_json::Value::Bool),
+                _ => None,
+            };
+            assert_eq!(
+                body.get("enable_thinking"),
+                expected.as_ref(),
+                "{mode:?}, {setting:?}"
+            );
+            assert!(
+                body.get("extra_body").is_none(),
+                "field belongs at the HTTP body root"
+            );
+            assert_eq!(body["model"], "qwen3.7-plus");
+            assert_eq!(body["messages"][1]["content"], "Transcript:\ndictated text");
+            assert_eq!(
+                body.as_object().unwrap().len(),
+                2 + usize::from(expected.is_some())
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn openai_correction_thinking_builder_can_restore_provider_default() {
+    let (endpoint, handle) =
+        spawn_openai_chat_response(r#"{"choices":[{"message":{"content":"corrected text"}}]}"#);
+    OpenAiCompatibleTextProcessor::new(endpoint, "qwen3.7-plus", None)
+        .with_transcription_correction_enable_thinking(Some(false))
+        .with_transcription_correction_enable_thinking(None)
+        .process(
+            "dictated text".to_string(),
+            VoiceMode::Transcribe,
+            FrontContext::default(),
+        )
+        .await
+        .expect("text processing should succeed");
+    let request = handle.join().expect("provider thread joins");
+    let body: serde_json::Value = serde_json::from_str(&request.body).expect("request JSON");
+    assert!(body.get("enable_thinking").is_none());
 }
 
 fn spawn_text_provider_response(text: &str) -> (String, thread::JoinHandle<String>) {

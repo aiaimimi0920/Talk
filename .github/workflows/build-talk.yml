@@ -42,6 +42,8 @@ jobs:
         run: cargo check --workspace --all-targets --locked
       - name: Run workspace tests
         run: cargo test --workspace --locked
+      - name: Test ASR benchmark metrics and corpus integrity
+        run: python -m unittest discover -s scripts/tests -p "test_asr_resources.py" -v
       - name: Validate workflow contracts
         shell: pwsh
         run: |
@@ -92,6 +94,9 @@ jobs:
 
       - name: Run workspace tests
         run: cargo test --workspace
+
+      - name: Test ASR benchmark metrics and corpus integrity
+        run: python -m unittest discover -s scripts/tests -p "test_asr_resources.py" -v
 
       - name: Build credential-free Windows package
         shell: powershell

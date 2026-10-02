@@ -581,6 +581,31 @@ Expected processing response shape:
 }
 ```
 
+#### Optional thinking control for transcription correction
+
+`provider.transcription_correction_enable_thinking` is an optional boolean for
+OpenAI-compatible text processing. Omit it to preserve existing requests and
+the provider's default. Explicit `false` sends `"enable_thinking": false`;
+explicit `true` sends `"enable_thinking": true`. Talk adds this field at the
+HTTP JSON body's top level only for resolved `transcribe` or legacy `dictate`
+correction. `smart` uses it only when routed to transcription. Other modes and
+both audio transcription transports omit the field.
+
+This is a provider extension, not a standard OpenAI parameter. Alibaba's
+[Qwen OpenAI-compatible API](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)
+documents this top-level HTTP field for supported hybrid-thinking models.
+Its [thinking guide](https://help.aliyun.com/zh/model-studio/deep-thinking)
+lists `qwen3.7-plus` as enabling thinking by default; disabling it can avoid
+the extra reasoning step during light correction. Model defaults and support
+vary, and this option alone is not evidence of a measured latency or quality
+improvement.
+
+Only opt in after confirming that your endpoint and selected `chat_model`
+support the requested value with non-streaming Chat Completions. Talk does
+not infer support from hostnames or model names. Unsupported providers/models
+may reject the request; leave the setting absent for them. Shipped defaults
+and example configurations leave it unset.
+
 For the packaged/live desktop shell, the current Typeless-style baseline is:
 
 - primary `voice_mode = "dictate"` on `RightAlt`

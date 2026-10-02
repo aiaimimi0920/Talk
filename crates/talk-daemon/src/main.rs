@@ -1316,6 +1316,7 @@ mod tests {
                 transcription_transport: OpenAiTranscriptionTransport::AudioTranscriptions,
                 transcription_model: None,
                 chat_model: None,
+                transcription_correction_enable_thinking: None,
                 api_key: None,
                 api_key_env: None,
             },

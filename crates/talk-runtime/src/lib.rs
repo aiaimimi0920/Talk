@@ -1303,6 +1303,9 @@ async fn process_output(
                 .as_deref()
                 .context("provider.chat_model must be set for openai_compatible provider")?;
             OpenAiCompatibleTextProcessor::new(endpoint, model, resolve_provider_api_key(config)?)
+                .with_transcription_correction_enable_thinking(
+                    config.provider.transcription_correction_enable_thinking,
+                )
                 .process(transcript, mode, context)
                 .await
                 .map_err(Into::into)
