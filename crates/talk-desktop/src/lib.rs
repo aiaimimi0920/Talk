@@ -3726,7 +3726,7 @@ pub fn tray_menu_model(
         start_enabled: config.is_ready() && state.can_start_session(),
         stop_enabled: config.is_ready() && state.can_stop_session(),
         cancel_enabled: config.is_ready() && state.can_stop_session(),
-        reload_config_enabled: true,
+        reload_config_enabled: state.can_start_session(),
         open_config_enabled: true,
     }
 }

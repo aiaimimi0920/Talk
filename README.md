@@ -272,6 +272,15 @@ If the configured global hotkey is invalid or already taken by another app,
 tray menu still lets you start dictation manually, open the config file, reload
 the config, and recover without restarting the whole app.
 
+Reload is available while Talk is idle; finish or cancel the current recording
+and wait for processing to finish first. For a Talk-managed local ASR worker,
+changes to thread count, decoding method, model paths, or other launch options
+take effect on the next recording. Talk restarts only that changed worker, so
+the next recording includes model startup time. Unrelated settings keep the
+existing worker warm. An independently started ASR service remains externally
+managed and must be reconfigured there. Replacing model or hotword file contents
+at the same path still requires restarting Talk (or the external service).
+
 If the Talk config file itself is temporarily broken and cannot be parsed,
 `Talk.exe` also stays alive in a config-unavailable tray mode. In that
 state, manual dictation is disabled until the config is fixed and reloaded, but

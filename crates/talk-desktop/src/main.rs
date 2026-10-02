@@ -1,3 +1,6 @@
+#[cfg(any(windows, test))]
+mod local_asr_lifecycle;
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("talk-desktop is only available on Windows");
@@ -6,6 +9,9 @@ fn main() {
 
 #[cfg(windows)]
 mod windows_app {
+    use super::local_asr_lifecycle::{
+        apply_worker_transition, choose_worker_transition, stop_owned_worker, OwnedWorkerState,
+    };
     use anyhow::{Context, Result};
     use clap::Parser;
     use serde_json::Value;
@@ -315,6 +321,7 @@ mod windows_app {
 
     struct ManagedLocalAsrDaemon {
         endpoint: String,
+        launch_plan: talk_desktop::DesktopLocalAsrDaemonLaunchPlan,
         child: std::process::Child,
     }
 
@@ -1746,8 +1753,11 @@ mod windows_app {
                                 );
                             }
                         }
-                        if let Some(daemon) = shared.local_asr_daemon.take() {
-                            stop_managed_local_asr_daemon(daemon);
+                        if let Err(error) = stop_owned_worker(
+                            &mut shared.local_asr_daemon,
+                            stop_managed_local_asr_daemon,
+                        ) {
+                            eprintln!("Talk packaged local ASR daemon stop failed: {error}");
                         }
                         unregister_bound_hotkey(hwnd);
                     }
@@ -1962,43 +1972,63 @@ mod windows_app {
             LocalAsrBootstrapStatus::EngineeringFallback | LocalAsrBootstrapStatus::Ready => {}
         }
 
-        if let Some(mut daemon) = shared.local_asr_daemon.take() {
-            if daemon.endpoint == endpoint && managed_local_asr_daemon_is_running(&mut daemon) {
-                shared.local_asr_daemon = Some(daemon);
-                return Ok(true);
-            }
-            stop_managed_local_asr_daemon(daemon);
-        }
+        let owned_running = shared
+            .local_asr_daemon
+            .as_mut()
+            .map(managed_local_asr_daemon_is_running)
+            .transpose()?
+            .unwrap_or(false);
+        let owned = shared
+            .local_asr_daemon
+            .as_ref()
+            .map(|daemon| OwnedWorkerState {
+                endpoint: &daemon.endpoint,
+                plan: &daemon.launch_plan,
+                running: owned_running,
+            });
+        let transition = choose_worker_transition(
+            owned.as_ref(),
+            &endpoint,
+            || local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(80)),
+            || -> Result<_> {
+                if let (Some(worker_path), Some(model_root)) = (
+                    shared.product_runtime_worker.as_ref(),
+                    shared.product_model_root.as_ref(),
+                ) {
+                    desktop_product_local_asr_daemon_launch_plan_with_config(
+                        worker_path,
+                        model_root,
+                        &endpoint,
+                        service.local_daemon.as_ref(),
+                    )
+                    .map_err(anyhow::Error::msg)
+                } else {
+                    let executable_path =
+                        std::env::current_exe().context("resolve Talk desktop executable path")?;
+                    desktop_packaged_local_asr_daemon_launch_plan_with_config(
+                        &executable_path,
+                        &endpoint,
+                        service.local_daemon.as_ref(),
+                    )
+                    .map_err(anyhow::Error::msg)
+                }
+            },
+        )?;
+        let startup_timeout_ms =
+            desktop_product_local_asr_startup_timeout_ms(service.connect_timeout_ms);
+        apply_worker_transition(
+            transition,
+            &mut shared.local_asr_daemon,
+            stop_managed_local_asr_daemon,
+            |plan| launch_managed_local_asr_daemon(&endpoint, plan, startup_timeout_ms),
+        )
+    }
 
-        if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(80)) {
-            return Ok(true);
-        }
-
-        let plan = if let (Some(worker_path), Some(model_root)) = (
-            shared.product_runtime_worker.as_ref(),
-            shared.product_model_root.as_ref(),
-        ) {
-            desktop_product_local_asr_daemon_launch_plan_with_config(
-                worker_path,
-                model_root,
-                &endpoint,
-                service.local_daemon.as_ref(),
-            )
-            .map_err(anyhow::Error::msg)?
-        } else {
-            let executable_path =
-                std::env::current_exe().context("resolve Talk desktop executable path")?;
-            desktop_packaged_local_asr_daemon_launch_plan_with_config(
-                &executable_path,
-                &endpoint,
-                service.local_daemon.as_ref(),
-            )
-            .map_err(anyhow::Error::msg)?
-        };
-        let Some(plan) = plan else {
-            return Ok(false);
-        };
-
+    fn launch_managed_local_asr_daemon(
+        endpoint: &str,
+        plan: talk_desktop::DesktopLocalAsrDaemonLaunchPlan,
+        startup_timeout_ms: u64,
+    ) -> Result<ManagedLocalAsrDaemon> {
         let mut child = std::process::Command::new(&plan.executable_path)
             .args(&plan.args)
             .stdin(Stdio::null())
@@ -2013,13 +2043,14 @@ mod windows_app {
                 )
             })?;
 
-        let startup_timeout_ms =
-            desktop_product_local_asr_startup_timeout_ms(service.connect_timeout_ms);
         let deadline = Instant::now() + Duration::from_millis(startup_timeout_ms);
         loop {
             if local_asr_endpoint_accepts_tcp(&endpoint, Duration::from_millis(40)) {
-                shared.local_asr_daemon = Some(ManagedLocalAsrDaemon { endpoint, child });
-                return Ok(true);
+                return Ok(ManagedLocalAsrDaemon {
+                    endpoint: endpoint.to_string(),
+                    launch_plan: plan,
+                    child,
+                });
             }
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -2053,36 +2084,38 @@ mod windows_app {
         bind.parse().ok()
     }
 
-    fn managed_local_asr_daemon_is_running(daemon: &mut ManagedLocalAsrDaemon) -> bool {
-        match daemon.child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(status)) => {
+    fn managed_local_asr_daemon_is_running(daemon: &mut ManagedLocalAsrDaemon) -> Result<bool> {
+        match daemon
+            .child
+            .try_wait()
+            .context("check packaged local ASR daemon status")?
+        {
+            None => Ok(true),
+            Some(status) => {
                 eprintln!("Talk packaged local ASR daemon exited: {status}");
-                false
-            }
-            Err(error) => {
-                eprintln!("Talk packaged local ASR daemon status check failed: {error}");
-                false
+                Ok(false)
             }
         }
     }
 
-    fn stop_managed_local_asr_daemon(mut daemon: ManagedLocalAsrDaemon) {
-        match daemon.child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!(
-                    "Talk packaged local ASR daemon status check failed before stop: {error}"
-                );
-            }
+    fn stop_managed_local_asr_daemon(daemon: &mut ManagedLocalAsrDaemon) -> Result<()> {
+        if daemon
+            .child
+            .try_wait()
+            .context("check packaged local ASR daemon before stop")?
+            .is_some()
+        {
+            return Ok(());
         }
-        if let Err(error) = daemon.child.kill() {
-            eprintln!("Talk packaged local ASR daemon kill failed: {error}");
-        }
-        if let Err(error) = daemon.child.wait() {
-            eprintln!("Talk packaged local ASR daemon wait failed: {error}");
-        }
+        daemon
+            .child
+            .kill()
+            .context("kill packaged local ASR daemon")?;
+        daemon
+            .child
+            .wait()
+            .context("wait for packaged local ASR daemon to stop")?;
+        Ok(())
     }
 
     fn begin_recording(
@@ -4111,7 +4144,13 @@ mod windows_app {
                 let _ = open_config_file(hwnd);
             }
             MENU_RELOAD_CONFIG => {
-                let _ = reload_config(hwnd);
+                if let Err(error) = reload_config(hwnd) {
+                    let _ = show_hud_text(
+                        hwnd,
+                        &compose_hud_message("Talk: config reload error", Some(&error.to_string())),
+                        Some(1800),
+                    );
+                }
             }
             MENU_EXIT => unsafe {
                 DestroyWindow(hwnd);
@@ -4214,6 +4253,9 @@ mod windows_app {
         let state = unsafe { get_window_state_mut(hwnd)? };
         let (config_path, runtime_handle) = {
             let shared = state.shared.lock().expect("Talk desktop shared state");
+            if !shared.shell_state.can_start_session() {
+                anyhow::bail!("Talk config can only be reloaded while idle");
+            }
             (shared.config_path.clone(), shared.runtime_handle.clone())
         };
 
@@ -4224,6 +4266,15 @@ mod windows_app {
                 .with_context(|| format!("reload Talk config {}", config_path.display()))
             {
                 Ok(config) => {
+                    if desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
+                        &config,
+                    )) != DesktopSpeculativeLocalAsrRoute::StreamingService
+                    {
+                        stop_owned_worker(
+                            &mut shared.local_asr_daemon,
+                            stop_managed_local_asr_daemon,
+                        )?;
+                    }
                     let selected_voice_mode = config.default_voice_mode();
                     shared.config = Some(config.clone());
                     shared.config_status = ConfigAvailability::ready();
@@ -4242,14 +4293,6 @@ mod windows_app {
                         }
                     }
                     shared.native_readiness = Some(configured_native_readiness(&config));
-                    if desktop_speculative_local_asr_route(&desktop_speculative_pipeline_config(
-                        &config,
-                    )) != DesktopSpeculativeLocalAsrRoute::StreamingService
-                    {
-                        if let Some(daemon) = shared.local_asr_daemon.take() {
-                            stop_managed_local_asr_daemon(daemon);
-                        }
-                    }
                 }
                 Err(error) => {
                     if shared.config.is_none() {
