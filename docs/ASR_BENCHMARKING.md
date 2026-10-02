@@ -637,3 +637,7 @@ recognition speed.
 The [live streaming backpressure evidence](asr-benchmarks/local-streaming-backpressure-20261001.md)
 records synthetic loopback liveness and cancellation tests. It is not an ASR
 accuracy or model-speed benchmark.
+
+The [buffered-recording API evidence](asr-benchmarks/batch-streaming-backpressure-20261001.md)
+covers the public batch helper's transfer deadline and preserved final-response
+window. It does not establish a normal desktop regression or ASR-quality gain.
