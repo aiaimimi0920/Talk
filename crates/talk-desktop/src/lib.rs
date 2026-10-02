@@ -3726,7 +3726,7 @@ pub fn tray_menu_model(
         start_enabled: config.is_ready() && state.can_start_session(),
         stop_enabled: config.is_ready() && state.can_stop_session(),
         cancel_enabled: config.is_ready() && state.can_stop_session(),
-        reload_config_enabled: true,
+        reload_config_enabled: state.can_start_session(),
         open_config_enabled: true,
     }
 }
@@ -4300,8 +4300,8 @@ pub fn desktop_local_asr_daemon_bind_from_endpoint(
             return Err(format!("{subject} host must be loopback"));
         }
         match address {
-            std::net::IpAddr::V4(_) => host.to_string(),
-            std::net::IpAddr::V6(_) => format!("[{host}]"),
+            std::net::IpAddr::V4(address) => address.to_string(),
+            std::net::IpAddr::V6(address) => format!("[{address}]"),
         }
     };
 
