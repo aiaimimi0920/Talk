@@ -30,7 +30,9 @@ class DependencyAuditContract(unittest.TestCase):
         self.assertIn("persist-credentials: false", workflow)
         self.assertNotRegex(workflow, r"pull_request_target|secrets\.|: write")
         refs = re.findall(r"uses: (\S+)", workflow)
-        self.assertEqual(len(refs), 2)
+        self.assertEqual(len(refs), 3)
+        self.assertIn("scripts/run_dependency_audit.py cargo", workflow)
+        self.assertIn("if-no-files-found: error", workflow)
         for ref in refs:
             self.assertRegex(ref, r"@[a-f0-9]{40}$")
 
