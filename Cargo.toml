@@ -35,7 +35,7 @@ thiserror = "1"
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time", "io-util", "net"] }
 tokio-tungstenite = "0.27"
-toml = "0.8"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
