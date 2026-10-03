@@ -37,7 +37,7 @@ jobs:
             echo 'Invalidated incomplete Linux sherpa native cache; Cargo will restore it.'
           fi
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-1 -- cargo fmt --all -- --check
       - name: Check all targets
         run: cargo check --workspace --all-targets --locked
       - name: Run workspace tests
@@ -51,7 +51,17 @@ jobs:
           Import-Module Pester -RequiredVersion 5.7.1
           Invoke-Pester -Path ./scripts/tests/GitHub-Actions.Tests.ps1 -CI
 
+      - name: Retain talk-linux quality evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-talk-linux-${{ github.run_id }}
+          path: artifacts/quality
+          if-no-files-found: error
+
   build-windows-release:
+    env:
+      QUALITY_STRICT: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
 
     steps:
@@ -87,7 +97,7 @@ jobs:
           }
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: python scripts/development_quality.py rustfmt --output artifacts/quality/format-2 -- cargo fmt --all -- --check
 
       - name: Check all targets
         run: cargo check --workspace --all-targets
@@ -140,4 +150,12 @@ jobs:
         with:
           name: talk-windows-x64-evidence-${{ github.sha }}
           path: ${{ env.TALK_RELEASE_EVIDENCE_DIR }}
+          if-no-files-found: error
+
+      - name: Retain talk-windows quality evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-talk-windows-${{ github.run_id }}
+          path: artifacts/quality
           if-no-files-found: error
