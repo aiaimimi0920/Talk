@@ -5,7 +5,7 @@ called `HookLess`; that name now refers only to historical documentation,
 superseded plans, and migration notes. Current packages, imports, runtime
 paths, binaries, and environment variables use the `Talk` / `talk` naming.
 
-Talk stays independent from `Hook/`. Hook may call Talk through a local
+Talk stays independent from `Otter/`. Otter may call Talk through a local
 capability API or keep a thin compatibility bridge, but Talk owns the product
 boundary for voice capture, transcription, insertion, and voice session
 evidence.
@@ -159,19 +159,19 @@ popup.
    provider path with the same real hotkey chord and foreground insertion
    target, so Talk has direct evidence for both fake-provider and live-provider
    versions of the desktop interaction loop. Future phases can replace the placeholder local provider endpoints with production
-   Talk-compatible services while keeping Hook as a peer/consumer instead of merging Talk into Hook. The
+   Talk-compatible services while keeping Otter as a peer/consumer instead of merging Talk into Otter. The
    Talk-owned local capability API already exists through `serve`: loopback-only HTTP, default manifest
    `%APPDATA%\Neuro\capabilities\talk.json`, optional `--manifest-dir`, bearer
    auth, and `GET /v1/health`, `GET /v1/capabilities`, `POST /v1/invoke`.
 
 ## Integration policy
 
-- Hook can call Talk for voice capture or insertion assistance.
-- Talk can call Hook for current visual context or canvas operations when Hook
+- Otter can call Talk for voice capture or insertion assistance.
+- Talk can call Otter for current visual context or canvas operations when Otter
   is installed.
 - Loom can mediate semantic, multi-step, memory-backed, or approval-sensitive
   voice workflows.
-- Direct Hook-to-Talk calls remain valid for simple, low-latency dictation.
+- Direct Otter-to-Talk calls remain valid for simple, low-latency dictation.
 
 ## Reference policy
 
