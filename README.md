@@ -8,8 +8,8 @@ Talk is Neuro's standalone voice input and speech interaction app, formerly
 developed under the `HookLess` name.
 
 Talk is an independent local program, not a temporary branch that must be merged
-into `Hook/`. It can be used by itself for hotkey-driven dictation and text
-insertion, and it can optionally expose local capabilities so Hook and Loom can
+into `Otter/`. It can be used by itself for hotkey-driven dictation and text
+insertion, and it can optionally expose local capabilities so Otter and Loom can
 call it when installed.
 
 > Naming rule: the official product/subproject name is `Talk`, and the
@@ -87,11 +87,11 @@ Talk owns:
 - transcription and optional text-processing provider clients;
 - dry-run, clipboard fallback, and explicit native insertion strategies;
 - voice session state, logs, failure reasons, and local smoke evidence;
-- local capability APIs that can be called by Hook, Loom, or other Neuro apps.
+- local capability APIs that can be called by Otter, Loom, or other Neuro apps.
 
 Talk does not own:
 
-- Hook's visual canvas, overlay, screenshot, sticker, or foreground capture UI;
+- Otter's visual canvas, overlay, screenshot, sticker, or foreground capture UI;
 - Loom's agent, workflow, memory, sandbox, or orchestration runtime;
 - Gateway's provider credential inventory, routing, relay, or management APIs;
 - Tea's ticket, approval, event timeline, or run-evidence source of truth;
@@ -122,7 +122,7 @@ Current implementation status:
   selects the configured provider (`mock` or `http`) for transcribe/process,
   inserts the result, and writes a session JSON file under the configured
   logging directory. `serve` exposes Talk's loopback-only local capability API
-  for peers such as Hook and Loom. It honors `output.mode`: `dry_run` records a
+  for peers such as Otter and Loom. It honors `output.mode`: `dry_run` records a
   dry-run insert, while `clipboard_paste` uses `output.clipboard_backend` to
   choose either the safe diagnostic fallback or the explicit Windows-native
   clipboard paste path.
@@ -263,7 +263,7 @@ Tray actions currently include:
 - `Reload Talk config`
 - `Exit Talk`
 
-This shell keeps Talk independent from Hook and reuses the same runtime
+This shell keeps Talk independent from Otter and reuses the same runtime
 pipeline, evidence writing, provider selection, and insertion behavior as
 `talk-daemon`.
 
@@ -637,7 +637,7 @@ Transcribe request:
   "audio_path": "C:\\path\\to\\captured.wav",
   "context": {
     "source": "hook-panel",
-    "app_name": "Hook",
+    "app_name": "Otter",
     "window_title": "Neuro editor",
     "selected_text": "hello source text"
   }
@@ -652,7 +652,7 @@ Process request:
   "mode": "dictate",
   "context": {
     "source": "hook-panel",
-    "app_name": "Hook",
+    "app_name": "Otter",
     "window_title": "Neuro editor",
     "selected_text": "hello source text"
   }
@@ -1182,7 +1182,7 @@ before the release wrapper attempts real native usage.
 
 ## Local capability server
 
-Talk can run as a local capability server so Hook, Loom, or another Neuro app
+Talk can run as a local capability server so Otter, Loom, or another Neuro app
 can discover it and request a voice session without embedding Talk's full voice
 stack.
 
@@ -1305,14 +1305,14 @@ Talk should expose a local capability boundary so peers can discover and call it
 when installed:
 
 ```text
-Hook -> Talk: request one voice session and receive text/session evidence.
-Talk -> Hook: send recognized text or request current visual context.
+Otter -> Talk: request one voice session and receive text/session evidence.
+Talk -> Otter: send recognized text or request current visual context.
 Talk -> Loom: upgrade a voice command into an agent/workflow request.
 Talk -> Gateway: transcribe/process text through configured providers.
 ```
 
 Loom should mediate semantic, multi-step, memory-backed, or approval-sensitive
-flows. It should not be required for simple Hook-to-Talk dictation or Talk
+flows. It should not be required for simple Otter-to-Talk dictation or Talk
 standalone insertion.
 
 See `../docs/architecture/neuro-local-app-structure.md` for the canonical
